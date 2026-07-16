@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig } from "../utils/config";
-import { resolveMethodNaming, resolveModuleNaming } from "../utils/naming";
+import { assertNotGoKeyword, resolveMethodNaming, resolveModuleNaming, toCamelCase } from "../utils/naming";
 import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
 import { gofmtTree } from "../utils/template-renderer";
 import {
@@ -70,6 +70,8 @@ export async function generateMethod(
   }
   const getMode = type === "get" ? opts.getMode ?? (await promptGetMode()) : undefined;
   const field = type === "get" && getMode === "one" ? opts.field ?? (await promptLookupField()) : undefined;
+  // field becomes a Go param name (`func (...)(ctx, <field> string)`)
+  if (field) assertNotGoKeyword(toCamelCase(field), "lookup field");
 
   const method = resolveMethodNaming(methodNameArg ?? (await promptMethodName()));
 

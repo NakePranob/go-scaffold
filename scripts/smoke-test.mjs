@@ -209,6 +209,16 @@ step("generate module rejects a name that already exists", () => {
   expectThrows(() => goScaffold(["generate", "module", "order"], fullApp), "already exists");
 });
 
+step("rejects reserved Go words before writing broken code (module/method/field)", () => {
+  expectThrows(() => goScaffold(["generate", "module", "type"], fullApp), "reserved Go word");
+  expectThrows(() => goScaffold(["generate", "module", "string"], fullApp), "reserved Go word");
+  expectThrows(() => goScaffold(["generate", "method", "order", "func", "--type", "post"], fullApp), "Go keyword");
+  expectThrows(
+    () => goScaffold(["generate", "method", "order", "findByType", "--type", "get", "--get-mode", "one", "--field", "type"], fullApp),
+    "Go keyword"
+  );
+});
+
 step("create --versioning scaffolds a versioned project", () => {
   goScaffold(["create", "ver-app", "--defaults", "--versioning"], scratch);
 });

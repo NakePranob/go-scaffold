@@ -1,10 +1,22 @@
 import { input, select } from "@inquirer/prompts";
 import { GetMethodMode, MethodType } from "../types";
+import { assertNotGoKeyword, toCamelCase, validateModuleName } from "../utils/naming";
+
+// wraps an assert-style validator into inquirer's true|string contract so a
+// reserved word re-prompts inline instead of aborting the whole command.
+function notKeyword(value: string, role: string): true | string {
+  try {
+    assertNotGoKeyword(toCamelCase(value.trim()), role);
+    return true;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
 
 export async function promptModuleName(): Promise<string> {
   const name = await input({
     message: "Module name (singular, e.g. order, product):",
-    validate: (value) => (value.trim() ? true : "module name is required"),
+    validate: (value) => (value.trim() ? validateModuleName(value) : "module name is required"),
   });
   return name.trim();
 }
@@ -12,7 +24,7 @@ export async function promptModuleName(): Promise<string> {
 export async function promptMethodName(): Promise<string> {
   const name = await input({
     message: "Method name (e.g. approve, findByStatus, resetPassword):",
-    validate: (value) => (value.trim() ? true : "method name is required"),
+    validate: (value) => (value.trim() ? notKeyword(value, "method") : "method name is required"),
   });
   return name.trim();
 }
@@ -46,7 +58,7 @@ export async function promptLookupField(): Promise<string> {
     validate: (value) => {
       if (!value.trim()) return "field is required";
       if (value.trim().toLowerCase() === "id") return '"id" already has a lookup route — pick another field';
-      return true;
+      return notKeyword(value, "lookup field");
     },
   });
   return field.trim();
