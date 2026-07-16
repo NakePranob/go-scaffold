@@ -47,9 +47,10 @@ export $(grep -v '^#' .env.example | xargs) && make run
 client — works the same whether Postgres came from `make docker-up` or an
 existing instance you already have running. Override any of
 `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_NAME`/`PGPASSWORD` to point at a different
-server.{{#if docker}} If `psql` isn't installed locally, it falls back to
-`docker compose exec` against this project's own Postgres container (so
-`make docker-up` first, in that case).{{/if}}
+server. If `psql` isn't installed locally and `DB_HOST` is `localhost`, it
+falls back to `docker exec` into whichever container is publishing
+`DB_PORT` — this project's own Postgres (`make docker-up` first) or any
+other Postgres container you already have running.
 
 Server listens on `:8080` (override with `PORT`). Ctrl+C = graceful shutdown.
 

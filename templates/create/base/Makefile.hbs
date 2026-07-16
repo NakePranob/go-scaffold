@@ -31,35 +31,41 @@ tidy:
 # connects to the always-present "postgres" maintenance DB to run CREATE DATABASE,
 # since the target DB may not exist yet. Safe to re-run — skips if it already exists.
 # \gexec only works read from stdin, not through -c, hence the pipe.
-# falls back to `docker compose exec` if the psql client isn't installed locally.
+# no local psql? falls back to `docker exec` into whatever container is publishing
+# DB_PORT — the project's own `docker compose up`'d postgres, or an unrelated
+# shared Postgres container you already have running, either works the same way.
 # override DB_HOST/DB_PORT/DB_USER/DB_NAME/PGPASSWORD to point at a different server.
 db-create:
 	@if command -v psql >/dev/null 2>&1; then \
 		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
 			PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres; \
-	{{#if docker}}
-	else \
-		echo "no local psql — using docker compose exec instead"; \
+	elif [ "$(DB_HOST)" = "localhost" ] || [ "$(DB_HOST)" = "127.0.0.1" ]; then \
+		container=$$(docker ps -q --filter "publish=$(DB_PORT)" | head -1); \
+		if [ -z "$$container" ]; then \
+			echo "psql not found and no container is publishing port $(DB_PORT) — install the PostgreSQL client (brew install libpq && brew link --force libpq), or start Postgres any way you like and re-run" >&2; \
+			exit 1; \
+		fi; \
+		echo "no local psql — using docker exec into $$container"; \
 		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
-			docker compose exec -T postgres psql -U $(DB_USER) -d postgres; \
-	{{else}}
+			docker exec -i -e PGPASSWORD=$(PGPASSWORD) $$container psql -U $(DB_USER) -d postgres; \
 	else \
-		echo "psql not found — install the PostgreSQL client (e.g. brew install libpq && brew link --force libpq) or point DB_HOST/DB_PORT/DB_USER at a server reachable another way" >&2; \
+		echo "psql not found — install the PostgreSQL client (brew install libpq && brew link --force libpq) to connect to $(DB_HOST):$(DB_PORT)" >&2; \
 		exit 1; \
-	{{/if}}
 	fi
 
 db-drop:
 	@if command -v psql >/dev/null 2>&1; then \
 		PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
-	{{#if docker}}
+	elif [ "$(DB_HOST)" = "localhost" ] || [ "$(DB_HOST)" = "127.0.0.1" ]; then \
+		container=$$(docker ps -q --filter "publish=$(DB_PORT)" | head -1); \
+		if [ -z "$$container" ]; then \
+			echo "psql not found and no container is publishing port $(DB_PORT) — install the PostgreSQL client (brew install libpq && brew link --force libpq), or start Postgres any way you like and re-run" >&2; \
+			exit 1; \
+		fi; \
+		docker exec -i -e PGPASSWORD=$(PGPASSWORD) $$container psql -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
 	else \
-		docker compose exec -T postgres psql -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
-	{{else}}
-	else \
-		echo "psql not found — install the PostgreSQL client (e.g. brew install libpq && brew link --force libpq) or point DB_HOST/DB_PORT/DB_USER at a server reachable another way" >&2; \
+		echo "psql not found — install the PostgreSQL client (brew install libpq && brew link --force libpq) to connect to $(DB_HOST):$(DB_PORT)" >&2; \
 		exit 1; \
-	{{/if}}
 	fi
 
 migrate-up:

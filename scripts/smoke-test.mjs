@@ -104,17 +104,36 @@ try {
   hasPsql = false;
 }
 
+let dockerPgContainer = null;
+if (!hasPsql) {
+  try {
+    dockerPgContainer = run("docker", ["ps", "-q", "--filter", "publish=5432"]).trim().split("\n")[0] || null;
+  } catch {
+    dockerPgContainer = null;
+  }
+}
+
+function listDatabases() {
+  return hasPsql
+    ? run("psql", ["-h", "localhost", "-U", "postgres", "-lqt"], undefined, { PGPASSWORD: "postgres" })
+    : run("docker", ["exec", "-e", "PGPASSWORD=postgres", dockerPgContainer, "psql", "-U", "postgres", "-lqt"]);
+}
+
 step(
-  hasPsql ? "make db-create is idempotent and actually creates the DB" : "make db-create parses (psql not on PATH, skipping a real run)",
+  hasPsql
+    ? "make db-create is idempotent and actually creates the DB"
+    : dockerPgContainer
+      ? "make db-create falls back to docker exec (no local psql) and actually creates the DB"
+      : "make db-create parses (no psql, no Postgres container — skipping a real run)",
   () => {
-    if (!hasPsql) {
+    if (!hasPsql && !dockerPgContainer) {
       run("make", ["-n", "db-create"], fullApp); // dry run: catches Makefile/shell syntax errors
       return;
     }
     run("make", ["db-drop"], fullApp); // start from a clean slate in case a prior run left it
     run("make", ["db-create"], fullApp);
     run("make", ["db-create"], fullApp); // must not error the second time
-    const list = run("psql", ["-h", "localhost", "-U", "postgres", "-lqt"], undefined, { PGPASSWORD: "postgres" });
+    const list = listDatabases();
     if (!list.includes("full_app")) throw new Error(`expected database "full_app" to exist, got:\n${list}`);
     run("make", ["db-drop"], fullApp);
   }
