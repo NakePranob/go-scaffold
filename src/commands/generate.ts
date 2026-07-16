@@ -41,6 +41,30 @@ export async function generateModule(
     throw new Error(`${moduleDir} already exists — pick a different name or delete it first`);
   }
 
+  // a module can't live in two version folders at once: main.go routes every
+  // version under the single /v1 group, so a second copy would collide on both
+  // the import alias (`<pkg>`/`<pkg>model` redeclared) and the route path.
+  if (config.features.versioning) {
+    const appDir = path.join(projectDir, "internal", "app");
+    const other = !fs.existsSync(appDir)
+      ? undefined
+      : fs
+          .readdirSync(appDir, { withFileTypes: true })
+          .filter((e) => e.isDirectory() && /^v\d+$/.test(e.name))
+          .find(
+            (e) =>
+              `${e.name}/${naming.pkg}` !== modulePath &&
+              fs.existsSync(path.join(appDir, e.name, naming.pkg, "handler.go"))
+          );
+    if (other) {
+      throw new Error(
+        `module "${naming.pkg}" already exists in ${other.name} — a module can't live in two version ` +
+          `folders (main.go routes every version under /v1, so imports and routes would collide). ` +
+          `Remove it there first: go-scaffold remove module ${naming.pkg} --module-version ${other.name}`
+      );
+    }
+  }
+
   const context = {
     ...naming,
     goModule: config.goModule,
