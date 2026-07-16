@@ -38,7 +38,7 @@ tidy:
 db-create:
 	@if command -v psql >/dev/null 2>&1; then \
 		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
-			PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres; \
+			PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres && echo "SUCCESS! database $(DB_NAME) is ready"; \
 	elif [ "$(DB_HOST)" = "localhost" ] || [ "$(DB_HOST)" = "127.0.0.1" ]; then \
 		container=$$(docker ps -q --filter "publish=$(DB_PORT)" | head -1); \
 		if [ -z "$$container" ]; then \
@@ -47,7 +47,7 @@ db-create:
 		fi; \
 		echo "no local psql — using docker exec into $$container"; \
 		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
-			docker exec -i -e PGPASSWORD=$(PGPASSWORD) $$container psql -U $(DB_USER) -d postgres; \
+			docker exec -i -e PGPASSWORD=$(PGPASSWORD) $$container psql -U $(DB_USER) -d postgres && echo "SUCCESS! database $(DB_NAME) is ready"; \
 	else \
 		echo "psql not found — install the PostgreSQL client (brew install libpq && brew link --force libpq) to connect to $(DB_HOST):$(DB_PORT)" >&2; \
 		exit 1; \
@@ -55,14 +55,14 @@ db-create:
 
 db-drop:
 	@if command -v psql >/dev/null 2>&1; then \
-		PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
+		PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);" && echo "SUCCESS! database $(DB_NAME) dropped"; \
 	elif [ "$(DB_HOST)" = "localhost" ] || [ "$(DB_HOST)" = "127.0.0.1" ]; then \
 		container=$$(docker ps -q --filter "publish=$(DB_PORT)" | head -1); \
 		if [ -z "$$container" ]; then \
 			echo "psql not found and no container is publishing port $(DB_PORT) — install the PostgreSQL client (brew install libpq && brew link --force libpq), or start Postgres any way you like and re-run" >&2; \
 			exit 1; \
 		fi; \
-		docker exec -i -e PGPASSWORD=$(PGPASSWORD) $$container psql -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
+		docker exec -i -e PGPASSWORD=$(PGPASSWORD) $$container psql -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);" && echo "SUCCESS! database $(DB_NAME) dropped"; \
 	else \
 		echo "psql not found — install the PostgreSQL client (brew install libpq && brew link --force libpq) to connect to $(DB_HOST):$(DB_PORT)" >&2; \
 		exit 1; \
