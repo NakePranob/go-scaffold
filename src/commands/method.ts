@@ -2,7 +2,13 @@ import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig } from "../utils/config";
-import { assertNotGoKeyword, resolveMethodNaming, resolveModuleNaming, toCamelCase } from "../utils/naming";
+import {
+  assertNotGoKeyword,
+  resolveMethodNaming,
+  resolveModuleNaming,
+  toCamelCase,
+  toDbName,
+} from "../utils/naming";
 import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
 import { gofmtTree } from "../utils/template-renderer";
 import {
@@ -12,7 +18,26 @@ import {
   promptMethodType,
   promptModuleName,
 } from "../prompts/generate-wizard";
-import { GetMethodMode, MethodType } from "../types";
+import { GetMethodMode, MethodType, ModuleNaming, MethodNaming } from "../types";
+
+// the actual URL the new route answers on — printed so the user can add the
+// matching openapi.yaml entry by hand (methods are deliberately not wired into
+// the spec; see the note in docs/openapi.yaml). Mirrors the paths registered
+// in method-patcher.ts.
+function routeHint(
+  naming: ModuleNaming,
+  method: MethodNaming,
+  type: MethodType,
+  getMode?: GetMethodMode,
+  field?: string
+): string {
+  const base = `/v1/${naming.plural}`;
+  if (type === "get" && getMode === "all") return `GET ${base}/${method.pathSegment}`;
+  if (type === "get") return `GET ${base}/${toDbName(field ?? "")}/{${toCamelCase(field ?? "")}}`;
+  if (type === "post") return `POST ${base}/${method.pathSegment}`;
+  if (type === "delete") return `DELETE ${base}/{id}/${method.pathSegment}`;
+  return `${type.toUpperCase()} ${base}/{id}/${method.pathSegment}`;
+}
 
 export interface GenerateMethodOptions {
   moduleVersion?: string;
@@ -79,5 +104,13 @@ export async function generateMethod(
   gofmtTree(projectDir);
 
   console.log(pc.green(`\nadded "${method.name}" to internal/app/${modulePath}/`));
+  console.log(`route: ${routeHint(naming, method, type, getMode, field)}`);
+  if (config.features.openapiDocs) {
+    console.log(
+      pc.yellow(
+        `docs: add this route to docs/openapi.yaml by hand — \`generate method\` doesn't touch the spec`
+      )
+    );
+  }
   console.log(pc.dim(`\nnext: fill in the TODO in service.go, then \`go build ./...\` / \`go test ./...\``));
 }
