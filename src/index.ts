@@ -21,14 +21,14 @@ program
   .option("--defaults", "skip the wizard, use defaults (for CI/scripting)")
   .option("--no-docker", "skip docker-compose.yml (only applies with --defaults)")
   .option("--no-openapi-docs", "skip docs/openapi.yaml (only applies with --defaults)")
-  .option("--versioning", "enable folder-based domain versioning (only applies with --defaults)")
+  .option("--api-prefix <prefix>", 'URL prefix every route is grouped under (default "v1"; pass "" for none)')
   .action(async (name, opts) => {
     try {
       await createProject(name, {
         defaults: opts.defaults,
         docker: opts.docker,
         openapiDocs: opts.openapiDocs,
-        versioning: opts.versioning,
+        apiPrefix: opts.apiPrefix,
       });
     } catch (err) {
       console.error(pc.red((err as Error).message));
@@ -70,10 +70,9 @@ generate
     "--no-full",
     "minimal skeleton (model/errors/repository, no default CRUD) — add endpoints one at a time with `generate method`"
   )
-  .option("--module-version <version>", "target a specific version folder (requires versioning enabled)")
   .action(async (name, opts) => {
     try {
-      await generateModule(name, { full: opts.full, moduleVersion: opts.moduleVersion });
+      await generateModule(name, { full: opts.full });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;
@@ -87,7 +86,6 @@ generate
   .option("--type <type>", "get|post|put|patch|delete")
   .option("--get-mode <mode>", "for --type get only: all|one")
   .option("--field <name>", "for --type get --get-mode one: the lookup field (e.g. email, status)")
-  .option("--module-version <version>", "target a specific version folder (requires versioning enabled)")
   .action(async (moduleName, methodName, opts) => {
     try {
       const type = opts.type as MethodType | undefined;
@@ -102,7 +100,6 @@ generate
         type,
         getMode,
         field: opts.field,
-        moduleVersion: opts.moduleVersion,
       });
     } catch (err) {
       console.error(pc.red((err as Error).message));
@@ -128,11 +125,10 @@ remove
   .command("module [name]")
   .alias("m")
   .description("delete a domain module and reverse everything `generate module` wired up")
-  .option("--module-version <version>", "target a specific version folder (requires versioning enabled)")
   .option("-y, --yes", "skip the confirmation prompt")
   .action(async (name, opts) => {
     try {
-      await removeModule(name, { moduleVersion: opts.moduleVersion, yes: opts.yes });
+      await removeModule(name, { yes: opts.yes });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

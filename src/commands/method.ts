@@ -12,14 +12,12 @@ import {
 import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
 import { gofmtTree } from "../utils/template-renderer";
 import {
-  promptExistingVersion,
   promptGetMode,
   promptLookupField,
   promptMethodName,
   promptMethodType,
   promptModuleName,
 } from "../prompts/generate-wizard";
-import { versionsContainingModule } from "../utils/module-paths";
 import { GetMethodMode, MethodType, ModuleNaming, MethodNaming } from "../types";
 
 // the actual URL the new route answers on — printed so the user can add the
@@ -30,11 +28,11 @@ function routeHint(
   naming: ModuleNaming,
   method: MethodNaming,
   type: MethodType,
-  urlPrefix: string,
+  apiPrefix: string,
   getMode?: GetMethodMode,
   field?: string
 ): string {
-  const base = `/${urlPrefix}/${naming.plural}`;
+  const base = apiPrefix ? `/${apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   if (type === "get" && getMode === "all") return `GET ${base}/${method.pathSegment}`;
   if (type === "get") return `GET ${base}/${toDbName(field ?? "")}/{${toCamelCase(field ?? "")}}`;
   if (type === "post") return `POST ${base}/${method.pathSegment}`;
@@ -43,7 +41,6 @@ function routeHint(
 }
 
 export interface GenerateMethodOptions {
-  moduleVersion?: string;
   type?: MethodType;
   getMode?: GetMethodMode;
   field?: string;
@@ -57,28 +54,7 @@ export async function generateMethod(
 ): Promise<void> {
   const config = readConfig(projectDir);
   const naming = resolveModuleNaming(moduleNameArg ?? (await promptModuleName()));
-
-  let modulePath = naming.pkg;
-  let version: string | undefined;
-  if (config.features.versioning) {
-    if (opts.moduleVersion) {
-      version = opts.moduleVersion;
-      if (!/^[a-z][a-z0-9]*$/.test(version)) {
-        throw new Error(`invalid --module-version "${version}" — expected a bare identifier like v1, v2`);
-      }
-    } else {
-      // no flag: find which version(s) actually hold this module. A module
-      // can legitimately exist in more than one version at once, so pick
-      // automatically when there's exactly one match, prompt when ambiguous.
-      const matches = versionsContainingModule(projectDir, naming.pkg);
-      version = matches.length > 1 ? await promptExistingVersion(matches) : matches[0] ?? "v1";
-    }
-    modulePath = `${version}/${naming.pkg}`;
-  } else if (opts.moduleVersion) {
-    throw new Error(
-      "--module-version was passed but this project doesn't have versioning enabled (see go-scaffold.config.json)"
-    );
-  }
+  const modulePath = naming.pkg;
 
   const moduleDir = path.join(projectDir, "internal", "app", modulePath);
   const paths: MethodPatchPaths = {
@@ -116,7 +92,7 @@ export async function generateMethod(
   gofmtTree(projectDir);
 
   console.log(pc.green(`\nadded "${method.name}" to internal/app/${modulePath}/`));
-  console.log(`route: ${routeHint(naming, method, type, version ?? "v1", getMode, field)}`);
+  console.log(`route: ${routeHint(naming, method, type, config.apiPrefix, getMode, field)}`);
   if (config.features.openapiDocs) {
     console.log(
       pc.yellow(

@@ -5,45 +5,31 @@ import { ModuleNaming } from "../types";
 const PATHS_MARKER = "# go-scaffold:paths";
 const SCHEMAS_MARKER = "# go-scaffold:schemas";
 
-// the on-disk docs folder for a module — version-qualified as a FLAT sibling
-// of docs/ (e.g. "v1-orders", not "v1/orders") when versioned, so the
-// collection/item/schemas templates' `../common/...` relative refs stay one
-// level up regardless of version. Non-versioned: unchanged ("orders").
-export function docsFolderName(naming: ModuleNaming, version?: string): string {
-  return version ? `${version}-${naming.plural}` : naming.plural;
-}
-
 // exact lines a module contributes to docs/openapi.yaml — shared by patch and
-// unpatch so removal pulls out precisely what was added.
-//
-// versioned projects qualify the root index's schema keys with the version
-// (OrderV1CreateInput vs OrderV2CreateInput) because v1/order and v2/order
-// can coexist with the same PascalName — the per-module schemas.yaml files
-// stay unqualified since they're already namespaced by their own file path.
-function openapiLines(naming: ModuleNaming, version?: string) {
-  const folder = docsFolderName(naming, version);
-  const urlPrefix = version ?? "v1";
-  const keySuffix = version ? version.charAt(0).toUpperCase() + version.slice(1) : "";
+// unpatch so removal pulls out precisely what was added. apiPrefix is the
+// project-wide prefix chosen at create time (e.g. "v1", "" for none).
+function openapiLines(naming: ModuleNaming, apiPrefix: string) {
+  const base = apiPrefix ? `/${apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   return {
     paths: [
-      `/${urlPrefix}/${naming.plural}:`,
-      `  $ref: './${folder}/collection.yaml'`,
-      `/${urlPrefix}/${naming.plural}/{id}:`,
-      `  $ref: './${folder}/item.yaml'`,
+      `${base}:`,
+      `  $ref: './${naming.plural}/collection.yaml'`,
+      `${base}/{id}:`,
+      `  $ref: './${naming.plural}/item.yaml'`,
     ],
     schemas: [
-      `${naming.pascalName}${keySuffix}CreateInput: { $ref: './${folder}/schemas.yaml#/${naming.pascalName}CreateInput' }`,
-      `${naming.pascalName}${keySuffix}UpdateInput: { $ref: './${folder}/schemas.yaml#/${naming.pascalName}UpdateInput' }`,
-      `${naming.pascalName}${keySuffix}Response: { $ref: './${folder}/schemas.yaml#/${naming.pascalName}Response' }`,
+      `${naming.pascalName}CreateInput: { $ref: './${naming.plural}/schemas.yaml#/${naming.pascalName}CreateInput' }`,
+      `${naming.pascalName}UpdateInput: { $ref: './${naming.plural}/schemas.yaml#/${naming.pascalName}UpdateInput' }`,
+      `${naming.pascalName}Response: { $ref: './${naming.plural}/schemas.yaml#/${naming.pascalName}Response' }`,
     ],
   };
 }
 
 // patchOpenapiIndex wires a new module's collection/item docs into the
 // docs/openapi.yaml index — same marker-comment approach as main.go.
-export function patchOpenapiIndex(openapiPath: string, naming: ModuleNaming, version?: string): void {
+export function patchOpenapiIndex(openapiPath: string, naming: ModuleNaming, apiPrefix: string): void {
   let content = fs.readFileSync(openapiPath, "utf8");
-  const { paths, schemas } = openapiLines(naming, version);
+  const { paths, schemas } = openapiLines(naming, apiPrefix);
 
   // sentinels keep re-runs idempotent (same reason as main-patcher)
   content = insertBeforeMarkerOnce(content, PATHS_MARKER, paths.join("\n"), paths[0]);
@@ -54,8 +40,8 @@ export function patchOpenapiIndex(openapiPath: string, naming: ModuleNaming, ver
 
 // unpatchOpenapiIndex removes a module's paths/schemas from the index — inverse
 // of patchOpenapiIndex.
-export function unpatchOpenapiIndex(openapiPath: string, naming: ModuleNaming, version?: string): void {
+export function unpatchOpenapiIndex(openapiPath: string, naming: ModuleNaming, apiPrefix: string): void {
   const content = fs.readFileSync(openapiPath, "utf8");
-  const { paths, schemas } = openapiLines(naming, version);
+  const { paths, schemas } = openapiLines(naming, apiPrefix);
   fs.writeFileSync(openapiPath, removeLines(content, [...paths, ...schemas]));
 }

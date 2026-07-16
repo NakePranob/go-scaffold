@@ -4,7 +4,7 @@ import pc from "picocolors";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { CREATE_MANIFEST } from "../templates/create-manifest";
 import { writeConfig } from "../utils/config";
-import { assertValidGoModulePath, toDbName } from "../utils/naming";
+import { assertValidGoModulePath, toDbName, validateApiPrefix } from "../utils/naming";
 import { promptProjectName, runCreateWizard } from "../prompts/create-wizard";
 import { ProjectFeatures } from "../types";
 
@@ -12,7 +12,7 @@ export interface CreateOptions {
   defaults?: boolean;
   docker?: boolean;
   openapiDocs?: boolean;
-  versioning?: boolean;
+  apiPrefix?: string;
 }
 
 export async function createProject(rawName: string | undefined, opts: CreateOptions): Promise<void> {
@@ -28,25 +28,29 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     throw new Error(`${projectDir} already exists and is not empty`);
   }
 
-  const features: ProjectFeatures = opts.defaults
-    ? {
-        docker: opts.docker ?? true,
-        openapiDocs: opts.openapiDocs ?? true,
-        versioning: opts.versioning ?? false,
-      }
-    : await runCreateWizard();
+  let features: ProjectFeatures;
+  let apiPrefix: string;
+  if (opts.defaults) {
+    features = { docker: opts.docker ?? true, openapiDocs: opts.openapiDocs ?? true };
+    apiPrefix = opts.apiPrefix ?? "v1";
+    const check = validateApiPrefix(apiPrefix);
+    if (check !== true) throw new Error(check);
+  } else {
+    ({ features, apiPrefix } = await runCreateWizard());
+  }
 
   const context = {
     projectName,
     goModule,
     dbName: toDbName(projectName),
+    apiPrefix,
     ...features,
   };
 
   await fs.ensureDir(projectDir);
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
   gofmtTree(projectDir);
-  writeConfig(projectDir, { projectName, goModule, features });
+  writeConfig(projectDir, { projectName, goModule, apiPrefix, features });
 
   console.log(pc.green(`\ncreated ${projectName}/`));
   console.log(`\ncd ${projectName}`);

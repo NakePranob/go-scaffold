@@ -34,10 +34,14 @@ actually does.
 
 ## 3. API Style
 
-**Decision:** REST over Gin, one handler package per domain, routes grouped
-under {{#if versioning}}`/v1`, `/v2`, etc. — one group per version folder in use{{else}}`/v1`{{/if}}.
+**Decision:** REST over Gin, one handler package per domain, every route
+grouped under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}.
 **Rationale:** `handler → service → repository`, one direction, all three
-layers in the same package — no cross-domain imports.
+layers in the same package — no cross-domain imports. The prefix is a
+single project-wide choice made at `create` time (`--api-prefix`) — there is
+no per-domain versioning; a domain that needs a real breaking change gets a
+new domain package (or a new field on the existing DTO), not a duplicated
+model pointed at the same table under a different URL.
 
 ## 4. Response and Error Model
 
@@ -51,40 +55,14 @@ call site, no error-shape drift between domains.
 - DB errors are classified once in `shared/dberr` (`IsDuplicate`,
   `IsForeignKey`) and mapped to the right HTTP status per domain
 
-## 5. Module Versioning
-
-{{#if versioning}}
-**Decision:** Folder-based domain versioning is enabled — routes are real
-per-version, not just folder layout.
-**Rationale:** `internal/app/v1/<domain>`, `v2/<domain>`, etc., each gets its
-own `r.Group("/v1")` / `r.Group("/v2")` and a version-qualified import alias
-(`<domain>v1`, `<domain>v2`) in `cmd/api/main.go`. That means **the same
-domain name can live in more than one version at once** —
-`v1/orders` and `v2/orders` coexisting with different behavior is the actual
-point of versioning, not a naming collision. `go-scaffold generate module
-<name> --module-version v2` targets a specific folder; omit the flag and the
-CLI asks which version (or lets you create a new one) once more than one
-exists. A migration is shared between versions of the same domain (same
-table, different API shape) until no version references it anymore.
-{{else}}
-**Decision:** No folder-based versioning — domains live directly under
-`internal/app/<domain>`, routes under `/v1`.
-**Rationale:** Simplest layout until an actual breaking API version is
-needed. This is a `create`-time choice — toggling `versioning` in
-`go-scaffold.config.json` by hand doesn't move existing domains into a
-version folder, it just makes the *next* `generate module` create one while
-old domains stay put. Re-scaffold (or move domains by hand) instead of
-flipping the flag on an existing project.
-{{/if}}
-
-## 6. Pagination
+## 5. Pagination
 
 **Decision:** Shared `limit`/`offset` parsing and response envelope
 (`shared/pagination`), used by every list endpoint.
 **Rationale:** One implementation, one response shape (`{data, limit,
 offset}`) — no per-domain reinvention.
 
-## 7. Persistence
+## 6. Persistence
 
 **Decision:** PostgreSQL + GORM, schema managed by
 [golang-migrate](https://github.com/golang-migrate/migrate).
@@ -94,7 +72,7 @@ AutoMigrate is add-only and locks tables once there's real data.
 
 {{#if docker}}- `docker-compose.yml` provides the local Postgres instance
 {{/if}}
-## 8. IDs
+## 7. IDs
 
 **Decision:** UUID v7 for every entity, generated app-side
 (`shared/id.New()`), not by a DB default.
@@ -103,7 +81,7 @@ splits versus random v4 under heavy writes — and the app has the ID before
 insert, so it doesn't need `gen_random_uuid()`.
 
 {{#if openapiDocs}}
-## 9. API Documentation
+## 8. API Documentation
 
 **Decision:** Hand-written OpenAPI spec (`docs/openapi.yaml`), split by
 domain module, served as a static file at `/openapi.yaml`.

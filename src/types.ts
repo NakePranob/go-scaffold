@@ -1,12 +1,13 @@
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;
-  versioning: boolean;
 }
 
 export interface ProjectConfig {
   projectName: string;
   goModule: string;
+  /** URL prefix every route is grouped under, e.g. "v1" -> /v1/orders. "" means no prefix. */
+  apiPrefix: string;
   features: ProjectFeatures;
 }
 

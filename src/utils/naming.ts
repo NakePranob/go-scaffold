@@ -97,13 +97,23 @@ export function validateModuleName(rawName: string): string | true {
   if (/^[0-9]/.test(pkg)) {
     return `"${pkg}" starts with a digit — a Go package name can't, so it won't compile; pick another module name`;
   }
-  if (/^v[0-9]+$/.test(pkg)) {
-    return `"${pkg}" looks like a version — it collides with the \`v1\` router group in main.go; pick a domain name`;
-  }
   if (GO_KEYWORDS.has(pkg) || GO_PREDECLARED_TYPES.has(pkg)) {
     return `"${pkg}" is a reserved Go word — a package named it won't compile; pick another module name`;
   }
   return true;
+}
+
+// apiPrefix becomes both a URL path segment (/v1/orders) and a Go identifier
+// (the `api := r.Group("/v1")` variable is always named "api", so the prefix
+// itself never needs to be a valid Go identifier — just a clean URL segment).
+// Empty string is valid on purpose: it means "no prefix", routes register
+// directly at /orders.
+export function validateApiPrefix(raw: string): string | true {
+  const trimmed = raw.trim();
+  if (trimmed === "") return true;
+  return /^[a-z][a-z0-9]*$/.test(trimmed)
+    ? true
+    : `invalid API prefix "${trimmed}" — use lowercase letters/numbers only, starting with a letter (e.g. "v1", "api"), or leave blank for none`;
 }
 
 export function resolveModuleNaming(rawName: string): ModuleNaming {

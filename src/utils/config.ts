@@ -1,7 +1,6 @@
 import path from "path";
 import fs from "fs-extra";
 import { ProjectConfig } from "../types";
-import { listVersionFolders } from "./module-paths";
 
 const CONFIG_FILE = "go-scaffold.config.json";
 
@@ -34,15 +33,22 @@ function detectConfig(projectDir: string): ProjectConfig {
   const moduleMatch = goMod.match(/^module\s+(\S+)/m);
   const goModule = moduleMatch ? moduleMatch[1] : path.basename(projectDir);
 
+  // parse the chosen prefix back out of `api := r.Group("/v1")` in main.go;
+  // an empty group (`r.Group("")`) or no match at all means no prefix.
+  let apiPrefix = "";
+  const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
+  if (fs.existsSync(mainGoPath)) {
+    const groupMatch = fs.readFileSync(mainGoPath, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9]*)"\)/);
+    if (groupMatch) apiPrefix = groupMatch[1];
+  }
+
   return {
     projectName: path.basename(projectDir),
     goModule,
+    apiPrefix,
     features: {
       docker: fs.existsSync(path.join(projectDir, "docker-compose.yml")),
       openapiDocs: fs.existsSync(path.join(projectDir, "docs", "openapi.yaml")),
-      // any v<n> folder counts — a project that's moved everything to v2 and
-      // beyond should still be detected as versioned, not just "has a v1"
-      versioning: listVersionFolders(projectDir).length > 0,
     },
   };
 }

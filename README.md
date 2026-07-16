@@ -53,7 +53,7 @@ go-scaffold generate method orders approve --type patch
 ```bash
 go-scaffold create my-api                                   # interactive wizard
 go-scaffold create my-api --defaults                        # no prompts, CI-friendly
-go-scaffold create my-api --defaults --no-docker --versioning
+go-scaffold create my-api --defaults --no-docker --api-prefix beta
 ```
 
 Produces a **bare skeleton only** — `cmd/api`, the shared platform packages
@@ -64,12 +64,17 @@ with `generate module`.
 
 | Option | Effect |
 |---|---|
-| `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, versioning off) |
+| `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, prefix `v1`) |
 | `--no-docker` | Skip `docker-compose.yml` (with `--defaults`) |
 | `--no-openapi-docs` | Skip `docs/openapi.yaml` (with `--defaults`) |
-| `--versioning` | Enable folder-based domain versioning (with `--defaults`) |
+| `--api-prefix <prefix>` | URL prefix every route is grouped under (with `--defaults`; default `v1`, pass `""` for none) |
 
 Without `--defaults`, an interactive wizard asks the same three questions.
+The prefix is a single project-wide choice made once at `create` time —
+there's no per-domain versioning (a domain that needs a real breaking change
+gets a new domain package or a new DTO field, not a duplicated model pointed
+at the same table under a different URL — see "Why no per-domain versioning"
+below).
 
 **Config file** — every `create` writes `go-scaffold.config.json` to the
 project root; `generate` reads it back (or auto-detects from `go.mod` /
@@ -80,27 +85,18 @@ directory layout if missing).
 ```bash
 go-scaffold generate module orders                  # full CRUD (default)
 go-scaffold generate module orders --no-full         # minimal skeleton — add endpoints with `generate method`
-go-scaffold g m orders --module-version v2           # versioned projects only
 ```
-
-In a versioned project, the same module name can live in more than one
-version folder at once — `v1/orders` and `v2/orders` coexisting with
-different behavior is the actual point of API versioning. Each gets its own
-route group (`r.Group("/v1")`, `r.Group("/v2")`) and a version-qualified
-import alias (`ordersv1`, `ordersv2`) so they can't collide. A migration is
-shared between versions of the same module (same table, different API
-shape) — `remove module` only deletes it once no version still uses it.
 
 Full CRUD (default) scaffolds:
 
 ```text
-internal/app/{{v1/}}orders/
+internal/app/orders/
 ├── model/model.go      # domain model + GORM table (id/created_at/updated_at — add real fields yourself; a folder so multi-table domains can add more files)
 ├── dto.go               # request/response structs (empty stubs — add real fields yourself)
 ├── errors.go             # ORDERS_NOT_FOUND / ORDERS_CONFLICT / ORDERS_HAS_REFERENCES
 ├── repository.go         # GORM data access
 ├── service.go            # business logic + repository interface (mockable)
-├── handler.go            # Gin routes, registered under /v1/orders
+├── handler.go            # Gin routes, registered under the project's API prefix
 ├── service_test.go       # unit test, fake repo
 └── handler_test.go       # integration test, real Postgres, tx rollback
 ```
@@ -141,7 +137,6 @@ overwrites a method with the same name; picks a different one or errors.
 | `--type <get\|post\|put\|patch\|delete>` | HTTP verb |
 | `--get-mode <all\|one>` | For `get` only — list-style vs. single-record lookup |
 | `--field <name>` | For `get --get-mode one` — the lookup field (e.g. `email`, `status`); can't be `id` |
-| `--module-version <v>` | Target a specific version folder |
 
 | `--type` | Route | What's generated |
 |---|---|---|
@@ -168,10 +163,29 @@ go-scaffold rm m orders --yes             # skip the confirm
 The inverse of `generate module`: deletes `internal/app/<name>/` and reverses
 everything that was wired up — the import/AutoMigrate/route in `main.go`, the
 paths/schemas in `docs/openapi.yaml`, the per-module docs folder, and the
-`create_<plural>` migration. Restores the `_ = v1` placeholder if it was the
+`create_<plural>` migration. Restores the `_ = api` placeholder if it was the
 last module, so the project still builds. Use this instead of hand-deleting
 the folder — a partial hand-delete leaves stale wiring that duplicates on the
 next `generate module` (which would panic gin at startup).
+
+## Why no per-domain versioning
+
+Earlier versions of this CLI let a domain live in a `v1/`/`v2/` folder with
+its own route group and import alias, so the same domain name could exist
+twice with different behavior. It was cut: the migration (and usually the
+DB table) is shared between "versions" of the same domain, but each version
+got its own physically-copied `model.go` — nothing stopped the two structs
+from drifting apart. Verified against a real Postgres instance:
+`AutoMigrate` silently accepted a column typed `int` in one version's model
+and `float64` in the other for the *same* column, converging it to
+`numeric` with no error — the two versions would then read/write the same
+data with different, silently incompatible interpretations.
+
+Instead, every route in a project is grouped under a single project-wide
+`--api-prefix` (default `v1`) chosen once at `create` time. A domain that
+needs a real breaking change gets a new domain package, or a new field on
+the existing DTO — not a duplicated model pointed at a table it can drift
+out of sync with.
 
 ## Project structure produced by `create`
 

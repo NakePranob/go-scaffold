@@ -218,7 +218,6 @@ step("rejects reserved Go words before writing broken code (module/method/field)
     "Go keyword"
   );
   expectThrows(() => goScaffold(["generate", "module", "2fa"], fullApp), "starts with a digit");
-  expectThrows(() => goScaffold(["generate", "module", "v1"], fullApp), "looks like a version");
 });
 
 step("remove module reverses wiring and re-generating stays clean", () => {
@@ -237,55 +236,35 @@ step("remove module reverses wiring and re-generating stays clean", () => {
   run("go", ["build", "./..."], fullApp);
 });
 
-step("create --versioning scaffolds a versioned project", () => {
-  goScaffold(["create", "ver-app", "--defaults", "--versioning"], scratch);
+step("create --api-prefix beta scaffolds routes under a custom prefix", () => {
+  goScaffold(["create", "beta-app", "--defaults", "--api-prefix", "beta"], scratch);
 });
 
-const verApp = path.join(scratch, "ver-app");
-step("versioned project: generate module + method, then build", () => {
-  run("go", ["mod", "tidy"], verApp);
-  goScaffold(["generate", "module", "product"], verApp);
-  goScaffold(["generate", "method", "product", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"], verApp);
-  if (!existsSync(path.join(verApp, "internal", "app", "v1", "product"))) {
-    throw new Error("expected internal/app/v1/product to exist");
-  }
-  run("go", ["build", "./..."], verApp);
-  run("go", ["vet", "./..."], verApp);
+const betaApp = path.join(scratch, "beta-app");
+step("custom prefix: generate module + method, routes land under /beta", () => {
+  run("go", ["mod", "tidy"], betaApp);
+  goScaffold(["generate", "module", "product"], betaApp);
+  goScaffold(["generate", "method", "product", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"], betaApp);
+  const mainGo = readFileSync(path.join(betaApp, "cmd", "api", "main.go"), "utf8");
+  if (!mainGo.includes('api := r.Group("/beta")')) throw new Error('expected api := r.Group("/beta") in main.go');
+  const openapi = readFileSync(path.join(betaApp, "docs", "openapi.yaml"), "utf8");
+  if (!openapi.includes("/beta/products:")) throw new Error("expected /beta/products in openapi.yaml");
+  run("go", ["build", "./..."], betaApp);
+  run("go", ["vet", "./..."], betaApp);
 });
 
-step("versioned project: the SAME module lives in v1 and v2 at once (real API versioning)", () => {
-  goScaffold(["generate", "module", "product", "--module-version", "v2"], verApp);
-  const mainGo = readFileSync(path.join(verApp, "cmd", "api", "main.go"), "utf8");
-  if (!mainGo.includes('v1 := r.Group("/v1")') || !mainGo.includes('v2 := r.Group("/v2")')) {
-    throw new Error("expected both v1 and v2 route groups declared");
-  }
-  if (!mainGo.includes("productv1.NewHandler") || !mainGo.includes("productv2.NewHandler")) {
-    throw new Error("expected version-qualified import aliases (productv1/productv2) to avoid a redeclare");
-  }
-  run("go", ["build", "./..."], verApp);
-  run("go", ["vet", "./..."], verApp);
-  const openapi = readFileSync(path.join(verApp, "docs", "openapi.yaml"), "utf8");
-  if (!openapi.includes("/v1/products:") || !openapi.includes("/v2/products:")) {
-    throw new Error("expected both /v1/products and /v2/products in openapi.yaml");
-  }
-  if (!openapi.includes("ProductV1Response") || !openapi.includes("ProductV2Response")) {
-    throw new Error("expected version-qualified schema keys to avoid a duplicate YAML key");
-  }
-  const migrations = readdirSync(path.join(verApp, "migrations")).filter((f) => f.includes("create_products"));
-  if (migrations.length !== 2) throw new Error(`expected the migration to stay shared (2 files), got ${migrations.length}`);
-});
-
-step("removing one version of a shared module keeps the other intact", () => {
-  goScaffold(["remove", "module", "product", "--module-version", "v1", "--yes"], verApp);
-  const mainGo = readFileSync(path.join(verApp, "cmd", "api", "main.go"), "utf8");
-  if (mainGo.includes('v1 := r.Group("/v1")')) throw new Error("v1 group should be gone (no modules left using it)");
-  if (!mainGo.includes("productv2.NewHandler")) throw new Error("v2/product should still be wired");
-  if (existsSync(path.join(verApp, "internal", "app", "v1", "product"))) throw new Error("v1/product should be deleted");
-  if (!existsSync(path.join(verApp, "internal", "app", "v2", "product"))) throw new Error("v2/product should survive");
-  const migrations = readdirSync(path.join(verApp, "migrations")).filter((f) => f.includes("create_products"));
-  if (migrations.length !== 2) throw new Error("migration should be kept — v2/product still uses it");
-  run("go", ["build", "./..."], verApp);
-  run("go", ["vet", "./..."], verApp);
+step("create --api-prefix '' scaffolds routes with no prefix at all", () => {
+  goScaffold(["create", "noprefix-app", "--defaults", "--api-prefix", ""], scratch);
+  const app = path.join(scratch, "noprefix-app");
+  run("go", ["mod", "tidy"], app);
+  goScaffold(["generate", "module", "widget"], app);
+  const mainGo = readFileSync(path.join(app, "cmd", "api", "main.go"), "utf8");
+  if (!mainGo.includes('api := r.Group("/")')) throw new Error('expected api := r.Group("/") in main.go');
+  const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
+  if (!openapi.includes("/widgets:")) throw new Error("expected /widgets (no prefix) in openapi.yaml");
+  if (openapi.includes("/v1/widgets:")) throw new Error("should not have a /v1 prefix");
+  run("go", ["build", "./..."], app);
+  run("go", ["vet", "./..."], app);
 });
 
 step("create --no-full minimal module layers up to full build", () => {
