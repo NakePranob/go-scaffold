@@ -1,0 +1,65 @@
+package {{pkg}}
+
+import (
+	"bytes"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"testing"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+	"{{goModule}}/internal/shared/middleware"
+
+	"gorm.io/gorm"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/driver/postgres"
+)
+
+// integration test harness, backed by real Postgres (same engine as prod, no sqlite) — skips if
+// the DB isn't reachable. minimal module: no routes yet, so no tests reference this yet — kept
+// ready for once `generate method` adds endpoints (start the DB: docker compose up -d, override
+// with TEST_DB_DSN)
+var (
+	testDBOnce sync.Once
+	testDB     *gorm.DB
+	testDBErr  error
+)
+
+func dbForTest(t *testing.T) *gorm.DB {
+	t.Helper()
+	testDBOnce.Do(func() {
+		dsn := os.Getenv("TEST_DB_DSN")
+		if dsn == "" {
+			dsn = "postgres://postgres:postgres@localhost:5432/{{dbName}}?sslmode=disable"
+		}
+		if testDB, testDBErr = gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true}); testDBErr == nil {
+			_ = testDB.Migrator().DropTable(&model.{{pascalName}}{})
+			testDBErr = testDB.AutoMigrate(&model.{{pascalName}}{})
+		}
+	})
+	if testDBErr != nil {
+		t.Skipf("postgres not ready (docker compose up -d, or set TEST_DB_DSN): %v", testDBErr)
+	}
+	return testDB
+}
+
+// setup builds the full stack on a transaction that's rolled back at the end → each test is isolated, no leftover rows
+func setup(t *testing.T) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	tx := dbForTest(t).Begin()
+	t.Cleanup(func() { tx.Rollback() })
+	r := gin.New()
+	r.Use(middleware.RequestID(), middleware.Error())
+	NewHandler(NewService(NewRepository(tx))).Register(r)
+	return r
+}
+
+func do(r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}

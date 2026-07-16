@@ -1,0 +1,42 @@
+package {{pkg}}
+
+import (
+	"context"
+	"errors"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// repository = what the service needs from the data layer (declared on the consumer side, so it can be mocked in tests)
+// minimal module: no CRUD wired yet, but the full data-access surface is here so `generate method` has something to call
+type repository interface {
+	Create(ctx context.Context, m *model.{{pascalName}}) error
+	FindAll(ctx context.Context, limit, offset int) ([]model.{{pascalName}}, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error)
+	Update(ctx context.Context, m *model.{{pascalName}}) error
+	Delete(ctx context.Context, id uuid.UUID) error
+	// go-scaffold:repository-interface
+}
+
+// Service = business logic for {{pkg}} (rules live here, it knows nothing about HTTP)
+// minimal module: add methods with `go-scaffold generate method {{pkg}} <name> --type ...`
+type Service struct {
+	repo repository
+}
+
+func NewService(repo repository) *Service {
+	return &Service{repo: repo}
+}
+
+func wrapFindErr(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errNotFound()
+	}
+	return apperror.NewInternal()
+}
+
+// go-scaffold:service-methods

@@ -1,0 +1,103 @@
+package {{pkg}}
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/shared/httpx"
+	"{{goModule}}/internal/shared/pagination"
+
+	"github.com/gin-gonic/gin"
+)
+
+// Handler = delivery for {{pkg}} (parses HTTP, calls the service, attaches errors for the middleware to render)
+type Handler struct {
+	svc *Service
+}
+
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+// Register wires {{pkg}}'s routes onto the router group (takes an IRouter so it can be nested under /v1)
+func (h *Handler) Register(rg gin.IRouter) {
+	g := rg.Group("/{{plural}}")
+	g.POST("", h.create)
+	g.GET("", h.list)
+	g.GET("/:id", h.get)
+	g.PUT("/:id", h.update)
+	g.DELETE("/:id", h.delete)
+	// go-scaffold:handler-routes
+}
+
+func (h *Handler) create(c *gin.Context) {
+	var in createInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	m, err := h.svc.Create(c.Request.Context())
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusCreated, toResponse(m))
+}
+
+func (h *Handler) list(c *gin.Context) {
+	p := pagination.Parse(c)
+	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	out := make([]response, len(items))
+	for i := range items {
+		out[i] = toResponse(&items[i])
+	}
+	c.JSON(http.StatusOK, p.Response(out))
+}
+
+func (h *Handler) get(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	m, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, toResponse(m))
+}
+
+func (h *Handler) update(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	var in updateInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	m, err := h.svc.Update(c.Request.Context(), id)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, toResponse(m))
+}
+
+func (h *Handler) delete(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// go-scaffold:handler-funcs

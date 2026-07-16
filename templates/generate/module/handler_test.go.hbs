@@ -1,0 +1,105 @@
+package {{pkg}}
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"testing"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+	"{{goModule}}/internal/shared/middleware"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+// integration test backed by real Postgres (same engine as prod, no sqlite) — skips if the DB isn't reachable
+// start the DB: docker compose up -d  (override with TEST_DB_DSN)
+var (
+	testDBOnce sync.Once
+	testDB     *gorm.DB
+	testDBErr  error
+)
+
+func dbForTest(t *testing.T) *gorm.DB {
+	t.Helper()
+	testDBOnce.Do(func() {
+		dsn := os.Getenv("TEST_DB_DSN")
+		if dsn == "" {
+			dsn = "postgres://postgres:postgres@localhost:5432/{{dbName}}?sslmode=disable"
+		}
+		if testDB, testDBErr = gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true}); testDBErr == nil {
+			// drop first — AutoMigrate can't change an existing column's type, always start from a fresh schema
+			_ = testDB.Migrator().DropTable(&model.{{pascalName}}{})
+			testDBErr = testDB.AutoMigrate(&model.{{pascalName}}{})
+		}
+	})
+	if testDBErr != nil {
+		t.Skipf("postgres not ready (docker compose up -d, or set TEST_DB_DSN): %v", testDBErr)
+	}
+	return testDB
+}
+
+// setup builds the full stack on a transaction that's rolled back at the end → each test is isolated, no leftover rows
+func setup(t *testing.T) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	tx := dbForTest(t).Begin()
+	t.Cleanup(func() { tx.Rollback() })
+	r := gin.New()
+	r.Use(middleware.RequestID(), middleware.Error())
+	NewHandler(NewService(NewRepository(tx))).Register(r)
+	return r
+}
+
+func do(r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestHandler_Create_OK(t *testing.T) {
+	r := setup(t)
+	w := do(r, http.MethodPost, "/{{plural}}", `{}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", w.Code, w.Body)
+	}
+}
+
+func TestHandler_Get_NotFound(t *testing.T) {
+	r := setup(t)
+	w := do(r, http.MethodGet, "/{{plural}}/"+uuid.NewString(), "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d body=%s", w.Code, w.Body)
+	}
+}
+
+func TestHandler_Get_InvalidID(t *testing.T) {
+	r := setup(t)
+	w := do(r, http.MethodGet, "/{{plural}}/not-a-uuid", "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d body=%s", w.Code, w.Body)
+	}
+}
+
+func TestHandler_Delete_OK(t *testing.T) {
+	r := setup(t)
+	created := do(r, http.MethodPost, "/{{plural}}", `{}`)
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	w := do(r, http.MethodDelete, "/{{plural}}/"+body.ID, "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d body=%s", w.Code, w.Body)
+	}
+}

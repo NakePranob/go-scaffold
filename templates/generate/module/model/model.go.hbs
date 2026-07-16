@@ -1,0 +1,20 @@
+// Package model holds this domain's GORM tables — a folder (not a single
+// file) so a domain with more than one table can add a file per table
+// without cluttering the domain package's top level.
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// {{pascalName}} = domain model + GORM table
+// TODO: add your real fields here.
+// ID = UUID v7 generated app-side (service.Create via id.New) instead of a DB
+// default, so the app has the id before insert without needing gen_random_uuid.
+type {{pascalName}} struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primaryKey"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

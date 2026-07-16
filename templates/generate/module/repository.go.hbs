@@ -1,0 +1,49 @@
+package {{pkg}}
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// Repository = data access for {{pkg}} (the only place that touches the DB for this domain)
+// every method takes ctx, so a cancelled request cancels the query too
+type Repository struct {
+	db *gorm.DB
+}
+
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{db: db}
+}
+
+func (r *Repository) Create(ctx context.Context, m *model.{{pascalName}}) error {
+	return r.db.WithContext(ctx).Create(m).Error
+}
+
+func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]model.{{pascalName}}, error) {
+	var items []model.{{pascalName}}
+	err := r.db.WithContext(ctx).Order("id desc").Limit(limit).Offset(offset).Find(&items).Error
+	return items, err
+}
+
+func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error) {
+	var m model.{{pascalName}}
+	// "id = ?" explicit — PK is a UUID, not an int, this avoids GORM misinterpreting the arg
+	if err := r.db.WithContext(ctx).First(&m, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (r *Repository) Update(ctx context.Context, m *model.{{pascalName}}) error {
+	return r.db.WithContext(ctx).Save(m).Error
+}
+
+func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
+	return r.db.WithContext(ctx).Delete(&model.{{pascalName}}{}, "id = ?", id).Error
+}
+
+// go-scaffold:repository-methods

@@ -1,0 +1,97 @@
+package {{pkg}}
+
+import (
+	"context"
+	"errors"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/dberr"
+	"{{goModule}}/internal/shared/id"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// repository = what the service needs from the data layer (declared on the consumer side, so it can be mocked in tests)
+type repository interface {
+	Create(ctx context.Context, m *model.{{pascalName}}) error
+	FindAll(ctx context.Context, limit, offset int) ([]model.{{pascalName}}, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error)
+	Update(ctx context.Context, m *model.{{pascalName}}) error
+	Delete(ctx context.Context, id uuid.UUID) error
+	// go-scaffold:repository-interface
+}
+
+// Service = business logic for {{pkg}} (rules live here, it knows nothing about HTTP)
+// input shape validation happens in the handler (binding tags)
+type Service struct {
+	repo repository
+}
+
+func NewService(repo repository) *Service {
+	return &Service{repo: repo}
+}
+
+func (s *Service) Create(ctx context.Context) (*model.{{pascalName}}, error) {
+	// TODO: accept and set real fields from createInput
+	m := &model.{{pascalName}}{ID: id.New()}
+	if err := s.repo.Create(ctx, m); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errConflict()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return m, nil
+}
+
+func (s *Service) List(ctx context.Context, limit, offset int) ([]model.{{pascalName}}, error) {
+	items, err := s.repo.FindAll(ctx, limit, offset)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return items, nil
+}
+
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error) {
+	m, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	return m, nil
+}
+
+func (s *Service) Update(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error) {
+	m, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	// TODO: apply real fields from updateInput before saving
+	if err := s.repo.Update(ctx, m); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errConflict()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return m, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		// deleting a {{pkg}} that's still referenced elsewhere → FK RESTRICT trips = 409, not 500
+		if dberr.IsForeignKey(err) {
+			return errHasReferences()
+		}
+		return apperror.NewInternal()
+	}
+	return nil
+}
+
+func wrapFindErr(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errNotFound()
+	}
+	return apperror.NewInternal()
+}
+
+// go-scaffold:service-methods

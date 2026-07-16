@@ -1,0 +1,29 @@
+package {{pkg}}
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+
+	"github.com/google/uuid"
+)
+
+// TODO: add request fields, e.g. Name string `json:"name" binding:"required"`
+type createInput struct {
+}
+
+// TODO: add request fields, e.g. Name string `json:"name" binding:"omitempty"`
+type updateInput struct {
+}
+
+// response = the DTO sent out (kept separate from the model so a later DB column doesn't leak automatically)
+type response struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func toResponse(m *model.{{pascalName}}) response {
+	return response{ID: m.ID, CreatedAt: m.CreatedAt}
+}
+
+// go-scaffold:dto

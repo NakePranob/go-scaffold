@@ -1,0 +1,37 @@
+parameters:
+  - $ref: '../common/parameters.yaml#/IdParam'
+get:
+  summary: Get {{pkg}}
+  operationId: get{{pascalName}}
+  tags: [{{plural}}]
+  responses:
+    "200":
+      description: ok
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/{{pascalName}}Response' }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
+put:
+  summary: Update {{pkg}}
+  operationId: update{{pascalName}}
+  tags: [{{plural}}]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/{{pascalName}}UpdateInput' }
+  responses:
+    "200":
+      description: updated
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/{{pascalName}}Response' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
+delete:
+  summary: Delete {{pkg}}
+  operationId: delete{{pascalName}}
+  tags: [{{plural}}]
+  responses:
+    "204": { description: deleted }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }

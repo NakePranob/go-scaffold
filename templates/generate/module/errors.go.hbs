@@ -1,0 +1,23 @@
+package {{pkg}}
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/shared/apperror"
+)
+
+// error catalog specific to {{pkg}} — codes carry more meaning than the generic apperror ones
+// functions, not vars: the error middleware writes RequestID onto the returned pointer directly
+// (a shared instance would race across concurrent requests)
+func errNotFound() *apperror.AppError {
+	return apperror.New(http.StatusNotFound, "{{errorPrefix}}_NOT_FOUND", "{{pkg}} not found")
+}
+
+func errConflict() *apperror.AppError {
+	// TODO: rename/reword once a real unique field exists (e.g. email already exists)
+	return apperror.New(http.StatusConflict, "{{errorPrefix}}_CONFLICT", "{{pkg}} already exists")
+}
+
+func errHasReferences() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "{{errorPrefix}}_HAS_REFERENCES", "{{pkg}} still has related records")
+}

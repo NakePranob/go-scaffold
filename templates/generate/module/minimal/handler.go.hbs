@@ -1,0 +1,24 @@
+package {{pkg}}
+
+import (
+	"github.com/gin-gonic/gin"
+)
+
+// Handler = delivery for {{pkg}} (parses HTTP, calls the service, attaches errors for the middleware to render)
+type Handler struct {
+	svc *Service
+}
+
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+// Register wires {{pkg}}'s routes onto the router group (takes an IRouter so it can be nested under /v1)
+// minimal module: no routes yet — add them with `go-scaffold generate method {{pkg}} <name> --type ...`
+func (h *Handler) Register(rg gin.IRouter) {
+	g := rg.Group("/{{plural}}")
+	_ = g
+	// go-scaffold:handler-routes
+}
+
+// go-scaffold:handler-funcs

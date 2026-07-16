@@ -1,0 +1,43 @@
+package {{pkg}}
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/google/uuid"
+)
+
+// fakeRepo = mock of the repository interface, so the service can be tested without a DB
+// minimal module: no service methods yet, so no tests reference this — kept ready for
+// when `generate method` adds one (its patches append matching stubs here automatically
+// for a `get --get-mode one --field` lookup)
+type fakeRepo struct {
+	err error
+	m   *model.{{pascalName}}
+}
+
+func (f *fakeRepo) Create(context.Context, *model.{{pascalName}}) error                    { return f.err }
+func (f *fakeRepo) FindAll(context.Context, int, int) ([]model.{{pascalName}}, error) { return nil, f.err }
+func (f *fakeRepo) FindByID(context.Context, uuid.UUID) (*model.{{pascalName}}, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.m, nil
+}
+func (f *fakeRepo) Update(context.Context, *model.{{pascalName}}) error { return f.err }
+func (f *fakeRepo) Delete(context.Context, uuid.UUID) error             { return f.err }
+
+// go-scaffold:fake-repo-methods
+
+func status(t *testing.T, err error) int {
+	t.Helper()
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *apperror.AppError, got %T: %v", err, err)
+	}
+	return appErr.HTTPStatus
+}

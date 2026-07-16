@@ -1,0 +1,65 @@
+package {{pkg}}
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"{{goModule}}/internal/app/{{modulePath}}/model"
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// fakeRepo = mock of the repository interface, so the service can be tested without a DB
+type fakeRepo struct {
+	err error
+	m   *model.{{pascalName}}
+}
+
+func (f *fakeRepo) Create(context.Context, *model.{{pascalName}}) error                    { return f.err }
+func (f *fakeRepo) FindAll(context.Context, int, int) ([]model.{{pascalName}}, error) { return nil, f.err }
+func (f *fakeRepo) FindByID(context.Context, uuid.UUID) (*model.{{pascalName}}, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.m, nil
+}
+func (f *fakeRepo) Update(context.Context, *model.{{pascalName}}) error { return f.err }
+func (f *fakeRepo) Delete(context.Context, uuid.UUID) error             { return f.err }
+
+// go-scaffold:fake-repo-methods
+
+func status(t *testing.T, err error) int {
+	t.Helper()
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *apperror.AppError, got %T: %v", err, err)
+	}
+	return appErr.HTTPStatus
+}
+
+func TestService_Create_Duplicate(t *testing.T) {
+	svc := NewService(&fakeRepo{err: gorm.ErrDuplicatedKey})
+	_, err := svc.Create(context.Background())
+	if got := status(t, err); got != 409 {
+		t.Fatalf("want 409 conflict, got %d", got)
+	}
+}
+
+func TestService_Get_NotFound(t *testing.T) {
+	svc := NewService(&fakeRepo{err: gorm.ErrRecordNotFound})
+	_, err := svc.Get(context.Background(), uuid.New())
+	if got := status(t, err); got != 404 {
+		t.Fatalf("want 404, got %d", got)
+	}
+}
+
+func TestService_List_DBError_Becomes500(t *testing.T) {
+	svc := NewService(&fakeRepo{err: errors.New("connection refused")})
+	_, err := svc.List(context.Background(), 20, 0)
+	if got := status(t, err); got != 500 {
+		t.Fatalf("want 500, got %d", got)
+	}
+}

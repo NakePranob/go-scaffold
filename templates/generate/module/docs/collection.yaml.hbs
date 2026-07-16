@@ -1,0 +1,36 @@
+post:
+  summary: Create {{pkg}}
+  operationId: create{{pascalName}}
+  tags: [{{plural}}]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/{{pascalName}}CreateInput' }
+  responses:
+    "201":
+      description: created
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/{{pascalName}}Response' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+get:
+  summary: List {{plural}}
+  operationId: list{{pascalName}}
+  tags: [{{plural}}]
+  parameters:
+    - $ref: '../common/parameters.yaml#/Limit'
+    - $ref: '../common/parameters.yaml#/Offset'
+  responses:
+    "200":
+      description: paginated list
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../common/schemas.yaml#/PageEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: './schemas.yaml#/{{pascalName}}Response' }
