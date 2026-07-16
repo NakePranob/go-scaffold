@@ -57,9 +57,19 @@ from it.
 
 ### `generate module <name>`
 
-What you get: `internal/app/<name>/{model/,dto,errors,repository,service,handler,service_test,handler_test}.go`,
+What you get: `internal/app/{{#if versioning}}<version>/{{/if}}<name>/{model/,dto,errors,repository,service,handler,service_test,handler_test}.go`,
 a route registered under `/v1` in `cmd/api/main.go`, the model added to the
 `AutoMigrate` call, and a new file in `migrations/`.
+{{#if versioning}}
+
+This project has versioning enabled: `--module-version v2` targets a
+specific version folder (default `v1`; the CLI asks if more than one version
+already exists and none was given). **The same module name can live in more
+than one version at once** — `v1/orders` and `v2/orders` coexisting is normal,
+not a collision; each version routes independently (`/v1/orders`,
+`/v2/orders`) via its own import alias. Their migration is shared (same
+table) until `remove module` deletes it once no version still uses it.
+{{/if}}
 
 ### `generate method <module> <name>`
 

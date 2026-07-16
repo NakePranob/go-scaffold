@@ -35,7 +35,7 @@ actually does.
 ## 3. API Style
 
 **Decision:** REST over Gin, one handler package per domain, routes grouped
-under `/v1`.
+under {{#if versioning}}`/v1`, `/v2`, etc. — one group per version folder in use{{else}}`/v1`{{/if}}.
 **Rationale:** `handler → service → repository`, one direction, all three
 layers in the same package — no cross-domain imports.
 
@@ -54,15 +54,27 @@ call site, no error-shape drift between domains.
 ## 5. Module Versioning
 
 {{#if versioning}}
-**Decision:** Folder-based domain versioning is enabled.
-**Rationale:** `internal/app/v1/<domain>`, `v2/<domain>`, etc. —
-`go-scaffold generate module <name> --module-version v2` targets a specific
-folder.
+**Decision:** Folder-based domain versioning is enabled — routes are real
+per-version, not just folder layout.
+**Rationale:** `internal/app/v1/<domain>`, `v2/<domain>`, etc., each gets its
+own `r.Group("/v1")` / `r.Group("/v2")` and a version-qualified import alias
+(`<domain>v1`, `<domain>v2`) in `cmd/api/main.go`. That means **the same
+domain name can live in more than one version at once** —
+`v1/orders` and `v2/orders` coexisting with different behavior is the actual
+point of versioning, not a naming collision. `go-scaffold generate module
+<name> --module-version v2` targets a specific folder; omit the flag and the
+CLI asks which version (or lets you create a new one) once more than one
+exists. A migration is shared between versions of the same domain (same
+table, different API shape) until no version references it anymore.
 {{else}}
 **Decision:** No folder-based versioning — domains live directly under
-`internal/app/<domain>`.
+`internal/app/<domain>`, routes under `/v1`.
 **Rationale:** Simplest layout until an actual breaking API version is
-needed; enable versioning in `go-scaffold.config.json` when that happens.
+needed. This is a `create`-time choice — toggling `versioning` in
+`go-scaffold.config.json` by hand doesn't move existing domains into a
+version folder, it just makes the *next* `generate module` create one while
+old domains stay put. Re-scaffold (or move domains by hand) instead of
+flipping the flag on an existing project.
 {{/if}}
 
 ## 6. Pagination

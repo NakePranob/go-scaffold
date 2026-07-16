@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs-extra";
 import { ProjectConfig } from "../types";
+import { listVersionFolders } from "./module-paths";
 
 const CONFIG_FILE = "go-scaffold.config.json";
 
@@ -39,7 +40,9 @@ function detectConfig(projectDir: string): ProjectConfig {
     features: {
       docker: fs.existsSync(path.join(projectDir, "docker-compose.yml")),
       openapiDocs: fs.existsSync(path.join(projectDir, "docs", "openapi.yaml")),
-      versioning: fs.existsSync(path.join(projectDir, "internal", "app", "v1")),
+      // any v<n> folder counts — a project that's moved everything to v2 and
+      // beyond should still be detected as versioned, not just "has a v1"
+      versioning: listVersionFolders(projectDir).length > 0,
     },
   };
 }
