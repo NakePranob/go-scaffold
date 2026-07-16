@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+// End-to-end smoke test for the go-scaffold CLI: exercises create + generate
+// module (full and minimal) + generate method against a real Go toolchain in
+// a scratch directory, and checks the guard rails (bad names, duplicates,
+// forbidden flags) actually reject. No Postgres required — integration
+// tests inside the generated project skip gracefully if the DB isn't up,
+// the same behavior the CLI itself scaffolds for every project.
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const CLI = path.join(ROOT, "bin", "go-scaffold.js");
+
+let passed = 0;
+let scratch;
+
+function step(name, fn) {
+  process.stdout.write(`- ${name} ... `);
+  try {
+    fn();
+    console.log("ok");
+    passed++;
+  } catch (err) {
+    console.log("FAILED");
+    console.error(err.stdout?.toString() ?? err.stderr?.toString() ?? err.message);
+    cleanup();
+    process.exit(1);
+  }
+}
+
+function run(cmd, args, cwd, env) {
+  return execFileSync(cmd, args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: env ? { ...process.env, ...env } : process.env,
+  });
+}
+
+function goScaffold(args, cwd) {
+  return run("node", [CLI, ...args], cwd);
+}
+
+function expectThrows(fn, messageFragment) {
+  try {
+    fn();
+  } catch (err) {
+    const msg = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "") + err.message;
+    if (!msg.includes(messageFragment)) {
+      throw new Error(`expected error containing "${messageFragment}", got: ${msg}`);
+    }
+    return;
+  }
+  throw new Error(`expected an error containing "${messageFragment}", but it succeeded`);
+}
+
+function assertFileContains(filePath, needle) {
+  if (!existsSync(filePath)) throw new Error(`missing file: ${filePath}`);
+  const content = readFileSync(filePath, "utf8");
+  if (!content.includes(needle)) throw new Error(`${filePath} doesn't contain "${needle}"`);
+}
+
+function cleanup() {
+  if (scratch && existsSync(scratch)) rmSync(scratch, { recursive: true, force: true });
+}
+
+if (!existsSync(path.join(ROOT, "dist", "index.js"))) {
+  console.error("dist/index.js missing — run `pnpm run build` first");
+  process.exit(1);
+}
+try {
+  run("go", ["version"]);
+} catch {
+  console.error("no Go toolchain on PATH — required for the smoke test");
+  process.exit(1);
+}
+
+scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-smoke-"));
+console.log(`scratch dir: ${scratch}\n`);
+
+step("rejects an invalid project name before writing anything", () => {
+  expectThrows(() => goScaffold(["create", "My Cool App", "--defaults"], scratch), "invalid project name");
+});
+
+step("create --defaults scaffolds a bare project", () => {
+  goScaffold(["create", "full-app", "--defaults"], scratch);
+  assertFileContains(path.join(scratch, "full-app", "go.mod"), "module full-app");
+});
+
+const fullApp = path.join(scratch, "full-app");
+step("bare project: go mod tidy + build + vet", () => {
+  run("go", ["mod", "tidy"], fullApp);
+  run("go", ["build", "./..."], fullApp);
+  run("go", ["vet", "./..."], fullApp);
+});
+
+let hasPsql = true;
+try {
+  run("psql", ["--version"]);
+} catch {
+  hasPsql = false;
+}
+
+step(
+  hasPsql ? "make db-create is idempotent and actually creates the DB" : "make db-create parses (psql not on PATH, skipping a real run)",
+  () => {
+    if (!hasPsql) {
+      run("make", ["-n", "db-create"], fullApp); // dry run: catches Makefile/shell syntax errors
+      return;
+    }
+    run("make", ["db-drop"], fullApp); // start from a clean slate in case a prior run left it
+    run("make", ["db-create"], fullApp);
+    run("make", ["db-create"], fullApp); // must not error the second time
+    const list = run("psql", ["-h", "localhost", "-U", "postgres", "-lqt"], undefined, { PGPASSWORD: "postgres" });
+    if (!list.includes("full_app")) throw new Error(`expected database "full_app" to exist, got:\n${list}`);
+    run("make", ["db-drop"], fullApp);
+  }
+);
+
+step("generate module order (full CRUD)", () => {
+  goScaffold(["generate", "module", "order"], fullApp);
+});
+
+step("full module: docs wired into openapi.yaml", () => {
+  assertFileContains(path.join(fullApp, "docs", "openapi.yaml"), "/v1/orders:");
+  assertFileContains(path.join(fullApp, "docs", "openapi.yaml"), "OrderResponse");
+});
+
+step("full module: build + vet + gofmt clean", () => {
+  run("go", ["build", "./..."], fullApp);
+  run("go", ["vet", "./..."], fullApp);
+  const dirty = run("gofmt", ["-l", "."], fullApp).trim();
+  if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
+});
+
+step("full module: go test ./... (integration tests skip without a DB)", () => {
+  run("go", ["test", "./..."], fullApp);
+});
+
+for (const [name, args] of Object.entries({
+  "patch (resource action)": ["approve", "--type", "patch"],
+  "get --get-mode all": ["findActive", "--type", "get", "--get-mode", "all"],
+  "get --get-mode one --field": ["findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"],
+  post: ["archive", "--type", "post"],
+  delete: ["removeAttachment", "--type", "delete"],
+})) {
+  step(`generate method order: ${name}`, () => {
+    goScaffold(["generate", "method", "order", ...args], fullApp);
+  });
+}
+
+step("after 5 generate method calls: build + vet + gofmt + test", () => {
+  run("go", ["build", "./..."], fullApp);
+  run("go", ["vet", "./..."], fullApp);
+  const dirty = run("gofmt", ["-l", "."], fullApp).trim();
+  if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
+  run("go", ["test", "./..."], fullApp);
+});
+
+step("generate method rejects a duplicate method name", () => {
+  expectThrows(() => goScaffold(["generate", "method", "order", "approve", "--type", "patch"], fullApp), "already exists");
+});
+
+step("generate method rejects --field id", () => {
+  expectThrows(
+    () => goScaffold(["generate", "method", "order", "findById", "--type", "get", "--get-mode", "one", "--field", "id"], fullApp),
+    'cannot be "id"'
+  );
+});
+
+step("generate module rejects a name that already exists", () => {
+  expectThrows(() => goScaffold(["generate", "module", "order"], fullApp), "already exists");
+});
+
+step("create --versioning scaffolds a versioned project", () => {
+  goScaffold(["create", "ver-app", "--defaults", "--versioning"], scratch);
+});
+
+const verApp = path.join(scratch, "ver-app");
+step("versioned project: generate module + method, then build", () => {
+  run("go", ["mod", "tidy"], verApp);
+  goScaffold(["generate", "module", "product"], verApp);
+  goScaffold(["generate", "method", "product", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"], verApp);
+  if (!existsSync(path.join(verApp, "internal", "app", "v1", "product"))) {
+    throw new Error("expected internal/app/v1/product to exist");
+  }
+  run("go", ["build", "./..."], verApp);
+  run("go", ["vet", "./..."], verApp);
+});
+
+step("create --no-full minimal module layers up to full build", () => {
+  goScaffold(["create", "min-app", "--defaults"], scratch);
+  const minApp = path.join(scratch, "min-app");
+  run("go", ["mod", "tidy"], minApp);
+  goScaffold(["generate", "module", "widget", "--no-full"], minApp);
+  run("go", ["build", "./..."], minApp);
+  goScaffold(["generate", "method", "widget", "create", "--type", "post"], minApp);
+  goScaffold(["generate", "method", "widget", "list", "--type", "get", "--get-mode", "all"], minApp);
+  run("go", ["build", "./..."], minApp);
+  run("go", ["vet", "./..."], minApp);
+  const dirty = run("gofmt", ["-l", "."], minApp).trim();
+  if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
+});
+
+cleanup();
+console.log(`\n${passed} checks passed.`);
