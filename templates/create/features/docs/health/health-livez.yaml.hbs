@@ -1,0 +1,13 @@
+get:
+  summary: Liveness probe
+  operationId: getLivez
+  tags: [health]
+  responses:
+    "200":
+      description: process is running
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, example: ok }

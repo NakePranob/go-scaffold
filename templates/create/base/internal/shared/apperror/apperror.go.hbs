@@ -1,0 +1,36 @@
+package apperror
+
+import "net/http"
+
+// AppError is an error that knows both its HTTP status and its payload.
+// Lower layers (service/repo) can return one without importing net/http themselves.
+type AppError struct {
+	HTTPStatus int    `json:"-"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	Details    any    `json:"details,omitempty"`
+	RequestID  string `json:"request_id,omitempty"` // filled in by the error middleware
+}
+
+func (e *AppError) Error() string { return e.Message }
+
+func New(status int, code, msg string) *AppError {
+	return &AppError{HTTPStatus: status, Code: code, Message: msg}
+}
+
+func NewValidation(msg string, details any) *AppError {
+	return &AppError{HTTPStatus: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: msg, Details: details}
+}
+
+func NewNotFound(msg string) *AppError {
+	return &AppError{HTTPStatus: http.StatusNotFound, Code: "NOT_FOUND", Message: msg}
+}
+
+func NewConflict(msg string) *AppError {
+	return &AppError{HTTPStatus: http.StatusConflict, Code: "CONFLICT", Message: msg}
+}
+
+func NewInternal() *AppError {
+	// ponytail: never leak internal details to the client, log separately in middleware
+	return &AppError{HTTPStatus: http.StatusInternalServerError, Code: "INTERNAL", Message: "internal server error"}
+}

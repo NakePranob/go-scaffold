@@ -1,0 +1,33 @@
+# ponytail: hand-written, not generated from annotations — cheap while the
+# endpoint count is low. Ceiling: must be updated by hand whenever an
+# endpoint/DTO changes beyond what `generate module` scaffolds.
+# Switch to swaggo (comment-generated) if drift becomes a recurring problem.
+# multi-file: split by domain module (health/<domain>) + common/ for shared
+# pieces — this file is just the index. `generate module <name>`
+# adds its paths/schemas here automatically; `generate method` does not
+# (endpoint-specific docs stay hand-written).
+openapi: 3.0.3
+info:
+  title: {{projectName}} API
+  version: "1.0.0"
+  description: Every resource uses UUID v7 as its id; list endpoints return the {data, limit, offset} envelope.
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /livez:
+    $ref: './health/health-livez.yaml'
+  /readyz:
+    $ref: './health/health-readyz.yaml'
+  # go-scaffold:paths
+
+components:
+  schemas:
+    PageEnvelope: { $ref: './common/schemas.yaml#/PageEnvelope' }
+    Error: { $ref: './common/schemas.yaml#/Error' }
+    # go-scaffold:schemas
+  responses:
+    ValidationError: { $ref: './common/responses.yaml#/ValidationError' }
+    NotFoundError: { $ref: './common/responses.yaml#/NotFoundError' }
+    ConflictError: { $ref: './common/responses.yaml#/ConflictError' }
+    UnprocessableEntityError: { $ref: './common/responses.yaml#/UnprocessableEntityError' }

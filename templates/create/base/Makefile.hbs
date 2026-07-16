@@ -1,0 +1,77 @@
+DB_HOST ?= localhost
+DB_PORT ?= 5432
+DB_USER ?= postgres
+DB_NAME ?= {{dbName}}
+PGPASSWORD ?= postgres
+
+.PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down{{#if docker}} docker-up docker-down{{/if}}
+
+run:
+	go run ./cmd/api
+
+build:
+	go build -o bin/api ./cmd/api
+
+test:
+	go test ./...
+
+fmt:
+	gofmt -w .
+
+vet:
+	go vet ./...
+
+lint:
+	golangci-lint run
+
+tidy:
+	go mod tidy
+
+# creates the database itself (not the schema — AUTO_MIGRATE or migrate-up does that).
+# connects to the always-present "postgres" maintenance DB to run CREATE DATABASE,
+# since the target DB may not exist yet. Safe to re-run — skips if it already exists.
+# \gexec only works read from stdin, not through -c, hence the pipe.
+# falls back to `docker compose exec` if the psql client isn't installed locally.
+# override DB_HOST/DB_PORT/DB_USER/DB_NAME/PGPASSWORD to point at a different server.
+db-create:
+	@if command -v psql >/dev/null 2>&1; then \
+		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
+			PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres; \
+	{{#if docker}}
+	else \
+		echo "no local psql — using docker compose exec instead"; \
+		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
+			docker compose exec -T postgres psql -U $(DB_USER) -d postgres; \
+	{{else}}
+	else \
+		echo "psql not found — install the PostgreSQL client (e.g. brew install libpq && brew link --force libpq) or point DB_HOST/DB_PORT/DB_USER at a server reachable another way" >&2; \
+		exit 1; \
+	{{/if}}
+	fi
+
+db-drop:
+	@if command -v psql >/dev/null 2>&1; then \
+		PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
+	{{#if docker}}
+	else \
+		docker compose exec -T postgres psql -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);"; \
+	{{else}}
+	else \
+		echo "psql not found — install the PostgreSQL client (e.g. brew install libpq && brew link --force libpq) or point DB_HOST/DB_PORT/DB_USER at a server reachable another way" >&2; \
+		exit 1; \
+	{{/if}}
+	fi
+
+migrate-up:
+	migrate -path migrations -database "$$DB_DSN" up
+
+migrate-down:
+	migrate -path migrations -database "$$DB_DSN" down 1
+{{#if docker}}
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+{{/if}}

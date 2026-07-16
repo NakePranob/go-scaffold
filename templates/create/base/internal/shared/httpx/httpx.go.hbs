@@ -1,0 +1,37 @@
+package httpx
+
+import (
+	"errors"
+	"strings"
+
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
+)
+
+// ParseID reads the ":id" route param as a UUID — shared by every domain
+// whose resource is identified by id.
+func ParseID(c *gin.Context) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.Error(apperror.NewValidation("invalid id", nil))
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// BindErr converts a validator error into a validation payload with a field
+// map (shared by every domain).
+func BindErr(err error) *apperror.AppError {
+	var ve validator.ValidationErrors
+	if errors.As(err, &ve) {
+		details := make(map[string]string, len(ve))
+		for _, fe := range ve {
+			details[strings.ToLower(fe.Field())] = fe.Tag()
+		}
+		return apperror.NewValidation("invalid input", details)
+	}
+	return apperror.NewValidation("invalid json body", nil)
+}

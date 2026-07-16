@@ -1,0 +1,113 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"{{goModule}}/internal/platform/database"
+	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/internal/shared/middleware"
+	// go-scaffold:imports
+
+	"github.com/gin-gonic/gin"
+)
+
+func main() {
+	cfg := config.Load()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
+	slog.SetDefault(logger)
+
+	db, err := database.Open(cfg)
+	if err != nil {
+		logger.Error("open db", "error", err)
+		os.Exit(1)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		logger.Error("db handle", "error", err)
+		os.Exit(1)
+	}
+
+	if cfg.AutoMigrate {
+		// ponytail: AutoMigrate is for dev only (add-only, locks the table once data grows)
+		// prod: set AUTO_MIGRATE=false and run golang-migrate as versioned SQL instead
+		if err := db.AutoMigrate(
+			// go-scaffold:models
+		); err != nil {
+			logger.Error("migrate", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	r := gin.New()
+	r.Use(gin.Recovery(), middleware.RequestID(), middleware.Logger(logger), middleware.Error())
+
+	// liveness = is the process up / readiness = ready for traffic (can it reach the DB)
+	r.GET("/livez", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	r.GET("/readyz", func(c *gin.Context) {
+		if err := sqlDB.PingContext(c.Request.Context()); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+{{#if openapiDocs}}
+	// hand-written spec at docs/openapi.yaml — point a client generator (e.g. Hey API) at this path
+	r.StaticFile("/openapi.yaml", "./docs/openapi.yaml")
+{{/if}}
+
+	v1 := r.Group("/v1")
+	// go-scaffold:routes
+	_ = v1 // dropped once `generate module` registers the first route
+
+	srv := &http.Server{
+		Addr:         ":" + cfg.Port,
+		Handler:      r,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// graceful shutdown: catch SIGINT/SIGTERM, let in-flight requests finish before closing
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		logger.Info("listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown", "error", err)
+	}
+	logger.Info("stopped")
+}
+
+func parseLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

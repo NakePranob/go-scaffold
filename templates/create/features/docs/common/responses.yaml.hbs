@@ -1,0 +1,20 @@
+ValidationError:
+  description: invalid input
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }
+NotFoundError:
+  description: not found
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }
+ConflictError:
+  description: conflict (duplicate, or resource still referenced)
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }
+UnprocessableEntityError:
+  description: input well-formed but references a resource that doesn't exist
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }

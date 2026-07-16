@@ -1,0 +1,134 @@
+# {{projectName}}
+
+Gin + GORM backend, scaffolded by [go-scaffold](https://github.com/nakedev/go-scaffold). Organized by feature (domain), Postgres-backed, schema managed with [golang-migrate](https://github.com/golang-migrate/migrate).
+
+This is a bare skeleton — no domain modules yet. Add one with:
+
+```bash
+go-scaffold generate module orders
+```
+
+See `docs/architect/` for the conventions every generated module follows, and `AGENTS.md`/`CLAUDE.md` if you're working with an AI coding agent in this repo.
+
+## Layout
+
+```
+cmd/
+└── api/
+    └── main.go                # config, slog, graceful shutdown, wires domains — the only entry point for now
+internal/
+├── platform/                  # talks to real external systems (DB, later: cache, queue, mail, ...)
+│   └── database/              # opens the connection + pool (GORM)
+├── shared/                    # pure logic/framework glue, no I/O
+│   ├── config/                # loads config from env
+│   ├── apperror/               # central error type (status + payload)
+│   ├── dberr/                 # maps DB errors to constraint kind (IsDuplicate, IsForeignKey) — shared by every domain
+│   ├── httpx/                 # HTTP helpers shared by every domain (ParseID, BindErr)
+│   ├── middleware/            # RequestID, Logger (slog), Error
+│   └── pagination/             # parses ?limit=&offset=, response envelope
+└── app/                       # domain packages — empty until you `generate module`
+```
+
+## Run
+
+```bash
+{{#if docker}}
+make docker-up                     # local Postgres (postgres:5432)
+{{/if}}
+make db-create                     # create the {{dbName}} database itself (once — safe to re-run)
+go mod tidy
+make run                           # AUTO_MIGRATE=true creates the schema automatically in dev
+# or override with env (the app reads os.Getenv directly, see .env.example):
+export $(grep -v '^#' .env.example | xargs) && make run
+```
+
+`make db-create` connects to Postgres at `DB_HOST`/`DB_PORT`/`DB_USER` (default:
+`localhost`/`5432`/`postgres`, matching `.env.example`) using the `psql`
+client — works the same whether Postgres came from `make docker-up` or an
+existing instance you already have running. Override any of
+`DB_HOST`/`DB_PORT`/`DB_USER`/`DB_NAME`/`PGPASSWORD` to point at a different
+server.{{#if docker}} If `psql` isn't installed locally, it falls back to
+`docker compose exec` against this project's own Postgres container (so
+`make docker-up` first, in that case).{{/if}}
+
+Server listens on `:8080` (override with `PORT`). Ctrl+C = graceful shutdown.
+
+## Makefile
+
+```bash
+make run            # go run ./cmd/api
+make build          # go build -o bin/api ./cmd/api
+make test           # go test ./...
+make fmt            # gofmt -w .
+make vet            # go vet ./...
+make lint           # golangci-lint run (see .golangci.yml)
+make tidy           # go mod tidy
+make db-create       # create the database itself (safe to re-run)
+make db-drop         # drop the database
+make migrate-up      # apply migrations (needs $DB_DSN)
+make migrate-down     # roll back one migration
+{{#if docker}}make docker-up       # docker compose up -d
+make docker-down     # docker compose down
+{{/if}}```
+
+## Migrations
+
+Schema is managed with [golang-migrate](https://github.com/golang-migrate/migrate), files live in `migrations/`.
+
+```bash
+brew install golang-migrate
+# or: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
+migrate -path migrations -database "$DB_DSN" up
+migrate -path migrations -database "$DB_DSN" down 1
+migrate create -ext sql -dir migrations -seq add_something
+```
+
+**dev:** leave `AUTO_MIGRATE=true` (default) so GORM's AutoMigrate creates the schema quickly.
+**prod:** set `AUTO_MIGRATE=false` and run `migrate up` as a separate deploy step — versioned, has rollback (`down`), doesn't lock the table the way AutoMigrate does once there's real data.
+
+## Env vars
+
+| var | default | notes |
+|---|---|---|
+| `PORT` | `8080` | |
+| `DB_DSN` | `postgres://postgres:postgres@localhost:5432/{{dbName}}?sslmode=disable` | used by both GORM and the `migrate` CLI |
+| `LOG_LEVEL` | `info` | debug/info/warn/error |
+| `AUTO_MIGRATE` | `true` | disable in prod and use `migrate up` (see Migrations) |
+| `DB_MAX_OPEN_CONNS` | `10` | |
+| `DB_MAX_IDLE_CONNS` | `10` | |
+| `DB_CONN_MAX_LIFETIME_MIN` | `5` | minutes |
+
+## Tests
+
+Integration tests (handler-level) run against a **real Postgres** instance (same engine as prod), each test in a transaction that's rolled back — no leftover rows. If the DB isn't reachable those tests **skip** (unit tests using a fake repo always run).
+
+```bash
+{{#if docker}}
+make docker-up      # local postgres first
+{{/if}}
+make test
+# point at a different test DB: TEST_DB_DSN=postgres://... go test ./...
+```
+
+## Error payload
+
+```json
+{"error":{"code":"VALIDATION_ERROR","message":"invalid input","details":{"email":"email"},"request_id":"a1b2..."}}
+```
+
+`code` is machine-readable, `details` names the field that failed, `request_id` correlates with server logs (header `X-Request-ID`).
+{{#if openapiDocs}}
+
+## API spec
+
+`docs/openapi.yaml` is hand-written and served as a static file at `/openapi.yaml` while the server runs — update it by hand whenever an endpoint/DTO changes.
+{{/if}}
+
+## Adding a domain
+
+```bash
+go-scaffold generate module orders
+```
+
+Scaffolds `internal/app/orders/` (model/dto/errors/repository/service/handler + tests), wires it into `cmd/api/main.go` (AutoMigrate, route registration), and appends a migration file. See `docs/architect/patterns.md` for the module shape and the rules for domains with foreign keys.

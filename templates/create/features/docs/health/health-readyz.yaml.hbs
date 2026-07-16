@@ -1,0 +1,21 @@
+get:
+  summary: Readiness probe (ping DB)
+  operationId: getReadyz
+  tags: [health]
+  responses:
+    "200":
+      description: ready
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, example: ok }
+    "503":
+      description: DB unreachable
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, example: unavailable }

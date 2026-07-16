@@ -1,0 +1,81 @@
+---
+name: go-scaffold
+description: >
+  Use whenever the user asks to add, create, scaffold, wire up, or generate a
+  new domain/feature/resource OR a new endpoint/method in THIS project —
+  including indirect or paraphrased requests that imply new backend surface
+  area without saying "module"/"method" literally, e.g. "add a products
+  feature", "let admins approve orders", "we need an endpoint for X", "look
+  up a user by email". This project was scaffolded by go-scaffold and has a
+  go-scaffold.config.json at its root — check for that file before assuming
+  this applies. Do NOT use for: business logic inside an already-generated
+  method body, model/DTO field edits, foreign keys/relations between
+  domains, bug fixes, refactors of existing code, or any project that lacks
+  go-scaffold.config.json at its root.
+---
+
+# go-scaffold
+
+This project's domain modules (model, dto, errors, repository, service,
+handler) and their endpoints are generated with the `go-scaffold` CLI — do
+not hand-write a new one. Hand-writing a new `internal/app/<name>/` package,
+or adding a method by editing the handler/service directly, produces a shape
+that doesn't match the rest of the codebase (missing route registration,
+missing AutoMigrate wiring, a `repository` interface out of sync with its
+`fakeRepo` test mock, inconsistent error-catalog naming, etc.).
+
+## When to use this skill
+
+- Any request for a new feature/resource/domain, even named informally
+  ("add invoices", "we need a way to track X")
+- Any request for a new endpoint on an existing feature, even phrased as a
+  capability ("let users do X", "admins should be able to Y", "add a lookup
+  by Z")
+- The user explicitly says "generate", "scaffold", or names the CLI
+
+## When NOT to use this skill
+
+- Filling in business logic inside a method the CLI already generated
+- Editing model fields, DTO validation, or existing method bodies
+- Wiring a foreign key / relation between two domains
+- Bug fixes and refactors
+- The project has no `go-scaffold.config.json` at its root
+
+## How to use it
+
+Run from the project root:
+
+```bash
+go-scaffold generate module <name>
+go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
+```
+
+`<name>` for a module should be a singular, lowercase, one-word domain noun
+(e.g. `order`, not `Orders` or `order-item`) — the CLI derives the Go
+package name, the pluralized REST route (`/orders`), and the table name
+from it.
+
+### `generate module <name>`
+
+What you get: `internal/app/<name>/{model/,dto,errors,repository,service,handler,service_test,handler_test}.go`,
+a route registered under `/v1` in `cmd/api/main.go`, the model added to the
+`AutoMigrate` call, and a new file in `migrations/`.
+
+### `generate method <module> <name>`
+
+Patches the existing module in place — never overwrites a method with the
+same name; if the name collides it asks for a different one instead. Route
+and shape depend on `--type`:
+
+| `--type` | Route | Notes |
+|---|---|---|
+| `get --get-mode all` | `GET /<plural>/<kebab-name>` | list-style, reuses `FindAll` — TODO to add real filtering |
+| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | adds a real `FindBy<F>` query to the repository (and its `repository` interface + `fakeRepo` test stub); `--field` can't be `id` |
+| `post` | `POST /<plural>/<kebab-name>` | adds a body DTO; service body is a TODO stub (`apperror.NewInternal()` until implemented) |
+| `put` / `patch` | `<VERB> /<plural>/:id/<kebab-name>` | finds the record by id, TODO before saving (safe no-op until implemented) |
+| `delete` | `DELETE /<plural>/:id/<kebab-name>` | TODO stub (`apperror.NewInternal()` until implemented) |
+
+What you still do by hand: real field names on the model/DTOs (the generated
+ones are placeholders), any foreign key to another domain (see
+`docs/architect/patterns.md` for the 3 rules), and the actual business logic
+behind every `TODO` the CLI leaves.

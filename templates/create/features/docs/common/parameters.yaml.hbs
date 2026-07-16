@@ -1,0 +1,13 @@
+IdParam:
+  name: id
+  in: path
+  required: true
+  schema: { type: string, format: uuid }
+Limit:
+  name: limit
+  in: query
+  schema: { type: integer, default: 20, maximum: 100 }
+Offset:
+  name: offset
+  in: query
+  schema: { type: integer, default: 0, minimum: 0 }

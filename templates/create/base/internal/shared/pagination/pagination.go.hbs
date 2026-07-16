@@ -1,0 +1,39 @@
+package pagination
+
+import (
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+)
+
+const (
+	defaultLimit = 20
+	maxLimit     = 100
+)
+
+// Params is a validated limit/offset pair (default 20, capped at 100).
+type Params struct {
+	Limit  int
+	Offset int
+}
+
+// Parse reads ?limit=&offset= off the request so every feature parses the
+// same way.
+func Parse(c *gin.Context) Params {
+	p := Params{Limit: defaultLimit}
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		p.Limit = v
+	}
+	if p.Limit > maxLimit {
+		p.Limit = maxLimit
+	}
+	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v >= 0 {
+		p.Offset = v
+	}
+	return p
+}
+
+// Response wraps a list so every feature responds with the same shape.
+func (p Params) Response(data any) gin.H {
+	return gin.H{"data": data, "limit": p.Limit, "offset": p.Offset}
+}

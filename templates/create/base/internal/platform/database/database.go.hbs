@@ -1,0 +1,28 @@
+package database
+
+import (
+	"{{goModule}}/internal/shared/config"
+
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+// Open connects to Postgres and sets the connection pool — it talks to a
+// real external system, so it lives in platform/, not shared/.
+// Schema is managed via golang-migrate (migrations/) in prod, not AutoMigrate — see README.
+func Open(cfg config.Config) (*gorm.DB, error) {
+	db, err := gorm.Open(postgres.Open(cfg.DBDSN), &gorm.Config{TranslateError: true})
+	if err != nil {
+		return nil, err
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+
+	return db, nil
+}

@@ -1,0 +1,58 @@
+# Agent Guidance: {{projectName}}
+
+This project was scaffolded by `@nakedev/go-scaffold` and is maintained using
+its `generate` subcommands — new domain modules and new endpoints are not
+hand-written.
+
+## Hard rule: use the CLI to add a new domain module or a new endpoint
+
+If you are about to create a **new** domain (a new `internal/app/<name>/`
+package with its own model/handler/service/repository), or add a **new**
+endpoint to an existing one — stop and run the CLI instead:
+
+```bash
+go-scaffold generate module <name>
+go-scaffold generate method <module> <name> --type <get|post|put|patch|delete>
+```
+
+This applies **even when the request doesn't say "module"/"method" or name
+the CLI at all**. Recognize indirect asks as generation work, for example:
+
+- "add a products feature" → a new domain (`generate module products`)
+- "let admins approve orders" → a new method on an existing module
+  (`generate method orders approve --type patch`)
+- "we need an endpoint that lists overdue invoices" → a new `get` method
+  (`generate method invoices findOverdue --type get --get-mode all`)
+- "add a way to look up a user by email" → a new `get` lookup
+  (`generate method users findByEmail --type get --get-mode one --field email`)
+
+Run `go-scaffold generate module --help` / `generate method --help` before
+hand-rolling anything that looks like scaffolding.
+
+## What the CLI does NOT do — these are still done by hand, as normal
+
+- Business logic inside a generated method (the CLI leaves a TODO-marked
+  stub — filling in real behavior is your job)
+- Adding fields to a generated model/DTO beyond `id`/`created_at`/`updated_at`
+- Foreign keys / relations between domains — add the column, the migration
+  `REFERENCES ... ON DELETE ...` clause, and the `dberr.IsForeignKey` mapping
+  yourself; see `docs/architect/patterns.md` for the 3 rules domains with a
+  relation must follow
+- Bug fixes, refactors, or edits to existing logic
+- Anything in a project that does **not** have `go-scaffold.config.json` at
+  its root — that means the project wasn't scaffolded by this CLI, and this
+  rule does not apply
+
+## Command quick reference
+
+- `go-scaffold generate module <name>` — model + dto + errors + repository +
+  service + handler + tests, wired into `cmd/api/main.go` (AutoMigrate +
+  route registration) and appended to `migrations/`. Use `--no-full` for a
+  bare skeleton (no default CRUD/routes) when you'd rather add endpoints one
+  at a time with `generate method`
+- `go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]` —
+  patches an *existing* module's handler + service (and repository, for a
+  `get --get-mode one --field` lookup) in place; never overwrites a method
+  with the same name — pick a different one if it collides
+- Full architecture rationale for this project's configuration: see
+  `docs/architect/`
