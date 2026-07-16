@@ -32,6 +32,18 @@ export function insertBeforeMarkerOnce(content: string, marker: string, block: s
   return insertBeforeMarker(content, marker, block);
 }
 
+// removeLines drops every line whose trimmed text exactly equals one of the
+// given lines — the inverse of insertBeforeMarker for `remove module`, which
+// needs to pull a module's import/route/path entries back out. Exact-trim
+// match so it can't clip an unrelated line that merely contains the text.
+export function removeLines(content: string, trimmedLines: string[]): string {
+  const drop = new Set(trimmedLines.map((l) => l.trim()));
+  return content
+    .split("\n")
+    .filter((l) => !drop.has(l.trim()))
+    .join("\n");
+}
+
 export function insertBeforeMarker(content: string, marker: string, block: string): string {
   const lines = content.split("\n");
   const markerLine = lines.find((l) => l.trim() === marker);

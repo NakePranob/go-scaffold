@@ -219,6 +219,22 @@ step("rejects reserved Go words before writing broken code (module/method/field)
   );
 });
 
+step("remove module reverses wiring and re-generating stays clean", () => {
+  goScaffold(["generate", "module", "widget"], fullApp);
+  run("go", ["build", "./..."], fullApp);
+  goScaffold(["remove", "module", "widget", "--yes"], fullApp);
+  if (existsSync(path.join(fullApp, "internal", "app", "widget"))) throw new Error("widget folder not deleted");
+  const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8");
+  if (mainGo.includes("widget.NewHandler")) throw new Error("main.go still wires widget after remove");
+  const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
+  if (openapi.includes("/v1/widgets:")) throw new Error("openapi still lists widgets after remove");
+  run("go", ["build", "./..."], fullApp); // must still compile with widget gone
+  goScaffold(["generate", "module", "widget"], fullApp); // re-adding must not duplicate
+  const registers = (readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8").match(/widget\.NewHandler\(/g) ?? []).length;
+  if (registers !== 1) throw new Error(`expected 1 widget registration after re-add, got ${registers}`);
+  run("go", ["build", "./..."], fullApp);
+});
+
 step("create --versioning scaffolds a versioned project", () => {
   goScaffold(["create", "ver-app", "--defaults", "--versioning"], scratch);
 });

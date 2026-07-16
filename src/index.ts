@@ -5,6 +5,7 @@ import pc from "picocolors";
 import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
 import { generateMethod } from "./commands/method";
+import { removeModule } from "./commands/remove";
 import { MethodType, GetMethodMode } from "./types";
 
 const program = new Command();
@@ -103,6 +104,35 @@ generate
         field: opts.field,
         moduleVersion: opts.moduleVersion,
       });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+const remove = program
+  .command("remove")
+  .alias("rm")
+  .description("remove a domain module (deletes the package + un-wires main.go/openapi.yaml/migration)")
+  .action(async () => {
+    // bare `remove`/`rm` — module is the only target, so prompt for the name
+    try {
+      await removeModule(undefined, {});
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+remove
+  .command("module [name]")
+  .alias("m")
+  .description("delete a domain module and reverse everything `generate module` wired up")
+  .option("--module-version <version>", "target a specific version folder (requires versioning enabled)")
+  .option("-y, --yes", "skip the confirmation prompt")
+  .action(async (name, opts) => {
+    try {
+      await removeModule(name, { moduleVersion: opts.moduleVersion, yes: opts.yes });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

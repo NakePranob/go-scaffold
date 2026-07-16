@@ -147,6 +147,24 @@ Business logic is always left as a `TODO`-marked stub that compiles and
 returns a clean `500` rather than inventing behavior — see
 `docs/architect/patterns.md` in the generated project.
 
+`generate method` prints the route it added but does **not** touch
+`docs/openapi.yaml` — endpoint-specific spec entries stay hand-written.
+
+### `remove module <name>` (alias `rm m`) — drop a domain
+
+```bash
+go-scaffold remove module orders          # confirms first
+go-scaffold rm m orders --yes             # skip the confirm
+```
+
+The inverse of `generate module`: deletes `internal/app/<name>/` and reverses
+everything that was wired up — the import/AutoMigrate/route in `main.go`, the
+paths/schemas in `docs/openapi.yaml`, the per-module docs folder, and the
+`create_<plural>` migration. Restores the `_ = v1` placeholder if it was the
+last module, so the project still builds. Use this instead of hand-deleting
+the folder — a partial hand-delete leaves stale wiring that duplicates on the
+next `generate module` (which would panic gin at startup).
+
 ## Project structure produced by `create`
 
 ```text

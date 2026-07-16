@@ -53,6 +53,12 @@ hand-rolling anything that looks like scaffolding.
 - `go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]` —
   patches an *existing* module's handler + service (and repository, for a
   `get --get-mode one --field` lookup) in place; never overwrites a method
-  with the same name — pick a different one if it collides
+  with the same name — pick a different one if it collides. Endpoint docs in
+  `docs/openapi.yaml` are **not** auto-updated for methods — the command
+  prints the route so you can add the spec entry by hand
+- `go-scaffold remove module <name>` — the inverse of `generate module`:
+  deletes the package and un-wires main.go / openapi.yaml / migrations. Use
+  this to drop a domain instead of hand-deleting the folder (a partial
+  hand-delete leaves duplicate wiring behind)
 - Full architecture rationale for this project's configuration: see
   `docs/architect/`
