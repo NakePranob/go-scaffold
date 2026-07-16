@@ -55,19 +55,27 @@ export async function generateModule(
   }));
   await applyTemplateEntries(projectDir, moduleEntries, context);
 
+  // skip if a create_<plural> migration already exists — re-running after
+  // only the module folder was deleted shouldn't leave a duplicate migration.
   const migrationsDir = path.join(projectDir, "migrations");
-  const seq = nextMigrationSeq(migrationsDir);
-  const migrationEntries = [
-    {
-      template: "generate/module/migration.up.sql.hbs",
-      output: path.join("migrations", `${seq}_create_${naming.plural}.up.sql`),
-    },
-    {
-      template: "generate/module/migration.down.sql.hbs",
-      output: path.join("migrations", `${seq}_create_${naming.plural}.down.sql`),
-    },
-  ];
-  await applyTemplateEntries(projectDir, migrationEntries, context);
+  const migrationExists =
+    fs.existsSync(migrationsDir) &&
+    fs.readdirSync(migrationsDir).some((f) => f.endsWith(`_create_${naming.plural}.up.sql`));
+  let seq = "";
+  if (!migrationExists) {
+    seq = nextMigrationSeq(migrationsDir);
+    const migrationEntries = [
+      {
+        template: "generate/module/migration.up.sql.hbs",
+        output: path.join("migrations", `${seq}_create_${naming.plural}.up.sql`),
+      },
+      {
+        template: "generate/module/migration.down.sql.hbs",
+        output: path.join("migrations", `${seq}_create_${naming.plural}.down.sql`),
+      },
+    ];
+    await applyTemplateEntries(projectDir, migrationEntries, context);
+  }
 
   const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
   patchMainGo(mainGoPath, {
@@ -101,7 +109,11 @@ export async function generateModule(
         `add endpoints with \`go-scaffold generate method ${naming.pkg} <name> --type ...\``
     );
   }
-  console.log(`migration: migrations/${seq}_create_${naming.plural}.{up,down}.sql`);
+  if (seq) {
+    console.log(`migration: migrations/${seq}_create_${naming.plural}.{up,down}.sql`);
+  } else {
+    console.log(`migration: reused existing migrations/*_create_${naming.plural}.{up,down}.sql`);
+  }
   if (docsMessage) console.log(docsMessage);
   console.log(
     pc.dim(

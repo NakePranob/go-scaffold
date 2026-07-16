@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,6 +146,21 @@ step("generate module order (full CRUD)", () => {
 step("full module: docs wired into openapi.yaml", () => {
   assertFileContains(path.join(fullApp, "docs", "openapi.yaml"), "/v1/orders:");
   assertFileContains(path.join(fullApp, "docs", "openapi.yaml"), "OrderResponse");
+});
+
+step("re-generating after deleting only the folder doesn't duplicate wiring (would panic gin)", () => {
+  // simulate: user rm -rf's the module dir but main.go/openapi.yaml still
+  // reference it, then re-runs generate module. Must stay a single Register.
+  rmSync(path.join(fullApp, "internal", "app", "order"), { recursive: true, force: true });
+  goScaffold(["generate", "module", "order"], fullApp);
+  const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8");
+  const registers = (mainGo.match(/order\.NewHandler\(/g) ?? []).length;
+  if (registers !== 1) throw new Error(`expected exactly 1 order route registration, got ${registers}`);
+  const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
+  const paths = (openapi.match(/\/v1\/orders:/g) ?? []).length;
+  if (paths !== 1) throw new Error(`expected exactly 1 /v1/orders path in openapi.yaml, got ${paths}`);
+  const migrations = readdirSync(path.join(fullApp, "migrations")).filter((f) => f.endsWith("_create_orders.up.sql")).length;
+  if (migrations !== 1) throw new Error(`expected exactly 1 create_orders migration, got ${migrations}`);
 });
 
 step("full module: build + vet + gofmt clean", () => {

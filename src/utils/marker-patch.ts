@@ -21,6 +21,17 @@ export function ensureImport(content: string, importPath: string): string {
   return content.replace(/import \(\n/, `import (\n\t${importLine}\n`);
 }
 
+// insertBeforeMarkerOnce: like insertBeforeMarker but a no-op if `sentinel`
+// already appears in the file. Makes module wiring idempotent — re-running
+// `generate module` after deleting just the module folder (leaving main.go /
+// openapi.yaml still referencing it) won't duplicate the import/route/path.
+// A duplicate route silently passes build+vet, then panics gin at startup
+// ("handlers are already registered"), so this guard matters.
+export function insertBeforeMarkerOnce(content: string, marker: string, block: string, sentinel: string): string {
+  if (content.includes(sentinel)) return content;
+  return insertBeforeMarker(content, marker, block);
+}
+
 export function insertBeforeMarker(content: string, marker: string, block: string): string {
   const lines = content.split("\n");
   const markerLine = lines.find((l) => l.trim() === marker);

@@ -1,5 +1,5 @@
 import fs from "fs-extra";
-import { insertBeforeMarker } from "./marker-patch";
+import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const MODEL_MARKER = "// go-scaffold:models";
@@ -24,19 +24,18 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
 
   // aliased because every domain's model subpackage is named "model"
   const modelAlias = `${patch.pkg}model`;
+  const importLine = `"${patch.goModule}/internal/app/${patch.modulePath}"`;
+  const modelImportLine = `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`;
+  const migrateLine = `&${modelAlias}.${patch.pascalName}{},`;
+  const routeLine = `${patch.pkg}.NewHandler(${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))).Register(v1)`;
 
-  content = insertBeforeMarker(content, IMPORT_MARKER, `"${patch.goModule}/internal/app/${patch.modulePath}"`);
-  content = insertBeforeMarker(
-    content,
-    IMPORT_MARKER,
-    `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`
-  );
-  content = insertBeforeMarker(content, MODEL_MARKER, `&${modelAlias}.${patch.pascalName}{},`);
-  content = insertBeforeMarker(
-    content,
-    ROUTE_MARKER,
-    `${patch.pkg}.NewHandler(${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))).Register(v1)`
-  );
+  // each guarded by its own sentinel so re-running after only the module
+  // folder was deleted (main.go still wired) is a no-op, not a dup that
+  // panics gin at startup.
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+  content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
+  content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(UNUSED_V1_LINE, "");
 
   fs.writeFileSync(mainGoPath, content);
