@@ -64,9 +64,14 @@ func main() {
 	r.StaticFile("/openapi.yaml", "./docs/openapi.yaml")
 {{/if}}
 
+{{#if versioning}}
+	// go-scaffold:route-groups
+	// go-scaffold:routes
+{{else}}
 	v1 := r.Group("/v1")
 	// go-scaffold:routes
 	_ = v1 // dropped once `generate module` registers the first route
+{{/if}}
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

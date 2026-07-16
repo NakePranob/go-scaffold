@@ -1,6 +1,9 @@
 import { input, select } from "@inquirer/prompts";
 import { GetMethodMode, MethodType } from "../types";
 import { assertNotGoKeyword, toCamelCase, validateModuleName } from "../utils/naming";
+import { listVersionFolders, nextVersionName } from "../utils/module-paths";
+
+const NEW_VERSION = "__new__";
 
 // wraps an assert-style validator into inquirer's true|string contract so a
 // reserved word re-prompts inline instead of aborting the whole command.
@@ -62,4 +65,42 @@ export async function promptLookupField(): Promise<string> {
     },
   });
   return field.trim();
+}
+
+// promptModuleVersion: for `generate module` in a versioned project. On the
+// first module (no version folders yet) there's no real choice to make, so
+// it silently returns v1 rather than asking a pointless question. Once
+// versions exist, offers to reuse one (the same domain can legitimately live
+// in more than one version — that's the point of API versioning) or create a
+// new folder (v2, v3, ...), the way nest-scaffold does.
+export async function promptModuleVersion(projectDir: string): Promise<string> {
+  const versions = listVersionFolders(projectDir);
+  if (versions.length === 0) return "v1";
+
+  const choice = await select({
+    message: "Which version folder?",
+    choices: [
+      ...versions.map((v) => ({ name: v, value: v })),
+      { name: `Create a new version folder (${nextVersionName(versions)})`, value: NEW_VERSION },
+    ],
+    default: versions[versions.length - 1],
+  });
+  if (choice !== NEW_VERSION) return choice;
+
+  const created = await input({
+    message: "New version folder name:",
+    default: nextVersionName(versions),
+    validate: (a) => (/^v\d+$/.test(a.trim()) ? true : "use v<number>, e.g. v2"),
+  });
+  return created.trim();
+}
+
+// promptExistingVersion: for `generate method` / `remove module` when a
+// module exists in more than one version folder — pick which one to target.
+export async function promptExistingVersion(versions: string[]): Promise<string> {
+  return select({
+    message: "This module exists in multiple versions — which one?",
+    choices: versions.map((v) => ({ name: v, value: v })),
+    default: versions[versions.length - 1],
+  });
 }

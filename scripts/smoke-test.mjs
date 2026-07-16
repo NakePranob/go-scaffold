@@ -253,6 +253,41 @@ step("versioned project: generate module + method, then build", () => {
   run("go", ["vet", "./..."], verApp);
 });
 
+step("versioned project: the SAME module lives in v1 and v2 at once (real API versioning)", () => {
+  goScaffold(["generate", "module", "product", "--module-version", "v2"], verApp);
+  const mainGo = readFileSync(path.join(verApp, "cmd", "api", "main.go"), "utf8");
+  if (!mainGo.includes('v1 := r.Group("/v1")') || !mainGo.includes('v2 := r.Group("/v2")')) {
+    throw new Error("expected both v1 and v2 route groups declared");
+  }
+  if (!mainGo.includes("productv1.NewHandler") || !mainGo.includes("productv2.NewHandler")) {
+    throw new Error("expected version-qualified import aliases (productv1/productv2) to avoid a redeclare");
+  }
+  run("go", ["build", "./..."], verApp);
+  run("go", ["vet", "./..."], verApp);
+  const openapi = readFileSync(path.join(verApp, "docs", "openapi.yaml"), "utf8");
+  if (!openapi.includes("/v1/products:") || !openapi.includes("/v2/products:")) {
+    throw new Error("expected both /v1/products and /v2/products in openapi.yaml");
+  }
+  if (!openapi.includes("ProductV1Response") || !openapi.includes("ProductV2Response")) {
+    throw new Error("expected version-qualified schema keys to avoid a duplicate YAML key");
+  }
+  const migrations = readdirSync(path.join(verApp, "migrations")).filter((f) => f.includes("create_products"));
+  if (migrations.length !== 2) throw new Error(`expected the migration to stay shared (2 files), got ${migrations.length}`);
+});
+
+step("removing one version of a shared module keeps the other intact", () => {
+  goScaffold(["remove", "module", "product", "--module-version", "v1", "--yes"], verApp);
+  const mainGo = readFileSync(path.join(verApp, "cmd", "api", "main.go"), "utf8");
+  if (mainGo.includes('v1 := r.Group("/v1")')) throw new Error("v1 group should be gone (no modules left using it)");
+  if (!mainGo.includes("productv2.NewHandler")) throw new Error("v2/product should still be wired");
+  if (existsSync(path.join(verApp, "internal", "app", "v1", "product"))) throw new Error("v1/product should be deleted");
+  if (!existsSync(path.join(verApp, "internal", "app", "v2", "product"))) throw new Error("v2/product should survive");
+  const migrations = readdirSync(path.join(verApp, "migrations")).filter((f) => f.includes("create_products"));
+  if (migrations.length !== 2) throw new Error("migration should be kept — v2/product still uses it");
+  run("go", ["build", "./..."], verApp);
+  run("go", ["vet", "./..."], verApp);
+});
+
 step("create --no-full minimal module layers up to full build", () => {
   goScaffold(["create", "min-app", "--defaults"], scratch);
   const minApp = path.join(scratch, "min-app");

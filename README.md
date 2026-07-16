@@ -80,8 +80,16 @@ directory layout if missing).
 ```bash
 go-scaffold generate module orders                  # full CRUD (default)
 go-scaffold generate module orders --no-full         # minimal skeleton — add endpoints with `generate method`
-go-scaffold g m orders --module-version v2   # versioned projects only
+go-scaffold g m orders --module-version v2           # versioned projects only
 ```
+
+In a versioned project, the same module name can live in more than one
+version folder at once — `v1/orders` and `v2/orders` coexisting with
+different behavior is the actual point of API versioning. Each gets its own
+route group (`r.Group("/v1")`, `r.Group("/v2")`) and a version-qualified
+import alias (`ordersv1`, `ordersv2`) so they can't collide. A migration is
+shared between versions of the same module (same table, different API
+shape) — `remove module` only deletes it once no version still uses it.
 
 Full CRUD (default) scaffolds:
 

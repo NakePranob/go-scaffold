@@ -60,5 +60,14 @@ hand-rolling anything that looks like scaffolding.
   deletes the package and un-wires main.go / openapi.yaml / migrations. Use
   this to drop a domain instead of hand-deleting the folder (a partial
   hand-delete leaves duplicate wiring behind)
+{{#if versioning}}
+- `--module-version <v>` (on `generate module` / `generate method` / `remove module`) —
+  targets a specific version folder (`v1`, `v2`, ...). The **same module name
+  can live in more than one version at once** — `v1/orders` and `v2/orders`
+  coexisting with different behavior is the point of API versioning, not a
+  collision; each version gets its own route group and a version-qualified
+  import alias. Their migration is shared (same table) until no version uses
+  it anymore
+{{/if}}
 - Full architecture rationale for this project's configuration: see
   `docs/architect/`

@@ -5,9 +5,10 @@ import { confirm } from "@inquirer/prompts";
 import { readConfig } from "../utils/config";
 import { resolveModuleNaming } from "../utils/naming";
 import { unpatchMainGo } from "../utils/main-patcher";
-import { unpatchOpenapiIndex } from "../utils/openapi-patcher";
+import { docsFolderName, unpatchOpenapiIndex } from "../utils/openapi-patcher";
 import { gofmtTree } from "../utils/template-renderer";
-import { promptModuleName } from "../prompts/generate-wizard";
+import { promptExistingVersion, promptModuleName } from "../prompts/generate-wizard";
+import { versionsContainingModule } from "../utils/module-paths";
 
 export interface RemoveModuleOptions {
   moduleVersion?: string;
@@ -27,10 +28,16 @@ export async function removeModule(
   const naming = resolveModuleNaming(rawName ?? (await promptModuleName()));
 
   let modulePath = naming.pkg;
+  let version: string | undefined;
   if (config.features.versioning) {
-    const version = opts.moduleVersion ?? "v1";
-    if (!/^[a-z][a-z0-9]*$/.test(version)) {
-      throw new Error(`invalid --module-version "${version}" — expected a bare identifier like v1, v2`);
+    if (opts.moduleVersion) {
+      version = opts.moduleVersion;
+      if (!/^[a-z][a-z0-9]*$/.test(version)) {
+        throw new Error(`invalid --module-version "${version}" — expected a bare identifier like v1, v2`);
+      }
+    } else {
+      const matches = versionsContainingModule(projectDir, naming.pkg);
+      version = matches.length > 1 ? await promptExistingVersion(matches) : matches[0] ?? "v1";
     }
     modulePath = `${version}/${naming.pkg}`;
   } else if (opts.moduleVersion) {
@@ -52,6 +59,11 @@ export async function removeModule(
     if (!ok) throw new Error("removal cancelled");
   }
 
+  // versions of this SAME module other than the one being removed — if any
+  // remain, they still need the migration (same table, different API shape),
+  // so step 4 below must not delete it out from under them.
+  const otherVersions = versionsContainingModule(projectDir, naming.pkg).filter((v) => v !== version);
+
   // 1. the domain package
   fs.removeSync(moduleDir);
 
@@ -61,19 +73,21 @@ export async function removeModule(
     modulePath,
     pkg: naming.pkg,
     pascalName: naming.pascalName,
+    version,
   });
 
   // 3. openapi index + per-module docs
   const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
+  const docsFolder = docsFolderName(naming, version);
   if (fs.existsSync(openapiPath)) {
-    unpatchOpenapiIndex(openapiPath, naming);
-    fs.removeSync(path.join(projectDir, "docs", naming.plural));
+    unpatchOpenapiIndex(openapiPath, naming, version);
+    fs.removeSync(path.join(projectDir, "docs", docsFolder));
   }
 
-  // 4. migration files (up + down)
+  // 4. migration files (up + down) — skip if another version still shares them
   const migrationsDir = path.join(projectDir, "migrations");
   const removedMigrations: string[] = [];
-  if (fs.existsSync(migrationsDir)) {
+  if (fs.existsSync(migrationsDir) && otherVersions.length === 0) {
     for (const f of fs.readdirSync(migrationsDir)) {
       if (f.endsWith(`_create_${naming.plural}.up.sql`) || f.endsWith(`_create_${naming.plural}.down.sql`)) {
         fs.removeSync(path.join(migrationsDir, f));
@@ -87,8 +101,11 @@ export async function removeModule(
   console.log(pc.green(`\nremoved module "${naming.pkg}"`));
   console.log(`  deleted internal/app/${modulePath}/`);
   console.log(`  un-wired cmd/api/main.go`);
-  if (fs.existsSync(openapiPath)) console.log(`  un-wired docs/openapi.yaml + deleted docs/${naming.plural}/`);
+  if (fs.existsSync(openapiPath)) console.log(`  un-wired docs/openapi.yaml + deleted docs/${docsFolder}/`);
   if (removedMigrations.length) console.log(`  deleted ${removedMigrations.join(", ")}`);
+  else if (otherVersions.length) {
+    console.log(pc.dim(`  kept the migration — still used by ${otherVersions.join(", ")}`));
+  }
   console.log(
     pc.yellow(
       `\nnote: the ${naming.plural} table (if migrated) is untouched — drop it yourself, or add a down migration`

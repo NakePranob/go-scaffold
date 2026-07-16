@@ -6,9 +6,9 @@ import { resolveModuleNaming, toDbName } from "../utils/naming";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
 import { patchMainGo } from "../utils/main-patcher";
-import { patchOpenapiIndex } from "../utils/openapi-patcher";
+import { docsFolderName, patchOpenapiIndex } from "../utils/openapi-patcher";
 import { nextMigrationSeq } from "../utils/migrations";
-import { promptModuleName } from "../prompts/generate-wizard";
+import { promptModuleName, promptModuleVersion } from "../prompts/generate-wizard";
 
 export interface GenerateModuleOptions {
   full?: boolean;
@@ -24,10 +24,15 @@ export async function generateModule(
   const naming = resolveModuleNaming(rawName ?? (await promptModuleName()));
 
   let modulePath = naming.pkg;
+  let version: string | undefined;
   if (config.features.versioning) {
-    const version = opts.moduleVersion ?? "v1";
-    if (!/^[a-z][a-z0-9]*$/.test(version)) {
-      throw new Error(`invalid --module-version "${version}" — expected a bare identifier like v1, v2`);
+    if (opts.moduleVersion) {
+      version = opts.moduleVersion;
+      if (!/^[a-z][a-z0-9]*$/.test(version)) {
+        throw new Error(`invalid --module-version "${version}" — expected a bare identifier like v1, v2`);
+      }
+    } else {
+      version = await promptModuleVersion(projectDir);
     }
     modulePath = `${version}/${naming.pkg}`;
   } else if (opts.moduleVersion) {
@@ -40,30 +45,10 @@ export async function generateModule(
   if (fs.existsSync(moduleDir) && fs.readdirSync(moduleDir).length > 0) {
     throw new Error(`${moduleDir} already exists — pick a different name or delete it first`);
   }
-
-  // a module can't live in two version folders at once: main.go routes every
-  // version under the single /v1 group, so a second copy would collide on both
-  // the import alias (`<pkg>`/`<pkg>model` redeclared) and the route path.
-  if (config.features.versioning) {
-    const appDir = path.join(projectDir, "internal", "app");
-    const other = !fs.existsSync(appDir)
-      ? undefined
-      : fs
-          .readdirSync(appDir, { withFileTypes: true })
-          .filter((e) => e.isDirectory() && /^v\d+$/.test(e.name))
-          .find(
-            (e) =>
-              `${e.name}/${naming.pkg}` !== modulePath &&
-              fs.existsSync(path.join(appDir, e.name, naming.pkg, "handler.go"))
-          );
-    if (other) {
-      throw new Error(
-        `module "${naming.pkg}" already exists in ${other.name} — a module can't live in two version ` +
-          `folders (main.go routes every version under /v1, so imports and routes would collide). ` +
-          `Remove it there first: go-scaffold remove module ${naming.pkg} --module-version ${other.name}`
-      );
-    }
-  }
+  // note: the SAME module name in a different version folder (v1/order +
+  // v2/order) is allowed on purpose — that's the actual point of API
+  // versioning (old and new implementations coexisting). Import aliases and
+  // route groups below are version-qualified so they can't collide.
 
   const context = {
     ...naming,
@@ -107,36 +92,42 @@ export async function generateModule(
     modulePath,
     pkg: naming.pkg,
     pascalName: naming.pascalName,
+    version,
   });
 
   let docsMessage = "";
   const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
   if (opts.full && config.features.openapiDocs && fs.existsSync(openapiPath)) {
+    const folder = docsFolderName(naming, version);
     const docsEntries = [
-      { template: "generate/module/docs/collection.yaml.hbs", output: path.join("docs", naming.plural, "collection.yaml") },
-      { template: "generate/module/docs/item.yaml.hbs", output: path.join("docs", naming.plural, "item.yaml") },
-      { template: "generate/module/docs/schemas.yaml.hbs", output: path.join("docs", naming.plural, "schemas.yaml") },
+      { template: "generate/module/docs/collection.yaml.hbs", output: path.join("docs", folder, "collection.yaml") },
+      { template: "generate/module/docs/item.yaml.hbs", output: path.join("docs", folder, "item.yaml") },
+      { template: "generate/module/docs/schemas.yaml.hbs", output: path.join("docs", folder, "schemas.yaml") },
     ];
     await applyTemplateEntries(projectDir, docsEntries, context);
-    patchOpenapiIndex(openapiPath, naming);
-    docsMessage = `\ndocs: docs/${naming.plural}/{collection,item,schemas}.yaml, wired into docs/openapi.yaml`;
+    patchOpenapiIndex(openapiPath, naming, version);
+    docsMessage = `\ndocs: docs/${folder}/{collection,item,schemas}.yaml, wired into docs/openapi.yaml`;
   }
 
   gofmtTree(projectDir);
 
+  const urlPrefix = version ?? "v1";
   console.log(pc.green(`\ngenerated internal/app/${modulePath}/`));
   if (opts.full) {
-    console.log(`registered route /v1/${naming.plural} in cmd/api/main.go`);
+    console.log(`registered route /${urlPrefix}/${naming.plural} in cmd/api/main.go`);
   } else {
     console.log(
-      `registered empty route group /v1/${naming.plural} in cmd/api/main.go — ` +
+      `registered empty route group /${urlPrefix}/${naming.plural} in cmd/api/main.go — ` +
         `add endpoints with \`go-scaffold generate method ${naming.pkg} <name> --type ...\``
     );
   }
   if (seq) {
     console.log(`migration: migrations/${seq}_create_${naming.plural}.{up,down}.sql`);
   } else {
-    console.log(`migration: reused existing migrations/*_create_${naming.plural}.{up,down}.sql`);
+    console.log(
+      `migration: reused existing migrations/*_create_${naming.plural}.{up,down}.sql` +
+        (version ? ` (shared with the other version — same table, different API shape)` : "")
+    );
   }
   if (docsMessage) console.log(docsMessage);
   console.log(
