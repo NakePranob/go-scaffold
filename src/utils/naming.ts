@@ -94,6 +94,12 @@ export function assertNotGoKeyword(ident: string, role: string): void {
 export function validateModuleName(rawName: string): string | true {
   const pkg = toPackageName(rawName);
   if (!pkg) return `invalid module name: "${rawName}" (must contain letters/numbers)`;
+  if (/^[0-9]/.test(pkg)) {
+    return `"${pkg}" starts with a digit — a Go package name can't, so it won't compile; pick another module name`;
+  }
+  if (/^v[0-9]+$/.test(pkg)) {
+    return `"${pkg}" looks like a version — it collides with the \`v1\` router group in main.go; pick a domain name`;
+  }
   if (GO_KEYWORDS.has(pkg) || GO_PREDECLARED_TYPES.has(pkg)) {
     return `"${pkg}" is a reserved Go word — a package named it won't compile; pick another module name`;
   }

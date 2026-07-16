@@ -217,6 +217,8 @@ step("rejects reserved Go words before writing broken code (module/method/field)
     () => goScaffold(["generate", "method", "order", "findByType", "--type", "get", "--get-mode", "one", "--field", "type"], fullApp),
     "Go keyword"
   );
+  expectThrows(() => goScaffold(["generate", "module", "2fa"], fullApp), "starts with a digit");
+  expectThrows(() => goScaffold(["generate", "module", "v1"], fullApp), "looks like a version");
 });
 
 step("remove module reverses wiring and re-generating stays clean", () => {
