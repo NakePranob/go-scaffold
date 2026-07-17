@@ -67,7 +67,7 @@ with `generate module`.
 | `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, prefix `v1`) |
 | `--no-docker` | Skip `docker-compose.yml` (with `--defaults`) |
 | `--no-openapi-docs` | Skip `docs/openapi.yaml` (with `--defaults`) |
-| `--api-prefix <prefix>` | URL prefix every route is grouped under (with `--defaults`; default `v1`, pass `""` for none) |
+| `--api-prefix <prefix>` | URL prefix every route is grouped under (with `--defaults`; default `v1`, `""` for none, `/`-separated segments like `api/v1` are fine) |
 
 Without `--defaults`, an interactive wizard asks the same three questions.
 The prefix is a single project-wide choice made once at `create` time —

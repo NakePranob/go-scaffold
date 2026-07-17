@@ -4,7 +4,7 @@ import pc from "picocolors";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { CREATE_MANIFEST } from "../templates/create-manifest";
 import { writeConfig } from "../utils/config";
-import { assertValidGoModulePath, toDbName, validateApiPrefix } from "../utils/naming";
+import { assertValidGoModulePath, normalizeApiPrefix, toDbName, validateApiPrefix } from "../utils/naming";
 import { promptProjectName, runCreateWizard } from "../prompts/create-wizard";
 import { ProjectFeatures } from "../types";
 
@@ -32,7 +32,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   let apiPrefix: string;
   if (opts.defaults) {
     features = { docker: opts.docker ?? true, openapiDocs: opts.openapiDocs ?? true };
-    apiPrefix = opts.apiPrefix ?? "v1";
+    apiPrefix = normalizeApiPrefix(opts.apiPrefix ?? "v1");
     const check = validateApiPrefix(apiPrefix);
     if (check !== true) throw new Error(check);
   } else {

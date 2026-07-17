@@ -38,7 +38,7 @@ function detectConfig(projectDir: string): ProjectConfig {
   let apiPrefix = "";
   const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
   if (fs.existsSync(mainGoPath)) {
-    const groupMatch = fs.readFileSync(mainGoPath, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9]*)"\)/);
+    const groupMatch = fs.readFileSync(mainGoPath, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9/]*)"\)/);
     if (groupMatch) apiPrefix = groupMatch[1];
   }
 

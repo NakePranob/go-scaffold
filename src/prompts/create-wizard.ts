@@ -1,5 +1,5 @@
 import { confirm, input } from "@inquirer/prompts";
-import { validateApiPrefix, validateGoModulePath } from "../utils/naming";
+import { normalizeApiPrefix, validateApiPrefix, validateGoModulePath } from "../utils/naming";
 import { ProjectFeatures } from "../types";
 
 export async function promptProjectName(): Promise<string> {
@@ -29,21 +29,22 @@ export async function runCreateWizard(): Promise<CreateWizardResult> {
     message: "Include hand-written OpenAPI docs (docs/openapi.yaml, served at /openapi.yaml)?",
     default: true,
   });
-  const apiPrefix = await input({
-    message: "API route prefix (e.g. v1, api; leave blank for none):",
+  const apiPrefixRaw = await input({
+    message: "API route prefix (e.g. v1, api/v1; leave blank for none):",
     default: "v1",
     validate: validateApiPrefix,
   });
+  const apiPrefix = normalizeApiPrefix(apiPrefixRaw);
 
   console.log("\nSummary:");
   console.log(`  Docker + PostgreSQL: ${docker ? "yes" : "no"}`);
   console.log(`  OpenAPI docs: ${openapiDocs ? "yes" : "no"}`);
-  console.log(`  Route prefix: ${apiPrefix.trim() ? `/${apiPrefix.trim()}` : "(none)"}`);
+  console.log(`  Route prefix: ${apiPrefix ? `/${apiPrefix}` : "(none)"}`);
 
   const proceed = await confirm({ message: "\nCreate project with these settings?", default: true });
   if (!proceed) {
     throw new Error("project creation cancelled");
   }
 
-  return { features: { docker, openapiDocs }, apiPrefix: apiPrefix.trim() };
+  return { features: { docker, openapiDocs }, apiPrefix };
 }

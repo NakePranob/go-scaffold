@@ -103,17 +103,26 @@ export function validateModuleName(rawName: string): string | true {
   return true;
 }
 
-// apiPrefix becomes both a URL path segment (/v1/orders) and a Go identifier
-// (the `api := r.Group("/v1")` variable is always named "api", so the prefix
-// itself never needs to be a valid Go identifier — just a clean URL segment).
-// Empty string is valid on purpose: it means "no prefix", routes register
-// directly at /orders.
+// strips whitespace and leading/trailing slashes so "/api/v1/" and "api/v1"
+// store identically — callers should normalize once and use the result
+// everywhere (config, templates), not just for validation.
+export function normalizeApiPrefix(raw: string): string {
+  return raw.trim().replace(/^\/+|\/+$/g, "");
+}
+
+// apiPrefix becomes a URL path (/api/v1/orders) — multiple slash-separated
+// segments are fine (gin's r.Group() joins paths natively, confirmed against
+// gin directly: r.Group("/api/v1") produces /api/v1/orders as expected). The
+// `api := r.Group(...)` variable is always named "api" regardless of the
+// prefix's value, so the prefix itself never needs to be a valid Go
+// identifier — just clean URL segments. Empty string is valid on purpose: it
+// means "no prefix", routes register directly at /orders.
 export function validateApiPrefix(raw: string): string | true {
-  const trimmed = raw.trim();
+  const trimmed = normalizeApiPrefix(raw);
   if (trimmed === "") return true;
-  return /^[a-z][a-z0-9]*$/.test(trimmed)
+  return /^[a-z][a-z0-9]*(\/[a-z][a-z0-9]*)*$/.test(trimmed)
     ? true
-    : `invalid API prefix "${trimmed}" — use lowercase letters/numbers only, starting with a letter (e.g. "v1", "api"), or leave blank for none`;
+    : `invalid API prefix "${trimmed}" — use lowercase letters/numbers per segment, separated by "/" (e.g. "v1", "api/v1"), or leave blank for none`;
 }
 
 export function resolveModuleNaming(rawName: string): ModuleNaming {

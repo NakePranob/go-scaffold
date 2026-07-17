@@ -267,6 +267,21 @@ step("create --api-prefix '' scaffolds routes with no prefix at all", () => {
   run("go", ["vet", "./..."], app);
 });
 
+step("create --api-prefix api/v1 supports multi-segment prefixes (gin joins them fine)", () => {
+  goScaffold(["create", "multiseg-app", "--defaults", "--api-prefix", "/api/v1/"], scratch);
+  const app = path.join(scratch, "multiseg-app");
+  const cfg = JSON.parse(readFileSync(path.join(app, "go-scaffold.config.json"), "utf8"));
+  if (cfg.apiPrefix !== "api/v1") throw new Error(`expected leading/trailing slashes stripped, got "${cfg.apiPrefix}"`);
+  run("go", ["mod", "tidy"], app);
+  goScaffold(["generate", "module", "order"], app);
+  const mainGo = readFileSync(path.join(app, "cmd", "api", "main.go"), "utf8");
+  if (!mainGo.includes('api := r.Group("/api/v1")')) throw new Error('expected api := r.Group("/api/v1") in main.go');
+  const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
+  if (!openapi.includes("/api/v1/orders:")) throw new Error("expected /api/v1/orders in openapi.yaml");
+  run("go", ["build", "./..."], app);
+  run("go", ["vet", "./..."], app);
+});
+
 step("create --no-full minimal module layers up to full build", () => {
   goScaffold(["create", "min-app", "--defaults"], scratch);
   const minApp = path.join(scratch, "min-app");
