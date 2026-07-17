@@ -55,6 +55,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   console.log(pc.green(`\ncreated ${projectName}/`));
   console.log(`\ncd ${projectName}`);
   if (features.docker) console.log(`make docker-up`);
+  console.log(`make db-create`);
   console.log(`go mod tidy`);
   console.log(`make run`);
   console.log(pc.dim(`\nadd your first domain: go-scaffold generate module <name>`));
