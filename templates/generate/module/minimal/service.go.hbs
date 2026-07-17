@@ -32,6 +32,9 @@ func NewService(repo repository) *Service {
 	return &Service{repo: repo}
 }
 
+// unused until `generate method` adds a get-one/patch/put/delete method that calls it
+//
+//nolint:unused
 func wrapFindErr(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errNotFound()

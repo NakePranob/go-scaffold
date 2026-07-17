@@ -1,15 +1,32 @@
-run:
-  timeout: 5m
+# golangci-lint v2 config format — v1's `run:`/`linters: enable:` + `issues: exclude-dirs:`
+# top-level keys were replaced by `version: "2"` + `linters:`/`formatters:` with their own
+# `exclusions:` blocks (see https://golangci-lint.run/docs/product/migration-guide/).
+version: "2"
 
 linters:
   enable:
     - errcheck
     - govet
+    - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
+  settings:
+    errcheck:
+      exclude-functions:
+        # gin.Context.Error()'s return value is intentionally never checked —
+        # it just appends to Context.Errors for middleware.Error() to render,
+        # the "handling" of the error already happened via `return` right after.
+        - (*github.com/gin-gonic/gin.Context).Error
+  exclusions:
+    paths:
+      - migrations
 
-issues:
-  exclude-dirs:
-    - migrations
+formatters:
+  # gofmt only, not goimports: the CLI's own gofmtTree() only runs `gofmt -w .`
+  # (goimports needs a separate binary install), so keep the lint config matching
+  # what actually formats generated code, or every fresh project starts pre-failing.
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - migrations

@@ -20,12 +20,14 @@ import (
 // the DB isn't reachable. minimal module: no routes yet, so no tests reference this yet — kept
 // ready for once `generate method` adds endpoints (start the DB: docker compose up -d, override
 // with TEST_DB_DSN)
+//nolint:unused
 var (
 	testDBOnce sync.Once
 	testDB     *gorm.DB
 	testDBErr  error
 )
 
+//nolint:unused
 func dbForTest(t *testing.T) *gorm.DB {
 	t.Helper()
 	testDBOnce.Do(func() {
@@ -45,6 +47,8 @@ func dbForTest(t *testing.T) *gorm.DB {
 }
 
 // setup builds the full stack on a transaction that's rolled back at the end → each test is isolated, no leftover rows
+//
+//nolint:unused
 func setup(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -56,6 +60,7 @@ func setup(t *testing.T) *gin.Engine {
 	return r
 }
 
+//nolint:unused
 func do(r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")

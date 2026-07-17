@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: {{dbName}}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      - name: gofmt check
+        run: |
+          diff <(gofmt -l .) <(printf '')
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      # TEST_DB_DSN not set: the default in handler_test.go already points at
+      # localhost:5432/{{dbName}} with postgres/postgres, matching the service above
+      - run: go test ./...

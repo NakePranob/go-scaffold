@@ -199,6 +199,7 @@ docs/
 ├── architect/{architecture,patterns,techstack}.md
 └── openapi.yaml + common/ + health/   # if openapi docs enabled
 migrations/
+.github/workflows/ci.yml    # build, vet, gofmt check, golangci-lint, go test (with a Postgres service)
 Makefile
 .golangci.yml
 .vscode/settings.json

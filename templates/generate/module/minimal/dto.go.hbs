@@ -10,11 +10,15 @@ import (
 
 // response = the DTO sent out (kept separate from the model so a later DB column doesn't leak automatically)
 // TODO: add fields as you generate methods that return more than id/created_at
+// unused until `generate method` adds a method that returns one
+//
+//nolint:unused
 type response struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
+//nolint:unused
 func toResponse(m *model.{{pascalName}}) response {
 	return response{ID: m.ID, CreatedAt: m.CreatedAt}
 }

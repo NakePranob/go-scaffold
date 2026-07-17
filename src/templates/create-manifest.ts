@@ -7,6 +7,7 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
   { template: "create/base/Makefile.hbs", output: "Makefile" },
   { template: "create/base/.golangci.yml.hbs", output: ".golangci.yml" },
   { template: "create/base/.vscode/settings.json.hbs", output: ".vscode/settings.json" },
+  { template: "create/base/.github/workflows/ci.yml.hbs", output: ".github/workflows/ci.yml" },
   { template: "create/base/README.md.hbs", output: "README.md" },
   { template: "create/base/AGENTS.md.hbs", output: "AGENTS.md" },
   { template: "create/base/CLAUDE.md.hbs", output: "CLAUDE.md" },

@@ -8,16 +8,21 @@ import (
 
 // error catalog specific to {{pkg}} — codes carry more meaning than the generic apperror ones
 // functions, not vars: the error middleware writes RequestID onto the returned pointer directly
-// (a shared instance would race across concurrent requests)
+// (a shared instance would race across concurrent requests). Not every entry is called by every
+// module (a minimal module calls none of these until `generate method` wires one in), hence nolint.
+//
+//nolint:unused
 func errNotFound() *apperror.AppError {
 	return apperror.New(http.StatusNotFound, "{{errorPrefix}}_NOT_FOUND", "{{pkg}} not found")
 }
 
+//nolint:unused
 func errConflict() *apperror.AppError {
 	// TODO: rename/reword once a real unique field exists (e.g. email already exists)
 	return apperror.New(http.StatusConflict, "{{errorPrefix}}_CONFLICT", "{{pkg}} already exists")
 }
 
+//nolint:unused
 func errHasReferences() *apperror.AppError {
 	return apperror.New(http.StatusConflict, "{{errorPrefix}}_HAS_REFERENCES", "{{pkg}} still has related records")
 }

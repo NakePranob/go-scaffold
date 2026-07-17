@@ -97,6 +97,34 @@ step("bare project: go mod tidy + build + vet", () => {
   run("go", ["vet", "./..."], fullApp);
 });
 
+step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
+  assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app");
+  assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "golangci-lint-action");
+});
+
+let hasGolangciLint = true;
+try {
+  run("golangci-lint", ["--version"]);
+  // golangci-lint's result cache is keyed by file content, not absolute path —
+  // this suite regenerates byte-identical "widget"/"order" packages across many
+  // scratch dirs, so a stale cache entry (e.g. from before a template fix) can
+  // get served with a file path from a since-deleted run. Start from empty.
+  run("golangci-lint", ["cache", "clean"]);
+} catch {
+  hasGolangciLint = false;
+}
+
+step(
+  hasGolangciLint
+    ? "bare project: golangci-lint is clean out of the box (the CI gate the scaffold ships would pass)"
+    : "bare project: golangci-lint not installed locally — skipping a real run",
+  () => {
+    if (!hasGolangciLint) return;
+    const out = run("golangci-lint", ["run"], fullApp);
+    if (out.trim() && !out.includes("0 issues")) throw new Error(`expected 0 issues, got:\n${out}`);
+  }
+);
+
 let hasPsql = true;
 try {
   run("psql", ["--version"]);
@@ -194,6 +222,17 @@ step("after 5 generate method calls: build + vet + gofmt + test", () => {
   run("go", ["test", "./..."], fullApp);
 });
 
+step(
+  hasGolangciLint
+    ? "after 5 generate method calls: still lint-clean"
+    : "after 5 generate method calls: lint check skipped (golangci-lint not installed)",
+  () => {
+    if (!hasGolangciLint) return;
+    const out = run("golangci-lint", ["run"], fullApp);
+    if (out.trim() && !out.includes("0 issues")) throw new Error(`expected 0 issues, got:\n${out}`);
+  }
+);
+
 step("generate method rejects a duplicate method name", () => {
   expectThrows(() => goScaffold(["generate", "method", "order", "approve", "--type", "patch"], fullApp), "already exists");
 });
@@ -288,12 +327,24 @@ step("create --no-full minimal module layers up to full build", () => {
   run("go", ["mod", "tidy"], minApp);
   goScaffold(["generate", "module", "widget", "--no-full"], minApp);
   run("go", ["build", "./..."], minApp);
+  if (hasGolangciLint) {
+    // bare minimal module, zero methods yet: the ahead-of-use plumbing
+    // (fakeRepo, test harness, wrapFindErr, response/toResponse) must not
+    // trip `unused` before anything has wired it in.
+    const out = run("golangci-lint", ["run"], minApp);
+    if (out.trim() && !out.includes("0 issues")) throw new Error(`bare minimal module: expected 0 issues, got:\n${out}`);
+  }
   goScaffold(["generate", "method", "widget", "create", "--type", "post"], minApp);
   goScaffold(["generate", "method", "widget", "list", "--type", "get", "--get-mode", "all"], minApp);
+  goScaffold(["generate", "method", "widget", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"], minApp);
   run("go", ["build", "./..."], minApp);
   run("go", ["vet", "./..."], minApp);
   const dirty = run("gofmt", ["-l", "."], minApp).trim();
   if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
+  if (hasGolangciLint) {
+    const out = run("golangci-lint", ["run"], minApp);
+    if (out.trim() && !out.includes("0 issues")) throw new Error(`layered minimal module: expected 0 issues, got:\n${out}`);
+  }
 });
 
 cleanup();

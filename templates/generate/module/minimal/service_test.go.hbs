@@ -15,24 +15,35 @@ import (
 // minimal module: no service methods yet, so no tests reference this — kept ready for
 // when `generate method` adds one (its patches append matching stubs here automatically
 // for a `get --get-mode one --field` lookup)
+//nolint:unused
 type fakeRepo struct {
 	err error
 	m   *model.{{pascalName}}
 }
 
+//nolint:unused
 func (f *fakeRepo) Create(context.Context, *model.{{pascalName}}) error                    { return f.err }
+
+//nolint:unused
 func (f *fakeRepo) FindAll(context.Context, int, int) ([]model.{{pascalName}}, error) { return nil, f.err }
+
+//nolint:unused
 func (f *fakeRepo) FindByID(context.Context, uuid.UUID) (*model.{{pascalName}}, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.m, nil
 }
+
+//nolint:unused
 func (f *fakeRepo) Update(context.Context, *model.{{pascalName}}) error { return f.err }
-func (f *fakeRepo) Delete(context.Context, uuid.UUID) error             { return f.err }
+
+//nolint:unused
+func (f *fakeRepo) Delete(context.Context, uuid.UUID) error { return f.err }
 
 // go-scaffold:fake-repo-methods
 
+//nolint:unused
 func status(t *testing.T, err error) int {
 	t.Helper()
 	var appErr *apperror.AppError

@@ -168,6 +168,10 @@ function patchGetOne(
     serviceTest,
     FAKE_REPO_MARKER,
     [
+      // nolint: only matters for a minimal module (fakeRepo never instantiated
+      // yet, so unused flags every one of its methods individually); harmless
+      // no-op on a full module where fakeRepo is already in use.
+      `//nolint:unused`,
       `func (f *fakeRepo) FindBy${fieldPascal}(context.Context, string) (*model.${naming.pascalName}, error) {`,
       `\tif f.err != nil {`,
       `\t\treturn nil, f.err`,
