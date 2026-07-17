@@ -124,6 +124,14 @@ make test
 ## API spec
 
 `docs/openapi.yaml` is hand-written and served, along with every file it `$ref`s (`common/`, `health/`, per-domain folders), under `/docs` while the server runs — point a renderer (Scalar, Swagger UI, Redoc) or a client generator (Hey API) at `http://localhost:8080/docs/openapi.yaml`. Update the spec by hand whenever an endpoint/DTO changes.
+
+Some tools don't resolve external `$ref`s when importing a local file — they read it as-is and see zero routes (Bruno's "Import Collection" does this; some Postman flows too). For those, bundle the spec into one fully-resolved file first:
+
+```bash
+make openapi-bundle          # writes docs/openapi.bundled.yaml (gitignored — regenerate anytime)
+```
+
+Import `docs/openapi.bundled.yaml` instead. Tools that resolve `$ref` over HTTP or when reading a URL (Scalar, Swagger UI, Redoc) don't need this — point them at the live `/docs/openapi.yaml` URL above.
 {{/if}}
 
 ## Adding a domain

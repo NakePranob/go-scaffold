@@ -180,6 +180,29 @@ step("main.go serves the whole docs/ tree, not just the index (or $ref resolutio
   assertFileContains(path.join(fullApp, "cmd", "api", "main.go"), 'r.Static("/docs", "./docs")');
 });
 
+let hasNpx = true;
+try {
+  run("npx", ["--version"]);
+} catch {
+  hasNpx = false;
+}
+
+step(
+  hasNpx
+    ? "make openapi-bundle resolves every $ref into one file (for importers like Bruno that don't)"
+    : "make openapi-bundle skipped (npx not available)",
+  () => {
+    if (!hasNpx) return;
+    run("make", ["openapi-bundle"], fullApp);
+    const bundlePath = path.join(fullApp, "docs", "openapi.bundled.yaml");
+    assertFileContains(bundlePath, "get:");
+    assertFileContains(bundlePath, "post:");
+    // the whole point: no $ref left pointing at a sibling file
+    const bundled = readFileSync(bundlePath, "utf8");
+    if (bundled.includes("$ref: './")) throw new Error("bundled spec still has unresolved external $refs");
+  }
+);
+
 step("re-generating after deleting only the folder doesn't duplicate wiring (would panic gin)", () => {
   // simulate: user rm -rf's the module dir but main.go/openapi.yaml still
   // reference it, then re-runs generate module. Must stay a single Register.

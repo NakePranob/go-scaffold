@@ -4,7 +4,7 @@ DB_USER ?= postgres
 DB_NAME ?= {{dbName}}
 PGPASSWORD ?= postgres
 
-.PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down{{#if docker}} docker-up docker-down{{/if}}
+.PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 run:
 	go run ./cmd/api
@@ -73,6 +73,16 @@ migrate-up:
 
 migrate-down:
 	migrate -path migrations -database "$$DB_DSN" down 1
+{{#if openapiDocs}}
+
+# docs/openapi.yaml is hand-written and split across sibling files via relative
+# $ref (common/, health/, per-domain folders) — fine for tools that resolve
+# $ref over HTTP (Scalar, Swagger UI, Redoc), but importers that read a local
+# file as-is (Bruno, some Postman flows) never follow $ref and see zero routes.
+# This bundles everything into one fully-resolved file for those tools.
+openapi-bundle:
+	npx --yes @redocly/cli bundle docs/openapi.yaml -o docs/openapi.bundled.yaml
+{{/if}}
 {{#if docker}}
 
 docker-up:
