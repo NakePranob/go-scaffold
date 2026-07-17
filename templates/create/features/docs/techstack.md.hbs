@@ -22,7 +22,7 @@
 - PostgreSQL + GORM baseline: always enabled
 - Graceful shutdown, structured logging, `/livez` + `/readyz`: always enabled
 - Docker Compose (local Postgres): `{{#if docker}}enabled{{else}}disabled{{/if}}`
-- OpenAPI docs (`docs/openapi.yaml`, served at `/openapi.yaml`): `{{#if openapiDocs}}enabled{{else}}disabled{{/if}}`
+- OpenAPI docs (`docs/openapi.yaml`, whole `docs/` tree served at `/docs`): `{{#if openapiDocs}}enabled{{else}}disabled{{/if}}`
 - API route prefix: `{{#if apiPrefix}}/{{apiPrefix}}{{else}}(none){{/if}}`
 - CI (`.github/workflows/ci.yml` — build, vet, gofmt check, golangci-lint, `go test` with a real Postgres service): always enabled
 

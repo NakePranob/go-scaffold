@@ -176,6 +176,10 @@ step("full module: docs wired into openapi.yaml", () => {
   assertFileContains(path.join(fullApp, "docs", "openapi.yaml"), "OrderResponse");
 });
 
+step("main.go serves the whole docs/ tree, not just the index (or $ref resolution 404s over HTTP)", () => {
+  assertFileContains(path.join(fullApp, "cmd", "api", "main.go"), 'r.Static("/docs", "./docs")');
+});
+
 step("re-generating after deleting only the folder doesn't duplicate wiring (would panic gin)", () => {
   // simulate: user rm -rf's the module dir but main.go/openapi.yaml still
   // reference it, then re-runs generate module. Must stay a single Register.

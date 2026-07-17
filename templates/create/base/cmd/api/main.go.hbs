@@ -60,8 +60,11 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 {{#if openapiDocs}}
-	// hand-written spec at docs/openapi.yaml — point a client generator (e.g. Hey API) at this path
-	r.StaticFile("/openapi.yaml", "./docs/openapi.yaml")
+	// hand-written spec at docs/openapi.yaml, split across sibling files (common/, health/,
+	// <domain>/) via relative $ref — serve the whole tree under one prefix so a client that
+	// resolves $ref over HTTP (Scalar, Swagger UI, Redoc, Hey API pointed at a URL) can reach
+	// them too; StaticFile on just the index file would 404 on every $ref it follows.
+	r.Static("/docs", "./docs")
 {{/if}}
 
 	api := r.Group("/{{apiPrefix}}")

@@ -26,7 +26,7 @@ export async function runCreateWizard(): Promise<CreateWizardResult> {
     default: true,
   });
   const openapiDocs = await confirm({
-    message: "Include hand-written OpenAPI docs (docs/openapi.yaml, served at /openapi.yaml)?",
+    message: "Include hand-written OpenAPI docs (docs/openapi.yaml, whole docs/ tree served at /docs)?",
     default: true,
   });
   const apiPrefixRaw = await input({

@@ -84,7 +84,9 @@ insert, so it doesn't need `gen_random_uuid()`.
 ## 8. API Documentation
 
 **Decision:** Hand-written OpenAPI spec (`docs/openapi.yaml`), split by
-domain module, served as a static file at `/openapi.yaml`.
+domain module, served under `/docs` (so relative `$ref`s to sibling files
+resolve over HTTP too — the index alone isn't enough for a renderer like
+Scalar/Swagger UI/Redoc to follow them).
 **Rationale:** Cheap while the endpoint count is low; switch to
 comment-generated (swaggo) if hand-updates start drifting.
 {{/if}}

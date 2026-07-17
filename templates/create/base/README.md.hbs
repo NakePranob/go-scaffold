@@ -123,7 +123,7 @@ make test
 
 ## API spec
 
-`docs/openapi.yaml` is hand-written and served as a static file at `/openapi.yaml` while the server runs — update it by hand whenever an endpoint/DTO changes.
+`docs/openapi.yaml` is hand-written and served, along with every file it `$ref`s (`common/`, `health/`, per-domain folders), under `/docs` while the server runs — point a renderer (Scalar, Swagger UI, Redoc) or a client generator (Hey API) at `http://localhost:8080/docs/openapi.yaml`. Update the spec by hand whenever an endpoint/DTO changes.
 {{/if}}
 
 ## Adding a domain
