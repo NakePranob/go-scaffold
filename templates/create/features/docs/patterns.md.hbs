@@ -86,6 +86,37 @@ if this project has one):
    pre-check existence before insert; let the DB enforce it atomically and
    catch the error — a pre-check has a TOCTOU race.
 
+## Calling Another Domain's Logic
+
+For behavior, not just a data reference (e.g. `order` needs `user`'s email
+to put on a receipt) — the caller's `service.go` declares its own narrow
+interface for exactly what it needs, the same way it already declares a
+`repository` interface:
+
+```go
+// order/service.go
+type userLookup interface {
+    GetByID(ctx context.Context, id uuid.UUID) (user.Response, error)
+}
+```
+
+`cmd/api/main.go` wires the concrete `user` service in — it already
+satisfies the interface, no adapter needed:
+
+```go
+userSvc := user.NewService(userRepo)
+orderSvc := order.NewService(orderRepo, userSvc)
+```
+
+- **One direction only.** If `user` would need to call back into `order`,
+  don't wire it both ways — either the two belong in one domain, or the
+  callback needs an event/queue, not a direct call.
+- **Don't use this to replace a FK check.** Calling `userLookup.GetByID`
+  to verify a user exists before inserting an order is the same TOCTOU race
+  rule 3 above warns about — let the FK constraint catch it instead. Use
+  this pattern only when the caller needs actual data from the other
+  domain, not just its existence.
+
 ## Adding One Endpoint — `generate method`
 
 ```bash

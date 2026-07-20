@@ -38,9 +38,11 @@ make docker-up                     # local Postgres (postgres:5432)
 make db-create                     # create the {{dbName}} database itself (once — safe to re-run)
 go mod tidy
 make run                           # AUTO_MIGRATE=true creates the schema automatically in dev
-# or override with env (the app reads os.Getenv directly, see .env.example):
-export $(grep -v '^#' .env.example | xargs) && make run
 ```
+
+`make run` loads `.env` if present (copy `.env.example` to `.env` to override
+defaults — the app itself just reads `os.Getenv`, no `.env` parsing at
+runtime).
 
 `make db-create` connects to Postgres at `DB_HOST`/`DB_PORT`/`DB_USER` (default:
 `localhost`/`5432`/`postgres`, matching `.env.example`) using the `psql`

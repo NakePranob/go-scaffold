@@ -7,7 +7,7 @@ PGPASSWORD ?= postgres
 .PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 run:
-	go run ./cmd/api
+	@[ -f .env ] && export $$(grep -v '^#' .env | xargs); go run ./cmd/api
 
 build:
 	go build -o bin/api ./cmd/api
