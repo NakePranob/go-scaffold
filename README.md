@@ -12,22 +12,26 @@ same shape as the last one.
 ## Install
 
 ```bash
+npm install -g @nakedev/go-scaffold
+```
+
+Or run it without installing:
+
+```bash
+npx @nakedev/go-scaffold create my-api
+```
+
+Working on the CLI itself (not just using it)? Clone the repo, then:
+
+```bash
 pnpm install
 pnpm run build
+node bin/go-scaffold.js create my-api --defaults
 ```
 
 `npm link` / `pnpm link --global` may not put the binary on your `PATH`
-depending on your machine's npm/pnpm global-bin config — rather than fight
-that, run the CLI directly, or add a shell alias once:
-
-```bash
-node bin/go-scaffold.js create my-api --defaults
-# or: alias go-scaffold="node $(pwd)/bin/go-scaffold.js"
-```
-
-The rest of this README uses the bare `go-scaffold ...` form for brevity —
-substitute the `node bin/go-scaffold.js ...` form or your alias if you
-haven't linked it.
+depending on your machine's npm/pnpm global-bin config — running
+`node bin/go-scaffold.js ...` directly sidesteps that.
 
 ## Quick start
 
