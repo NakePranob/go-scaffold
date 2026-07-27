@@ -5,8 +5,8 @@
 // forbidden flags) actually reject. No Postgres required — integration
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, writeSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
