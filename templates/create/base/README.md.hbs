@@ -106,12 +106,15 @@ migrate create -ext sql -dir migrations -seq add_something
 
 Integration tests (handler-level) run against a **real Postgres** instance (same engine as prod), each test in a transaction that's rolled back — no leftover rows. If the DB isn't reachable those tests **skip** (unit tests using a fake repo always run).
 
+They use a **separate `{{dbName}}_test` database**, not the one `DB_DSN` points at. That's deliberate: the harness runs `DropTable` + `AutoMigrate` on every real run, so pointing it at your dev database would wipe whatever `make migrate-up` built there — FK constraints and seed data included. Create it once:
+
 ```bash
 {{#if docker}}
 make docker-up      # local postgres first
 {{/if}}
+make db-create DB_NAME={{dbName}}_test
 make test
-# point at a different test DB: TEST_DB_DSN=postgres://... go test ./...
+# point somewhere else entirely: TEST_DB_DSN=postgres://... go test ./...
 ```
 
 ## Error payload

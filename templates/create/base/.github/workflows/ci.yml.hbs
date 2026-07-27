@@ -14,7 +14,9 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: {{dbName}}
+          # the test database, not the app's — CI only runs tests, and the
+          # integration harness drops/recreates its tables on every run
+          POSTGRES_DB: {{dbName}}_test
         ports:
           - 5432:5432
         options: >-
@@ -42,5 +44,5 @@ jobs:
           version: latest
 
       # TEST_DB_DSN not set: the default in handler_test.go already points at
-      # localhost:5432/{{dbName}} with postgres/postgres, matching the service above
+      # localhost:5432/{{dbName}}_test with postgres/postgres, matching the service above
       - run: go test ./...

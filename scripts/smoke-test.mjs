@@ -98,7 +98,7 @@ step("bare project: go mod tidy + build + vet", () => {
 });
 
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
-  assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app");
+  assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app_test");
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "golangci-lint-action");
 });
 
@@ -145,6 +145,24 @@ function listDatabases() {
   return hasPsql
     ? run("psql", ["-h", "localhost", "-U", "postgres", "-lqt"], undefined, { PGPASSWORD: "postgres" })
     : run("docker", ["exec", "-e", "PGPASSWORD=postgres", dockerPgContainer, "psql", "-U", "postgres", "-lqt"]);
+}
+
+function psqlExec(db, sql) {
+  return hasPsql
+    ? run("psql", ["-h", "localhost", "-U", "postgres", "-d", db, "-tAc", sql], undefined, { PGPASSWORD: "postgres" })
+    : run("docker", [
+        "exec",
+        "-e",
+        "PGPASSWORD=postgres",
+        dockerPgContainer,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        db,
+        "-tAc",
+        sql,
+      ]);
 }
 
 step(
@@ -228,6 +246,37 @@ step("full module: build + vet + gofmt clean", () => {
 step("full module: go test ./... (integration tests skip without a DB)", () => {
   run("go", ["test", "./..."], fullApp);
 });
+
+// The harness in handler_test.go does DropTable+AutoMigrate on whatever DSN it
+// gets. Pointed at the app's own database that destroys the schema `migrate up`
+// built — FK constraints and seed data included — so the default has to be a
+// separate <db>_test. This is the check that the default actually holds.
+step(
+  hasPsql || dockerPgContainer
+    ? "go test wipes only <db>_test, never the app's own database"
+    : "go test DB isolation: skipped (no psql, no Postgres container)",
+  () => {
+    if (!hasPsql && !dockerPgContainer) return;
+    // stand up a "dev database" that looks like one `make migrate-up` produced,
+    // holding a row the test run must not be allowed to destroy
+    run("make", ["db-create"], fullApp);
+    psqlExec("full_app", "CREATE TABLE orders (id uuid PRIMARY KEY); INSERT INTO orders VALUES (gen_random_uuid());");
+    run("make", ["db-create", "DB_NAME=full_app_test"], fullApp);
+
+    // -count=1 defeats the test cache: the step above already ran `go test ./...`
+    // with the same inputs (and TEST_DB_DSN unset both times), so a plain re-run
+    // is served from cache and never touches Postgres at all — which would make
+    // this whole check pass without proving anything.
+    run("go", ["test", "-count=1", "./..."], fullApp); // TEST_DB_DSN unset — the default is what's under test
+
+    const rows = psqlExec("full_app", "SELECT count(*) FROM orders;").trim();
+    if (rows !== "1") {
+      throw new Error(`the app's database lost data to the test run (expected 1 row, got "${rows}")`);
+    }
+    run("make", ["db-drop"], fullApp);
+    run("make", ["db-drop", "DB_NAME=full_app_test"], fullApp);
+  }
+);
 
 for (const [name, args] of Object.entries({
   "patch (resource action)": ["approve", "--type", "patch"],
