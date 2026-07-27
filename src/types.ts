@@ -9,6 +9,13 @@ export interface ProjectConfig {
   /** URL prefix every route is grouped under, e.g. "v1" -> /v1/orders. "" means no prefix. */
   apiPrefix: string;
   features: ProjectFeatures;
+  /**
+   * CLI version that scaffolded this project. Optional: projects created
+   * before this was stamped (and the go.mod-based fallback in detectConfig)
+   * don't have one — it's a diagnostic shown when generated code fails to
+   * compile, not something to branch behavior on.
+   */
+  scaffoldVersion?: string;
 }
 
 export interface ModuleNaming {

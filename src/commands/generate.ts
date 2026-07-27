@@ -8,6 +8,7 @@ import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest
 import { patchMainGo } from "../utils/main-patcher";
 import { patchOpenapiIndex } from "../utils/openapi-patcher";
 import { nextMigrationSeq } from "../utils/migrations";
+import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { promptModuleName } from "../prompts/generate-wizard";
 
 export interface GenerateModuleOptions {
@@ -27,6 +28,10 @@ export async function generateModule(
   if (fs.existsSync(moduleDir) && fs.readdirSync(moduleDir).length > 0) {
     throw new Error(`${moduleDir} already exists — pick a different name or delete it first`);
   }
+
+  // snapshot before writing anything, so assertNoDrift below can tell "we broke
+  // it" from "it was already broken"
+  const checkBefore = typeChecks(projectDir);
 
   const context = {
     ...naming,
@@ -86,6 +91,7 @@ export async function generateModule(
   }
 
   gofmtTree(projectDir);
+  assertNoDrift(projectDir, checkBefore, config);
 
   const routePath = config.apiPrefix ? `/${config.apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   console.log(pc.green(`\ngenerated internal/app/${modulePath}/`));

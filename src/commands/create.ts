@@ -6,6 +6,7 @@ import { CREATE_MANIFEST } from "../templates/create-manifest";
 import { writeConfig } from "../utils/config";
 import { assertValidGoModulePath, normalizeApiPrefix, toDbName, validateApiPrefix } from "../utils/naming";
 import { promptProjectName, runCreateWizard } from "../prompts/create-wizard";
+import { cliVersion } from "../utils/version";
 import { ProjectFeatures } from "../types";
 
 export interface CreateOptions {
@@ -50,7 +51,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   await fs.ensureDir(projectDir);
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
   gofmtTree(projectDir);
-  writeConfig(projectDir, { projectName, goModule, apiPrefix, features });
+  writeConfig(projectDir, { projectName, goModule, apiPrefix, features, scaffoldVersion: cliVersion() });
 
   console.log(pc.green(`\ncreated ${projectName}/`));
   console.log(`\ncd ${projectName}`);

@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,6 +88,14 @@ step("rejects an invalid project name before writing anything", () => {
 step("create --defaults scaffolds a bare project", () => {
   goScaffold(["create", "full-app", "--defaults"], scratch);
   assertFileContains(path.join(scratch, "full-app", "go.mod"), "module full-app");
+});
+
+step("create stamps the CLI version into go-scaffold.config.json", () => {
+  const cfg = JSON.parse(readFileSync(path.join(scratch, "full-app", "go-scaffold.config.json"), "utf8"));
+  const { version } = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  if (cfg.scaffoldVersion !== version) {
+    throw new Error(`expected scaffoldVersion "${version}", got "${cfg.scaffoldVersion}"`);
+  }
 });
 
 const fullApp = path.join(scratch, "full-app");
@@ -371,6 +379,45 @@ step("create --no-full minimal module layers up to full build", () => {
   if (hasGolangciLint) {
     const out = run("golangci-lint", ["run"], minApp);
     if (out.trim() && !out.includes("0 issues")) throw new Error(`layered minimal module: expected 0 issues, got:\n${out}`);
+  }
+});
+
+// The two halves of drift detection. `create` emits the shared/ layer once;
+// `generate` renders templates written against that exact layer. A project that
+// later edits shared/ — normal, expected work — silently falls out of sync, and
+// the break lands in generated files the user never wrote. These two steps pin
+// down both "catches it" and "doesn't cry wolf".
+step("generate fails loudly when the project's shared/ layer has drifted", () => {
+  goScaffold(["create", "drift-app", "--defaults"], scratch);
+  const app = path.join(scratch, "drift-app");
+  run("go", ["mod", "tidy"], app);
+
+  // the real change this guards against: middleware.Error grows a parameter
+  // (hide error details in production), and its one caller is updated.
+  const errPath = path.join(app, "internal", "shared", "middleware", "error.go");
+  writeFileSync(
+    errPath,
+    readFileSync(errPath, "utf8").replace("func Error() gin.HandlerFunc {", "func Error(exposeDetail bool) gin.HandlerFunc {")
+  );
+  const mainPath = path.join(app, "cmd", "api", "main.go");
+  writeFileSync(mainPath, readFileSync(mainPath, "utf8").replace("middleware.Error()", "middleware.Error(true)"));
+  run("go", ["vet", "./..."], app); // the project itself is still perfectly fine
+
+  // the generated handler_test.go builds the middleware chain by hand and still
+  // calls middleware.Error() with no args — `go build` wouldn't see it (test
+  // file), `go vet` does.
+  expectThrows(() => goScaffold(["generate", "module", "order"], app), "drift");
+});
+
+step("generate doesn't blame itself for a project that was already broken", () => {
+  goScaffold(["create", "prebroken-app", "--defaults"], scratch);
+  const app = path.join(scratch, "prebroken-app");
+  run("go", ["mod", "tidy"], app);
+  // a type error the user introduced, nothing to do with the generator
+  writeFileSync(path.join(app, "internal", "shared", "id", "wip.go"), 'package id\n\nfunc wip() int { return "nope" }\n');
+  goScaffold(["generate", "module", "order"], app); // must still succeed
+  if (!existsSync(path.join(app, "internal", "app", "order", "handler.go"))) {
+    throw new Error("module wasn't generated");
   }
 });
 
