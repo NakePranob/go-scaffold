@@ -5,8 +5,8 @@
 // forbidden flags) actually reject. No Postgres required — integration
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,13 @@ function step(name, fn) {
     passed++;
   } catch (err) {
     console.log("FAILED");
-    console.error(err.stdout?.toString() ?? err.stderr?.toString() ?? err.message);
+    // console.error + process.exit() can race: stderr isn't a TTY when output is
+    // piped/redirected (every way this script actually gets run — CI, `pnpm run
+    // verify`, a log file), so the write can still be buffered when exit() tears
+    // the process down, silently dropping the one line that explains the failure.
+    // writeSync is synchronous, so it's flushed before exit() runs.
+    const detail = err.stdout?.toString() || err.stderr?.toString() || err.message;
+    writeSync(2, `${detail}\n`);
     cleanup();
     process.exit(1);
   }
@@ -228,6 +234,82 @@ step("full module: build + vet + gofmt clean", () => {
 step("full module: go test ./... (integration tests skip without a DB)", () => {
   run("go", ["test", "./..."], fullApp);
 });
+
+let hasMigrate = true;
+try {
+  run("migrate", ["-version"]);
+} catch {
+  hasMigrate = false;
+}
+
+// The whole point of CheckMigrationVersion: AUTO_MIGRATE=false must not boot
+// against a DB nothing has migrated yet, and must boot fine once `migrate up`
+// has actually run — proven here against the real compiled server, not just a
+// unit test of the function. Invokes `migrate` directly rather than through
+// `make migrate-up`, so this step exercises only this PR's own code.
+step(
+  (hasPsql || dockerPgContainer) && hasMigrate
+    ? "AUTO_MIGRATE=false refuses to boot with no migrations applied, boots once `migrate up` has run"
+    : "migration guard: skipped (needs psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!((hasPsql || dockerPgContainer) && hasMigrate)) return;
+
+    run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"], fullApp); // in case a prior run left one behind
+    run("make", ["db-drop"], fullApp);
+    run("make", ["db-create"], fullApp);
+
+    writeFileSync(
+      path.join(fullApp, ".env"),
+      readFileSync(path.join(fullApp, ".env.example"), "utf8").replace("AUTO_MIGRATE=true", "AUTO_MIGRATE=false")
+    );
+
+    // `kill -9 $PID` isn't enough to stop the server: `make run`'s PID is `make`
+    // itself, and the actual listening binary is a grandchild via `go run` —
+    // killing just the parent orphans it, still bound to the port and still
+    // holding a Postgres connection, which then makes the final `db-drop` fail
+    // with "database is being accessed by other users". Kill by port instead.
+    const before = run(
+      "bash",
+      [
+        "-c",
+        "make run >/tmp/go-scaffold-smoke-boot.log 2>&1 & sleep 3; " +
+          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "LISTENING=$(lsof -ti:8080 | wc -l | tr -d ' '); " +
+          "lsof -ti:8080 | xargs -r kill -9; " +
+          "echo \"READYZ=$CODE LISTENING=$LISTENING\"",
+      ],
+      fullApp
+    );
+    if (!/READYZ=000 LISTENING=0/.test(before)) {
+      throw new Error(`expected the server to refuse to boot (READYZ=000 LISTENING=0), got: ${before}`);
+    }
+    const beforeLog = readFileSync("/tmp/go-scaffold-smoke-boot.log", "utf8");
+    if (!beforeLog.includes("migration version check")) {
+      throw new Error(`expected a "migration version check" error in the boot log, got:\n${beforeLog}`);
+    }
+
+    run("migrate", ["-path", "migrations", "-database", "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable", "up"], fullApp);
+
+    const after = run(
+      "bash",
+      [
+        "-c",
+        "make run >/tmp/go-scaffold-smoke-boot.log 2>&1 & sleep 3; " +
+          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "lsof -ti:8080 | xargs -r kill -9; " +
+          "echo \"READYZ=$CODE\"",
+      ],
+      fullApp
+    );
+    if (!/READYZ=200/.test(after)) {
+      throw new Error(`expected the server to boot once migrated (READYZ=200), got: ${after}`);
+    }
+
+    // give Postgres a moment to notice the killed connection before db-drop
+    execFileSync("sleep", ["1"]);
+    run("make", ["db-drop"], fullApp);
+  }
+);
 
 for (const [name, args] of Object.entries({
   "patch (resource action)": ["approve", "--type", "patch"],

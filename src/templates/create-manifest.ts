@@ -57,6 +57,7 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "internal/shared/middleware/requestid.go",
   },
   { template: "create/base/migrations/.gitkeep.hbs", output: "migrations/.gitkeep" },
+  { template: "create/base/migrations/embed.go.hbs", output: "migrations/embed.go" },
 
   // architecture standards docs — always included, this is the point of the CLI
   {
