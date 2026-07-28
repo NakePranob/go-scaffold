@@ -4,16 +4,32 @@ DB_USER ?= postgres
 DB_NAME ?= {{dbName}}
 PGPASSWORD ?= postgres
 
+# which env file to load — defaults to .env (your local override, gitignored).
+# override to run against another file, e.g. copy .env.example to .env.production,
+# fill it in, then `make run ENV_FILE=.env.production`.
+#
+# Every target that needs config loads it the same way: drop whole-line comments
+# (^#) AND trailing ` # ...` comments — the sed only strips a `#` preceded by
+# whitespace, so a `#` inside a value (password, DSN) is kept. Without the sed,
+# `xargs` hands the comment's words to `export` too: `PORT=8080 # prod: PORT=80`
+# would export PORT twice and the comment's value would win. (Can't factor this
+# into a make variable: a `#` in a variable value starts a make comment; in a
+# recipe line it's passed to the shell untouched.)
+ENV_FILE ?= .env
+
 .PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 run:
-	@[ -f .env ] && export $$(grep -v '^#' .env | xargs); go run ./cmd/api
+	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go run ./cmd/api
 
 build:
 	go build -o bin/api ./cmd/api
 
+# loads ENV_FILE like every other target, so TEST_DB_DSN set there reaches the
+# integration tests. A bare `go test ./...` still works, but falls back to
+# whatever defaults the test files carry.
 test:
-	go test ./...
+	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go test ./...
 
 fmt:
 	gofmt -w .
@@ -69,10 +85,10 @@ db-drop:
 	fi
 
 migrate-up:
-	migrate -path migrations -database "$$DB_DSN" up
+	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" up
 
 migrate-down:
-	migrate -path migrations -database "$$DB_DSN" down 1
+	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" down 1
 {{#if openapiDocs}}
 
 # docs/openapi.yaml is hand-written and split across sibling files via relative

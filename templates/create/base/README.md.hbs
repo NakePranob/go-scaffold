@@ -40,9 +40,13 @@ go mod tidy
 make run                           # AUTO_MIGRATE=true creates the schema automatically in dev
 ```
 
-`make run` loads `.env` if present (copy `.env.example` to `.env` to override
-defaults — the app itself just reads `os.Getenv`, no `.env` parsing at
-runtime).
+`make run`/`make test`/`make migrate-up`/`make migrate-down` load `.env` if
+present (copy `.env.example` to `.env` to override defaults — the app itself
+just reads `os.Getenv`, no `.env` parsing at runtime). Point them at another
+file with `ENV_FILE`: copy `.env.example` to `.env.production`, fill it in,
+then `make run ENV_FILE=.env.production`. Trailing `# ...` comments in the env
+file are stripped before loading, so a `# prod: ...` note next to a value is
+safe; a `#` inside a value (password, DSN) is kept.
 
 `make db-create` connects to Postgres at `DB_HOST`/`DB_PORT`/`DB_USER` (default:
 `localhost`/`5432`/`postgres`, matching `.env.example`) using the `psql`
@@ -68,7 +72,7 @@ make lint           # golangci-lint run (see .golangci.yml)
 make tidy           # go mod tidy
 make db-create       # create the database itself (safe to re-run)
 make db-drop         # drop the database
-make migrate-up      # apply migrations (needs $DB_DSN)
+make migrate-up      # apply migrations (reads DB_DSN from ENV_FILE)
 make migrate-down     # roll back one migration
 {{#if docker}}make docker-up       # docker compose up -d
 make docker-down     # docker compose down
