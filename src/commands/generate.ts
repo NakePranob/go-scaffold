@@ -7,7 +7,7 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
 import { patchMainGo } from "../utils/main-patcher";
 import { patchOpenapiIndex } from "../utils/openapi-patcher";
-import { nextMigrationSeq } from "../utils/migrations";
+import { newMigrationVersion } from "../utils/migrations";
 import { promptModuleName } from "../prompts/generate-wizard";
 
 export interface GenerateModuleOptions {
@@ -50,7 +50,7 @@ export async function generateModule(
     fs.readdirSync(migrationsDir).some((f) => f.endsWith(`_create_${naming.plural}.up.sql`));
   let seq = "";
   if (!migrationExists) {
-    seq = nextMigrationSeq(migrationsDir);
+    seq = newMigrationVersion(migrationsDir);
     const migrationEntries = [
       {
         template: "generate/module/migration.up.sql.hbs",

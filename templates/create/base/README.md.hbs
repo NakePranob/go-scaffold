@@ -70,13 +70,18 @@ make db-create       # create the database itself (safe to re-run)
 make db-drop         # drop the database
 make migrate-up      # apply migrations (needs $DB_DSN)
 make migrate-down     # roll back one migration
+make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql (point DB_DSN at a throwaway DB)
 {{#if docker}}make docker-up       # docker compose up -d
 make docker-down     # docker compose down
 {{/if}}```
 
 ## Migrations
 
-Schema is managed with [golang-migrate](https://github.com/golang-migrate/migrate), files live in `migrations/`.
+Schema is managed with [golang-migrate](https://github.com/golang-migrate/migrate), files live in `migrations/`, named `<version>_<name>.{up,down}.sql`. `version` is a 14-digit UTC timestamp, not an incrementing counter — two people adding a migration off the same base branch get different filenames instead of both claiming the same number and colliding on merge. (`generate module` names its own migration the same way; existing sequential `0000NN_*` files from before this convention sort fine alongside timestamped ones either way.)
+
+```bash
+go-scaffold generate migration add_status_to_orders   # reserves migrations/<version>_add_status_to_orders.{up,down}.sql, TODO-stubbed — you write the SQL
+```
 
 ```bash
 brew install golang-migrate
@@ -84,11 +89,15 @@ brew install golang-migrate
 
 migrate -path migrations -database "$DB_DSN" up
 migrate -path migrations -database "$DB_DSN" down 1
-migrate create -ext sql -dir migrations -seq add_something
+migrate create -ext sql -dir migrations -seq=false add_something   # same as `go-scaffold generate migration`, if you'd rather not use the CLI
 ```
 
 **dev:** leave `AUTO_MIGRATE=true` (default) so GORM's AutoMigrate creates the schema quickly.
 **prod:** set `AUTO_MIGRATE=false` and run `migrate up` as a separate deploy step — versioned, has rollback (`down`), doesn't lock the table the way AutoMigrate does once there's real data.
+
+```bash
+make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql before you actually need a rollback (point DB_DSN at a throwaway DB first — this drops every table)
+```
 
 ## Env vars
 
