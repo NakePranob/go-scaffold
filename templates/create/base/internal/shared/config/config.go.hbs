@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,8 @@ type Config struct {
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
+
+	CORSAllowedOrigins []string
 }
 
 func Load() Config {
@@ -26,6 +29,8 @@ func Load() Config {
 		DBMaxOpenConns:    envInt("DB_MAX_OPEN_CONNS", 10),
 		DBMaxIdleConns:    envInt("DB_MAX_IDLE_CONNS", 10),
 		DBConnMaxLifetime: time.Duration(envInt("DB_CONN_MAX_LIFETIME_MIN", 5)) * time.Minute,
+
+		CORSAllowedOrigins: envList("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
 	}
 }
 
@@ -34,6 +39,17 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func envList(k, def string) []string {
+	raw := strings.Split(env(k, def), ",")
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func envInt(k string, def int) int {

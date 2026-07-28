@@ -45,6 +45,10 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "internal/shared/pagination/pagination.go",
   },
   {
+    template: "create/base/internal/shared/middleware/cors.go.hbs",
+    output: "internal/shared/middleware/cors.go",
+  },
+  {
     template: "create/base/internal/shared/middleware/error.go.hbs",
     output: "internal/shared/middleware/error.go",
   },
