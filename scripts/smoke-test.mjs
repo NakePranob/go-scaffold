@@ -276,6 +276,51 @@ step(
   }
 );
 
+// middleware.CORS's whole point: "*" can't be combined with Allow-Credentials
+// per the fetch spec, so an allowed origin is echoed back explicitly and a
+// disallowed one gets nothing — proven against the real compiled server, not
+// just the middleware in isolation.
+step(
+  hasPsql || dockerPgContainer
+    ? "CORS: an allowed origin gets the full header set, a disallowed one gets none"
+    : "CORS: skipped (needs psql/a Postgres container)",
+  () => {
+    if (!hasPsql && !dockerPgContainer) return;
+    run("make", ["db-drop"], fullApp); // clean slate
+    run("make", ["db-create"], fullApp);
+
+    const out = run(
+      "bash",
+      [
+        "-c",
+        "go run ./cmd/api >/tmp/go-scaffold-smoke-cors.log 2>&1 & sleep 3; " +
+          "echo '===ALLOWED==='; " +
+          "curl -s -i -X OPTIONS http://localhost:8080/livez -H 'Origin: http://localhost:3000' -H 'Access-Control-Request-Method: GET'; " +
+          "echo '===DISALLOWED==='; " +
+          "curl -s -i -X OPTIONS http://localhost:8080/livez -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: GET'; " +
+          "lsof -ti:8080 | xargs -r kill -9",
+      ],
+      fullApp
+    );
+    const [, allowed = "", disallowed = ""] = out.split(/===ALLOWED===|===DISALLOWED===/);
+
+    if (!/HTTP\/1\.1 204/.test(allowed)) throw new Error(`expected 204 on the allowed-origin preflight, got:\n${allowed}`);
+    if (!allowed.includes("Access-Control-Allow-Origin: http://localhost:3000")) {
+      throw new Error(`expected Allow-Origin echoed back for an allowed origin, got:\n${allowed}`);
+    }
+    if (!allowed.includes("Access-Control-Allow-Credentials: true")) {
+      throw new Error(`expected Allow-Credentials for an allowed origin, got:\n${allowed}`);
+    }
+
+    if (!/HTTP\/1\.1 204/.test(disallowed)) throw new Error(`expected 204 on the disallowed-origin preflight too, got:\n${disallowed}`);
+    if (disallowed.includes("Access-Control-Allow-Origin")) {
+      throw new Error(`expected no Allow-Origin at all for a disallowed origin, got:\n${disallowed}`);
+    }
+
+    run("make", ["db-drop"], fullApp);
+  }
+);
+
 step("generate module order (full CRUD)", () => {
   goScaffold(["generate", "module", "order"], fullApp);
 });
