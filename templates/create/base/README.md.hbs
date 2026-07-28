@@ -94,6 +94,16 @@ migrate create -ext sql -dir migrations -seq add_something
 **dev:** leave `AUTO_MIGRATE=true` (default) so GORM's AutoMigrate creates the schema quickly.
 **prod:** set `AUTO_MIGRATE=false` and run `migrate up` as a separate deploy step — versioned, has rollback (`down`), doesn't lock the table the way AutoMigrate does once there's real data.
 
+With `AUTO_MIGRATE=false`, the app checks the DB's applied migration version
+against the migration files baked into the binary (embedded at build time)
+before it starts serving traffic — a stale or half-applied schema fails fast
+at boot with a clear message, instead of failing later on whatever query
+happens to hit the missing column first:
+
+```text
+DB schema is at migration 3, this binary expects 5 — run `make migrate-up`
+```
+
 ## Env vars
 
 | var | default | notes |

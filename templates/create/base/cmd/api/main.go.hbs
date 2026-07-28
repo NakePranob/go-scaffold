@@ -45,6 +45,9 @@ func main() {
 			logger.Error("migrate", "error", err)
 			os.Exit(1)
 		}
+	} else if err := database.CheckMigrationVersion(db); err != nil {
+		logger.Error("migration version check", "error", err)
+		os.Exit(1)
 	}
 
 	r := gin.New()
