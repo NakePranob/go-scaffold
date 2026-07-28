@@ -10,6 +10,7 @@ import {
   toDbName,
 } from "../utils/naming";
 import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
+import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { gofmtTree } from "../utils/template-renderer";
 import {
   promptGetMode,
@@ -88,8 +89,10 @@ export async function generateMethod(
 
   const method = resolveMethodNaming(methodNameArg ?? (await promptMethodName()));
 
+  const checkBefore = typeChecks(projectDir);
   patchMethod(paths, naming, method, { type, getMode, field }, config.goModule);
   gofmtTree(projectDir);
+  assertNoDrift(projectDir, checkBefore, config);
 
   console.log(pc.green(`\nadded "${method.name}" to internal/app/${modulePath}/`));
   console.log(`route: ${routeHint(naming, method, type, config.apiPrefix, getMode, field)}`);

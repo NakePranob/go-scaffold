@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,6 +88,14 @@ step("rejects an invalid project name before writing anything", () => {
 step("create --defaults scaffolds a bare project", () => {
   goScaffold(["create", "full-app", "--defaults"], scratch);
   assertFileContains(path.join(scratch, "full-app", "go.mod"), "module full-app");
+});
+
+step("create stamps the CLI version into go-scaffold.config.json", () => {
+  const cfg = JSON.parse(readFileSync(path.join(scratch, "full-app", "go-scaffold.config.json"), "utf8"));
+  const { version } = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  if (cfg.scaffoldVersion !== version) {
+    throw new Error(`expected scaffoldVersion "${version}", got "${cfg.scaffoldVersion}"`);
+  }
 });
 
 const fullApp = path.join(scratch, "full-app");
@@ -420,6 +428,58 @@ step("create --no-full minimal module layers up to full build", () => {
   if (hasGolangciLint) {
     const out = run("golangci-lint", ["run"], minApp);
     if (out.trim() && !out.includes("0 issues")) throw new Error(`layered minimal module: expected 0 issues, got:\n${out}`);
+  }
+});
+
+// The two halves of drift detection. `create` emits the shared/ layer once;
+// `generate` renders templates written against that exact layer. A project that
+// later edits shared/ — normal, expected work — silently falls out of sync, and
+// the break lands in generated files the user never wrote. These two steps pin
+// down both "catches it" and "doesn't cry wolf".
+step("generate fails loudly when the project's shared/ layer has drifted", () => {
+  goScaffold(["create", "drift-app", "--defaults"], scratch);
+  const app = path.join(scratch, "drift-app");
+  run("go", ["mod", "tidy"], app);
+
+  // Simulates a project whose shared/ layer moved on after scaffolding —
+  // middleware.Error grows a parameter and its one caller is updated, but the
+  // CLI's own frozen template (what `generate module` renders) doesn't know
+  // that happened. Prepends a new first parameter via a plain anchored string
+  // replace rather than trying to capture-and-reinsert whatever's already
+  // inside the parens: existing call sites can contain their own nested
+  // parens (e.g. `middleware.Error(!cfg.IsProd())`), which a `[^)]*` regex
+  // can't balance — it matches up to the *inner* `)` and mangles the
+  // rewrite. A left-anchored prepend never needs to look past `Error(`, so it
+  // stays correct regardless of what's already inside.
+  const errPath = path.join(app, "internal", "shared", "middleware", "error.go");
+  const errSrc = readFileSync(errPath, "utf8");
+  const mutatedErr = errSrc.replace("func Error(", "func Error(_extraDrift bool, ");
+  if (mutatedErr === errSrc) throw new Error("middleware.Error signature not found — update this test's mutation");
+  writeFileSync(errPath, mutatedErr);
+
+  const mainPath = path.join(app, "cmd", "api", "main.go");
+  const mainSrc = readFileSync(mainPath, "utf8");
+  const mutatedMain = mainSrc.replace("middleware.Error(", "middleware.Error(true, ");
+  if (mutatedMain === mainSrc) throw new Error("middleware.Error call site not found — update this test's mutation");
+  writeFileSync(mainPath, mutatedMain);
+
+  run("go", ["vet", "./..."], app); // the project itself is still perfectly fine
+
+  // the generated handler_test.go builds the middleware chain by hand using
+  // generate module's frozen template, which doesn't know about the mutation
+  // above — `go build` wouldn't see it (test file), `go vet` does.
+  expectThrows(() => goScaffold(["generate", "module", "order"], app), "drift");
+});
+
+step("generate doesn't blame itself for a project that was already broken", () => {
+  goScaffold(["create", "prebroken-app", "--defaults"], scratch);
+  const app = path.join(scratch, "prebroken-app");
+  run("go", ["mod", "tidy"], app);
+  // a type error the user introduced, nothing to do with the generator
+  writeFileSync(path.join(app, "internal", "shared", "id", "wip.go"), 'package id\n\nfunc wip() int { return "nope" }\n');
+  goScaffold(["generate", "module", "order"], app); // must still succeed
+  if (!existsSync(path.join(app, "internal", "app", "order", "handler.go"))) {
+    throw new Error("module wasn't generated");
   }
 });
 

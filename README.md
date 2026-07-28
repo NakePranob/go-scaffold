@@ -157,6 +157,29 @@ returns a clean `500` rather than inventing behavior — see
 `generate method` prints the route it added but does **not** touch
 `docs/openapi.yaml` — endpoint-specific spec entries stay hand-written.
 
+**Drift check** — `generate` type-checks the project (`go vet ./...`) before and
+after it writes. If the project was fine beforehand and the generated code
+doesn't compile, it stops with the compiler output instead of leaving you to
+find it later:
+
+```text
+the generated code doesn't compile, but this project was fine a moment ago.
+
+The most likely cause is drift: this project's internal/shared layer has been edited
+since it was scaffolded, so the templates this CLI emits no longer match it.
+
+  scaffolded with: go-scaffold 0.1.2
+  this CLI:        go-scaffold 0.3.0
+```
+
+That happens because `generate`'s templates are written against the `shared/`
+layer `create` emits — editing that layer is normal work, but it moves the
+project away from what this CLI's templates expect. `create` records its own
+version in `go-scaffold.config.json` so the message can name both sides. A
+project that was *already* broken (mid-refactor, or `go mod tidy` not run yet)
+is left alone — only a passed-before/broken-after transition is reported. No Go
+on `PATH` means the check is skipped.
+
 ### `remove module <name>` (alias `rm m`) — drop a domain
 
 ```bash

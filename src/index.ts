@@ -6,13 +6,14 @@ import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
 import { generateMethod } from "./commands/method";
 import { removeModule } from "./commands/remove";
+import { cliVersion } from "./utils/version";
 import { MethodType, GetMethodMode } from "./types";
 
 const program = new Command();
 program
   .name("go-scaffold")
   .description("Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard")
-  .version("0.1.0");
+  .version(cliVersion());
 
 program
   .command("create [name]")
