@@ -392,20 +392,36 @@ step("generate fails loudly when the project's shared/ layer has drifted", () =>
   const app = path.join(scratch, "drift-app");
   run("go", ["mod", "tidy"], app);
 
-  // the real change this guards against: middleware.Error grows a parameter
-  // (hide error details in production), and its one caller is updated.
+  // Simulates a project whose shared/ layer moved on after scaffolding —
+  // middleware.Error grows a parameter and its one caller is updated, but the
+  // CLI's own frozen template (what `generate module` renders) doesn't know
+  // that happened. Regex-based, always appending one MORE parameter to
+  // whatever's already there, so this keeps finding a genuine mismatch
+  // regardless of Error's current arity — including after some other change
+  // has already given it a parameter of its own.
   const errPath = path.join(app, "internal", "shared", "middleware", "error.go");
-  writeFileSync(
-    errPath,
-    readFileSync(errPath, "utf8").replace("func Error() gin.HandlerFunc {", "func Error(exposeDetail bool) gin.HandlerFunc {")
+  const errSrc = readFileSync(errPath, "utf8");
+  const mutatedErr = errSrc.replace(
+    /func Error\(([^)]*)\) gin\.HandlerFunc \{/,
+    (_, params) => `func Error(${params ? params + ", " : ""}_extraDrift bool) gin.HandlerFunc {`
   );
+  if (mutatedErr === errSrc) throw new Error("middleware.Error signature not found — update this test's mutation");
+  writeFileSync(errPath, mutatedErr);
+
   const mainPath = path.join(app, "cmd", "api", "main.go");
-  writeFileSync(mainPath, readFileSync(mainPath, "utf8").replace("middleware.Error()", "middleware.Error(true)"));
+  const mainSrc = readFileSync(mainPath, "utf8");
+  const mutatedMain = mainSrc.replace(
+    /middleware\.Error\(([^)]*)\)/,
+    (_, args) => `middleware.Error(${args ? args + ", " : ""}true)`
+  );
+  if (mutatedMain === mainSrc) throw new Error("middleware.Error call site not found — update this test's mutation");
+  writeFileSync(mainPath, mutatedMain);
+
   run("go", ["vet", "./..."], app); // the project itself is still perfectly fine
 
-  // the generated handler_test.go builds the middleware chain by hand and still
-  // calls middleware.Error() with no args — `go build` wouldn't see it (test
-  // file), `go vet` does.
+  // the generated handler_test.go builds the middleware chain by hand using
+  // generate module's frozen template, which doesn't know about the mutation
+  // above — `go build` wouldn't see it (test file), `go vet` does.
   expectThrows(() => goScaffold(["generate", "module", "order"], app), "drift");
 });
 
