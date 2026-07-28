@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +95,83 @@ step("bare project: go mod tidy + build + vet", () => {
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
+});
+
+// config.Load() is the first line of main(), before database.Open — an
+// unrecognized APP_ENV must panic right there, with no DB required to prove it.
+step("APP_ENV rejects an unrecognized value at boot (fails closed)", () => {
+  try {
+    run("go", ["run", "./cmd/api"], fullApp, { APP_ENV: "staging" });
+    throw new Error("expected `go run` to exit nonzero on an invalid APP_ENV, it exited 0");
+  } catch (err) {
+    const out = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+    if (!out.includes('invalid APP_ENV "staging"')) {
+      throw new Error(`expected a panic naming the bad APP_ENV value, got:\n${out}`);
+    }
+  }
+});
+
+// middleware.Error(exposeDetail)'s whole reason to exist: prod must not leak
+// Details (a validation field map, or an unexpected error's real message) to
+// a caller. The generated CRUD stub's DTO has no fields, so nothing over real
+// HTTP naturally exercises the field-map path — test the middleware directly
+// instead, against the exact package layout `create` scaffolds.
+step("middleware.Error hides Details in prod, shows them outside it", () => {
+  const probeDir = path.join(fullApp, "cmd", "_smoke_probe_apperr");
+  const { goModule } = JSON.parse(readFileSync(path.join(fullApp, "go-scaffold.config.json"), "utf8"));
+  execFileSync("mkdir", ["-p", probeDir]);
+  writeFileSync(
+    path.join(probeDir, "main.go"),
+    `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+
+	"${goModule}/internal/shared/apperror"
+	"${goModule}/internal/shared/middleware"
+
+	"github.com/gin-gonic/gin"
+)
+
+func try(expose bool, err error) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(middleware.RequestID(), middleware.Error(expose))
+	r.GET("/x", func(c *gin.Context) { c.Error(err) })
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var body map[string]any
+	json.Unmarshal(w.Body.Bytes(), &body)
+	out, _ := json.Marshal(body)
+	fmt.Printf("expose=%v %s\\n", expose, out)
+}
+
+func main() {
+	try(true, apperror.NewValidation("invalid input", map[string]string{"email": "required"}))
+	try(false, apperror.NewValidation("invalid input", map[string]string{"email": "required"}))
+	try(true, fmt.Errorf("pq: connection refused"))
+	try(false, fmt.Errorf("pq: connection refused"))
+}
+`
+  );
+  try {
+    const out = run("go", ["run", "./cmd/_smoke_probe_apperr"], fullApp);
+    if (!/expose=true .*"details":\{"email":"required"\}/.test(out)) {
+      throw new Error(`expected exposed Details for a known AppError, got:\n${out}`);
+    }
+    if (/expose=false .*"details"/.test(out)) {
+      throw new Error(`expected no "details" key at all when exposeDetail is false, got:\n${out}`);
+    }
+    if (!/expose=true .*"details":"pq: connection refused"/.test(out)) {
+      throw new Error(`expected the real error text exposed for an unexpected error, got:\n${out}`);
+    }
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
 });
 
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
