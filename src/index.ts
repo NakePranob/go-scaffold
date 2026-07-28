@@ -5,6 +5,7 @@ import pc from "picocolors";
 import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
 import { generateMethod } from "./commands/method";
+import { generateMigration } from "./commands/migration";
 import { removeModule } from "./commands/remove";
 import { cliVersion } from "./utils/version";
 import { MethodType, GetMethodMode } from "./types";
@@ -50,12 +51,15 @@ const generate = program
         choices: [
           { name: "Module (full CRUD domain)", value: "module" },
           { name: "Method (add one endpoint to an existing module)", value: "method" },
+          { name: "Migration (reserve a timestamped up/down SQL file pair)", value: "migration" },
         ],
       });
       if (target === "module") {
         await generateModule(undefined, { full: true });
-      } else {
+      } else if (target === "method") {
         await generateMethod(undefined, undefined, {});
+      } else {
+        await generateMigration(undefined);
       }
     } catch (err) {
       console.error(pc.red((err as Error).message));
@@ -102,6 +106,19 @@ generate
         getMode,
         field: opts.field,
       });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+generate
+  .command("migration [name]")
+  .alias("mig")
+  .description("reserve a timestamped migrations/<version>_<name>.{up,down}.sql pair (stubs only — you write the SQL)")
+  .action(async (name) => {
+    try {
+      await generateMigration(name);
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

@@ -17,7 +17,7 @@ PGPASSWORD ?= postgres
 # recipe line it's passed to the shell untouched.)
 ENV_FILE ?= .env
 
-.PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
+.PHONY: run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 run:
 	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go run ./cmd/api
@@ -89,6 +89,15 @@ migrate-up:
 
 migrate-down:
 	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" down 1
+
+# runs up -> down-to-zero -> up against $DB_DSN to catch a bit-rotted down.sql
+# (one that no longer reverses cleanly) before you actually need a rollback.
+# point DB_DSN at a throwaway/test database first — this drops every table.
+migrate-verify:
+	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); \
+	migrate -path migrations -database "$$DB_DSN" up && \
+	migrate -path migrations -database "$$DB_DSN" down -all && \
+	migrate -path migrations -database "$$DB_DSN" up
 {{#if openapiDocs}}
 
 # docs/openapi.yaml is hand-written and split across sibling files via relative

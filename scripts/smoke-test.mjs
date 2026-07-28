@@ -321,6 +321,79 @@ step(
   }
 );
 
+step("generate migration reserves a timestamped up/down pair, TODO-stubbed", () => {
+  goScaffold(["generate", "migration", "add_status_to_orders"], fullApp);
+  const files = readdirSync(path.join(fullApp, "migrations")).filter((f) => f.includes("add_status_to_orders"));
+  if (files.length !== 2) throw new Error(`expected exactly 2 files (up+down), got: ${files.join(", ")}`);
+  if (!files.every((f) => /^\d{14}_add_status_to_orders\.(up|down)\.sql$/.test(f))) {
+    throw new Error(`expected a 14-digit timestamp prefix, got: ${files.join(", ")}`);
+  }
+  const upContent = readFileSync(
+    path.join(fullApp, "migrations", files.find((f) => f.endsWith(".up.sql"))),
+    "utf8"
+  );
+  if (!upContent.includes("TODO")) throw new Error(`expected a TODO stub in the up migration, got:\n${upContent}`);
+});
+
+let hasMigrate = true;
+try {
+  run("migrate", ["-version"]);
+} catch {
+  hasMigrate = false;
+}
+
+// Two things at once: (1) a project with old-style sequential migrations
+// (0000NN_*, from before this convention) still applies cleanly alongside a
+// newly generated timestamped one, in the right order — proven against the
+// real migrate CLI, not just this repo's own string-sorting assumptions; (2)
+// `make migrate-verify` (up -> down -all -> up) round-trips without error.
+step(
+  (hasPsql || dockerPgContainer) && hasMigrate
+    ? "a legacy sequential migration and a new timestamped one apply in order; migrate-verify round-trips"
+    : "migration ordering / migrate-verify: skipped (needs psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!((hasPsql || dockerPgContainer) && hasMigrate)) return;
+
+    writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.up.sql"), "CREATE TABLE legacy (id uuid PRIMARY KEY);\n");
+    writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.down.sql"), "DROP TABLE legacy;\n");
+
+    run("make", ["db-drop"], fullApp);
+    run("make", ["db-create"], fullApp);
+    const dsn = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+
+    // migrate logs each applied step to stderr, not stdout — merge via bash so
+    // `run`'s stdout-only capture actually sees it.
+    const upOut = run("bash", ["-c", `migrate -path migrations -database '${dsn}' up 2>&1`], fullApp);
+    if (!/^1\/u create_legacy/m.test(upOut) || !upOut.includes("add_status_to_orders")) {
+      throw new Error(`expected both the legacy migration and the new one to apply, in order, got:\n${upOut}`);
+    }
+
+    const version = psqlExec("full_app", "SELECT version FROM schema_migrations;").trim();
+    if (!/^\d{14}$/.test(version)) {
+      throw new Error(`expected schema_migrations to land on the 14-digit timestamped migration, got: "${version}"`);
+    }
+
+    run("bash", ["-c", `DB_DSN="${dsn}" make migrate-verify`], fullApp);
+
+    // migrate-verify's whole point: catch a down.sql that's stopped reversing
+    // cleanly. A check that only exercises the happy path above would still
+    // pass even if the down step were silently skipped — corrupt one and
+    // confirm the target actually fails instead of succeeding anyway. Ends
+    // "up" after the run above, so this second call's down-all step is the
+    // first thing to touch the corrupted file.
+    writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.down.sql"), "DROP TABLE this_table_does_not_exist;\n");
+    let verifyCaughtTheBreak = false;
+    try {
+      run("bash", ["-c", `DB_DSN="${dsn}" make migrate-verify`], fullApp);
+    } catch {
+      verifyCaughtTheBreak = true;
+    }
+    if (!verifyCaughtTheBreak) throw new Error("expected migrate-verify to fail against a broken down.sql, it succeeded");
+
+    run("make", ["db-drop"], fullApp);
+  }
+);
+
 step("generate module order (full CRUD)", () => {
   goScaffold(["generate", "module", "order"], fullApp);
 });
@@ -413,13 +486,6 @@ step(
     run("make", ["db-drop", "DB_NAME=full_app_test"], fullApp);
   }
 );
-
-let hasMigrate = true;
-try {
-  run("migrate", ["-version"]);
-} catch {
-  hasMigrate = false;
-}
 
 // The whole point of CheckMigrationVersion: AUTO_MIGRATE=false must not boot
 // against a DB nothing has migrated yet, and must boot fine once `migrate up`
