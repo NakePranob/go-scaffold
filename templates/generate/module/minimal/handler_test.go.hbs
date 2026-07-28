@@ -59,7 +59,7 @@ func setup(t *testing.T) *gin.Engine {
 	tx := dbForTest(t).Begin()
 	t.Cleanup(func() { tx.Rollback() })
 	r := gin.New()
-	r.Use(middleware.RequestID(), middleware.Error())
+	r.Use(middleware.RequestID(), middleware.Error(true))
 	NewHandler(NewService(NewRepository(tx))).Register(r)
 	return r
 }
