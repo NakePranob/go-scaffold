@@ -395,25 +395,22 @@ step("generate fails loudly when the project's shared/ layer has drifted", () =>
   // Simulates a project whose shared/ layer moved on after scaffolding —
   // middleware.Error grows a parameter and its one caller is updated, but the
   // CLI's own frozen template (what `generate module` renders) doesn't know
-  // that happened. Regex-based, always appending one MORE parameter to
-  // whatever's already there, so this keeps finding a genuine mismatch
-  // regardless of Error's current arity — including after some other change
-  // has already given it a parameter of its own.
+  // that happened. Prepends a new first parameter via a plain anchored string
+  // replace rather than trying to capture-and-reinsert whatever's already
+  // inside the parens: existing call sites can contain their own nested
+  // parens (e.g. `middleware.Error(!cfg.IsProd())`), which a `[^)]*` regex
+  // can't balance — it matches up to the *inner* `)` and mangles the
+  // rewrite. A left-anchored prepend never needs to look past `Error(`, so it
+  // stays correct regardless of what's already inside.
   const errPath = path.join(app, "internal", "shared", "middleware", "error.go");
   const errSrc = readFileSync(errPath, "utf8");
-  const mutatedErr = errSrc.replace(
-    /func Error\(([^)]*)\) gin\.HandlerFunc \{/,
-    (_, params) => `func Error(${params ? params + ", " : ""}_extraDrift bool) gin.HandlerFunc {`
-  );
+  const mutatedErr = errSrc.replace("func Error(", "func Error(_extraDrift bool, ");
   if (mutatedErr === errSrc) throw new Error("middleware.Error signature not found — update this test's mutation");
   writeFileSync(errPath, mutatedErr);
 
   const mainPath = path.join(app, "cmd", "api", "main.go");
   const mainSrc = readFileSync(mainPath, "utf8");
-  const mutatedMain = mainSrc.replace(
-    /middleware\.Error\(([^)]*)\)/,
-    (_, args) => `middleware.Error(${args ? args + ", " : ""}true)`
-  );
+  const mutatedMain = mainSrc.replace("middleware.Error(", "middleware.Error(true, ");
   if (mutatedMain === mainSrc) throw new Error("middleware.Error call site not found — update this test's mutation");
   writeFileSync(mainPath, mutatedMain);
 
