@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,13 @@ function step(name, fn) {
     passed++;
   } catch (err) {
     console.log("FAILED");
-    console.error(err.stdout?.toString() ?? err.stderr?.toString() ?? err.message);
+    // console.error + process.exit() can race: stderr isn't a TTY when output is
+    // piped/redirected (every way this script actually gets run — CI, `pnpm run
+    // verify`, a log file), so the write can still be buffered when exit() tears
+    // the process down, silently dropping the one line that explains the failure.
+    // writeSync is synchronous, so it's flushed before exit() runs.
+    const detail = err.stdout?.toString() || err.stderr?.toString() || err.message;
+    writeSync(2, `${detail}\n`);
     cleanup();
     process.exit(1);
   }
@@ -95,6 +101,175 @@ step("bare project: go mod tidy + build + vet", () => {
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
+});
+
+let hasDocker = true;
+try {
+  run("docker", ["--version"]);
+} catch {
+  hasDocker = false;
+}
+
+// docker port prints one line per protocol family ("0.0.0.0:PORT" and
+// "[::]:PORT") for an ephemeral (-p 0:CONTAINER_PORT) mapping — both name the
+// same host port, so the last field after splitting on ":" is it regardless
+// of which line answers first.
+function readMappedPort(containerId) {
+  const portMap = run("docker", ["port", containerId, "6379/tcp"]).trim();
+  return portMap.split(":").pop();
+}
+
+// polls a localhost TCP port via bash's /dev/tcp (no netcat/redis-cli
+// dependency on the host) — used to wait out the gap between `docker start`
+// returning and the host-mapped port actually accepting connections again.
+function waitForPort(port, attempts = 30) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      run("bash", ["-c", `echo > /dev/tcp/127.0.0.1/${port}`]);
+      return;
+    } catch {
+      run("sleep", ["0.3"]);
+    }
+  }
+  throw new Error(`port ${port} never accepted a connection`);
+}
+
+// `add worker` end to end: readyz picks up a real Redis outage, and a task
+// enqueued through mail.AsyncClient is actually processed by cmd/worker (dev
+// fallback: logs instead of sending, since SMTP_HOST is unset). Runs its own
+// throwaway Redis on a Docker-assigned ephemeral port — not the host's
+// default 6379 — so it can't collide with a Redis someone already has
+// running (this dev machine's own has auth enabled, which would otherwise
+// make the readyz check fail for a reason that has nothing to do with the
+// scaffold's own correctness).
+step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires readyz, processes a real task" : "add worker: skipped (needs Docker for an isolated Redis)", () => {
+  if (!hasDocker) return;
+
+  goScaffold(["add", "worker"], fullApp);
+  run("go", ["mod", "tidy"], fullApp);
+  run("go", ["build", "./..."], fullApp);
+  run("go", ["vet", "./..."], fullApp);
+
+  // cmd/api opens Postgres before it ever gets to Redis (database.Open runs
+  // first in main()) — needs a real DB up before it'll boot far enough to
+  // reach the readyz check this step is actually testing. Let the Makefile
+  // target handle its own local-psql-vs-docker fallback, same as every other
+  // step that needs a DB.
+  run("make", ["db-drop"], fullApp);
+  run("make", ["db-create"], fullApp);
+
+  // no --rm: this step stops the container mid-test (to prove readyz notices
+  // Redis going down) then starts it again — --rm auto-deletes on stop, which
+  // would leave nothing for `docker start` to restart. Cleaned up by hand in
+  // the finally block instead.
+  const containerId = run("docker", ["run", "-d", "-p", "0:6379", "redis:7-alpine"]).trim();
+  try {
+    let redisPort = readMappedPort(containerId);
+    let redisUrl = `redis://localhost:${redisPort}/0`;
+
+    // `docker exec redis-cli ping` only proves the container's *internal*
+    // network is up — it says nothing about the host-mapped port this test
+    // (and the app) actually connects through, which can lag behind after a
+    // stop/start cycle. Poll the real host port instead, via bash's /dev/tcp
+    // (no extra tool dependency).
+    waitForPort(redisPort);
+
+    const up = run(
+      "bash",
+      [
+        "-c",
+        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & sleep 3; ` +
+          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "lsof -ti:8080 | xargs -r kill -9; " +
+          "echo \"READYZ=$CODE\"",
+      ],
+      fullApp
+    );
+    if (!/READYZ=200/.test(up)) throw new Error(`expected readyz 200 with Redis reachable, got: ${up}`);
+
+    run("docker", ["stop", containerId]);
+    const down = run(
+      "bash",
+      [
+        "-c",
+        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & sleep 3; ` +
+          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "lsof -ti:8080 | xargs -r kill -9; " +
+          "echo \"READYZ=$CODE\"",
+      ],
+      fullApp
+    );
+    if (!/READYZ=503/.test(down)) throw new Error(`expected readyz 503 with Redis down, got: ${down}`);
+    run("docker", ["start", containerId]);
+    // Docker Desktop can hand out a *different* random host port on restart
+    // when the container was published with an ephemeral mapping (-p 0:6379)
+    // — re-read it rather than assuming `docker start` preserves the one from
+    // `docker run`. Silently reusing the stale port here is exactly what
+    // produced a flaky "port never accepted a connection" failure while
+    // testing this: the container's logs showed Redis back up and accepting
+    // connections in well under a second, on a port one number higher than
+    // what this step kept polling.
+    redisPort = readMappedPort(containerId);
+    redisUrl = `redis://localhost:${redisPort}/0`;
+    waitForPort(redisPort);
+
+    const probeDir = path.join(fullApp, "cmd", "_smoke_probe_enqueue");
+    execFileSync("mkdir", ["-p", probeDir]);
+    writeFileSync(
+      path.join(probeDir, "main.go"),
+      `package main
+
+import (
+	"full-app/internal/platform/mail"
+	"full-app/internal/platform/queue"
+)
+
+func main() {
+	q, err := queue.NewClient("${redisUrl}")
+	if err != nil {
+		panic(err)
+	}
+	ac := mail.NewAsyncClient(q)
+	if err := ac.Send("someone@example.com", "smoke test", "processed by cmd/worker"); err != nil {
+		panic(err)
+	}
+}
+`
+    );
+
+    // `go run ./cmd/worker & WPID=$!` doesn't work: `go run` compiles then
+    // execs the binary as its OWN child, so $! is the `go` wrapper's PID, not
+    // the actual worker process — `kill -9 $WPID` kills the wrapper and
+    // leaves the real worker running forever, retrying against a container
+    // that's long gone. Confirmed the hard way: seven of these accumulated
+    // over the course of testing this step, one alive for hours, still
+    // burning CPU on retry loops. Build the binary and run *that* directly so
+    // the PID this test captures is the PID that actually needs to die.
+    const workerLogPath = path.join(fullApp, "worker.log");
+    run("go", ["build", "-o", "worker-bin", "./cmd/worker"], fullApp);
+    run(
+      "bash",
+      [
+        "-c",
+        `REDIS_URL='${redisUrl}' ./worker-bin >'${workerLogPath}' 2>&1 & WPID=$!; sleep 2; ` +
+          "go run ./cmd/_smoke_probe_enqueue; sleep 2; kill -9 $WPID 2>/dev/null",
+      ],
+      fullApp
+    );
+    rmSync(path.join(fullApp, "worker-bin"), { force: true });
+    const workerLog = readFileSync(workerLogPath, "utf8");
+    if (!workerLog.includes("email not sent (SMTP not configured)") || !workerLog.includes("processed by cmd/worker")) {
+      throw new Error(`expected cmd/worker to process the enqueued task (dev SMTP fallback), got:\n${workerLog}`);
+    }
+    if (workerLog.includes("!BADKEY")) {
+      throw new Error(`asynq's own log lines are leaking through the slog adapter malformed, got:\n${workerLog}`);
+    }
+
+    rmSync(probeDir, { recursive: true, force: true });
+    run("make", ["db-drop"], fullApp);
+  } finally {
+    run("docker", ["rm", "-f", containerId]); // force-removes whether it's running or already stopped
+  }
 });
 
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {

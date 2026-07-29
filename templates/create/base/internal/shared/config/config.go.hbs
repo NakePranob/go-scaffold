@@ -15,6 +15,7 @@ type Config struct {
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
+	// go-scaffold:config-fields
 }
 
 func Load() Config {
@@ -26,6 +27,7 @@ func Load() Config {
 		DBMaxOpenConns:    envInt("DB_MAX_OPEN_CONNS", 10),
 		DBMaxIdleConns:    envInt("DB_MAX_IDLE_CONNS", 10),
 		DBConnMaxLifetime: time.Duration(envInt("DB_CONN_MAX_LIFETIME_MIN", 5)) * time.Minute,
+		// go-scaffold:config-load
 	}
 }
 

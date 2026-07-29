@@ -1,0 +1,31 @@
+package queue
+
+import (
+	"github.com/hibiken/asynq"
+)
+
+// Client enqueues tasks to Redis. Created by cmd/api; each domain or platform
+// package defines its own task types and calls Client.Enqueue.
+type Client struct {
+	inner *asynq.Client
+}
+
+func NewClient(redisURL string) (*Client, error) {
+	opt, err := asynq.ParseRedisURI(redisURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{inner: asynq.NewClient(opt)}, nil
+}
+
+func (c *Client) Enqueue(task *asynq.Task, opts ...asynq.Option) (string, error) {
+	info, err := c.inner.Enqueue(task, opts...)
+	if err != nil {
+		return "", err
+	}
+	return info.ID, nil
+}
+
+func (c *Client) Close() error {
+	return c.inner.Close()
+}
