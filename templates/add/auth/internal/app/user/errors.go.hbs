@@ -1,0 +1,30 @@
+package user
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/shared/apperror"
+)
+
+// functions, not vars: the error middleware writes RequestID onto the
+// returned pointer directly — a shared instance would race across
+// concurrent requests.
+
+func errNotFound() *apperror.AppError {
+	return apperror.New(http.StatusNotFound, "USER_NOT_FOUND", "user not found")
+}
+
+func errEmailTaken() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "USER_EMAIL_TAKEN", "email already registered")
+}
+
+// errInvalidCredentials is returned for both "no such user" and "wrong
+// password" — a single generic message so a login attempt can't be used to
+// enumerate which emails have accounts.
+func errInvalidCredentials() *apperror.AppError {
+	return apperror.New(http.StatusUnauthorized, "AUTH_INVALID_CREDENTIALS", "invalid email or password")
+}
+
+func errInvalidToken() *apperror.AppError {
+	return apperror.New(http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "invalid or expired refresh token")
+}

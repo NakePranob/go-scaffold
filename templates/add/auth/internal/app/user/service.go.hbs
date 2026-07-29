@@ -1,0 +1,154 @@
+package user
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/internal/shared/dberr"
+	"{{goModule}}/internal/shared/id"
+
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+// repository = what the service needs from the data layer (declared on the
+// consumer side, so it can be faked in tests).
+type repository interface {
+	FindByEmail(ctx context.Context, email string) (*model.User, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+	FindIdentity(ctx context.Context, userID uuid.UUID, provider model.Provider) (*model.Identity, error)
+	CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error
+}
+
+type Service struct {
+	repo      repository
+	tokens    tokenStore
+	jwtSecret string
+	accessTTL time.Duration
+	refreshTTL time.Duration
+}
+
+func NewService(repo repository, tokens tokenStore, cfg config.Config) *Service {
+	return &Service{
+		repo:       repo,
+		tokens:     tokens,
+		jwtSecret:  cfg.JWTSecret,
+		accessTTL:  cfg.JWTAccessTTL,
+		refreshTTL: cfg.JWTRefreshTTL,
+	}
+}
+
+func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	hashStr := string(hash)
+
+	u := &model.User{ID: id.New(), Email: in.Email, Name: in.Name}
+	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errEmailTaken()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return s.issueTokens(ctx, u)
+}
+
+func (s *Service) Login(ctx context.Context, in loginInput) (*authResponse, error) {
+	u, err := s.repo.FindByEmail(ctx, in.Email)
+	if err != nil {
+		return nil, errInvalidCredentials()
+	}
+	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
+	if err != nil || ident.PasswordHash == nil {
+		return nil, errInvalidCredentials()
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(*ident.PasswordHash), []byte(in.Password)); err != nil {
+		return nil, errInvalidCredentials()
+	}
+	return s.issueTokens(ctx, u)
+}
+
+// Refresh rotates a refresh token: the presented one is consumed (deleted +
+// tombstoned as "used") and a fresh pair is issued. If the presented token
+// isn't active but WAS already used, that means this exact raw value got
+// replayed after rotation — i.e. it leaked — so every session for that user
+// is revoked, not just this one.
+func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*authResponse, error) {
+	hash := hashToken(rawRefreshToken)
+	userID, ok, err := s.tokens.GetRefreshToken(ctx, hash)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	if !ok {
+		if reusedBy, used, uerr := s.tokens.IsRefreshTokenUsed(ctx, hash); uerr == nil && used {
+			_ = s.tokens.RevokeAllRefreshTokens(ctx, reusedBy)
+		}
+		return nil, errInvalidToken()
+	}
+
+	if err := s.tokens.DeleteRefreshToken(ctx, hash, userID); err != nil {
+		return nil, apperror.NewInternal()
+	}
+	if err := s.tokens.MarkRefreshTokenUsed(ctx, hash, userID, s.refreshTTL); err != nil {
+		return nil, apperror.NewInternal()
+	}
+
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, errInvalidToken()
+	}
+	return s.issueTokens(ctx, u)
+}
+
+// Logout is intentional, not reuse — no tombstoning, and idempotent (a
+// missing/already-gone token still succeeds).
+func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
+	if rawRefreshToken == "" {
+		return nil
+	}
+	hash := hashToken(rawRefreshToken)
+	userID, ok, err := s.tokens.GetRefreshToken(ctx, hash)
+	if err != nil || !ok {
+		return nil
+	}
+	return s.tokens.DeleteRefreshToken(ctx, hash, userID)
+}
+
+func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errNotFound()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return u, nil
+}
+
+func (s *Service) issueTokens(ctx context.Context, u *model.User) (*authResponse, error) {
+	access, err := s.issueAccessToken(u.ID)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	refresh, err := randomToken()
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	if err := s.tokens.SetRefreshToken(ctx, hashToken(refresh), u.ID, s.refreshTTL); err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return &authResponse{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		TokenType:    "Bearer",
+		ExpiresIn:    int(s.accessTTL.Seconds()),
+	}, nil
+}

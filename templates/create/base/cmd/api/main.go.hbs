@@ -23,6 +23,7 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
+	// go-scaffold:config-checks
 
 	db, err := database.Open(cfg)
 	if err != nil {

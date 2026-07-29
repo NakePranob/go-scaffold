@@ -1,0 +1,60 @@
+package middleware
+
+import (
+	"net/http"
+	"strings"
+
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+)
+
+const UserIDKey = "user_id"
+
+// accessClaims mirrors internal/app/user's own claims shape — duplicated
+// rather than imported, since shared/ can never import a domain package.
+// The two are kept in sync by convention: sub = user id, typ = "access",
+// nothing else is load-bearing here.
+type accessClaims struct {
+	Typ string `json:"typ"`
+	jwt.RegisteredClaims
+}
+
+// RequireAuth validates a Bearer access token and puts the caller's user id
+// in context. Rejects a refresh token presented as an access token via the
+// typ claim — the two are structurally identical JWTs otherwise.
+func RequireAuth(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		raw, ok := strings.CutPrefix(header, "Bearer ")
+		if !ok || raw == "" {
+			unauthorized(c)
+			return
+		}
+
+		var claims accessClaims
+		_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) {
+			return []byte(secret), nil
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}))
+		if err != nil || claims.Typ != "access" {
+			unauthorized(c)
+			return
+		}
+
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			unauthorized(c)
+			return
+		}
+
+		c.Set(UserIDKey, userID)
+		c.Next()
+	}
+}
+
+func unauthorized(c *gin.Context) {
+	c.Error(apperror.New(http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid access token"))
+	c.Abort()
+}

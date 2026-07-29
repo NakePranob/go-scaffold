@@ -1,0 +1,55 @@
+package user
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/user/model"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+type Repository struct {
+	db *gorm.DB
+}
+
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{db: db}
+}
+
+func (r *Repository) FindByEmail(ctx context.Context, email string) (*model.User, error) {
+	var u model.User
+	if err := r.db.WithContext(ctx).First(&u, "email = ?", email).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
+	var u model.User
+	if err := r.db.WithContext(ctx).First(&u, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repository) FindIdentity(ctx context.Context, userID uuid.UUID, provider model.Provider) (*model.Identity, error) {
+	var i model.Identity
+	if err := r.db.WithContext(ctx).First(&i, "user_id = ? AND provider = ?", userID, provider).Error; err != nil {
+		return nil, err
+	}
+	return &i, nil
+}
+
+// CreateUserWithIdentity inserts the profile and its first login method in
+// one transaction — a user with no identity at all can't log in any way, so
+// the two rows always exist together or not at all.
+func (r *Repository) CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(u).Error; err != nil {
+			return err
+		}
+		i.UserID = u.ID
+		return tx.Create(i).Error
+	})
+}

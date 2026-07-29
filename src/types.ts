@@ -3,6 +3,8 @@ export interface ProjectFeatures {
   openapiDocs: boolean;
   /** set by `go-scaffold add worker` — cache/queue/mail + cmd/worker exist */
   worker?: boolean;
+  /** set by `go-scaffold add auth` — internal/app/user + auth middleware exist */
+  auth?: boolean;
 }
 
 export interface ProjectConfig {

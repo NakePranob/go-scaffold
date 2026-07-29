@@ -1,0 +1,113 @@
+package user
+
+import (
+	"net/http"
+	"time"
+
+	"{{goModule}}/internal/shared/httpx"
+	"{{goModule}}/internal/shared/middleware"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+const refreshCookieName = "refresh_token"
+
+type Handler struct {
+	svc          *Service
+	jwtSecret    string
+	refreshTTL   time.Duration
+	cookieSecure bool
+}
+
+func NewHandler(svc *Service, jwtSecret string, refreshTTL time.Duration, cookieSecure bool) *Handler {
+	return &Handler{svc: svc, jwtSecret: jwtSecret, refreshTTL: refreshTTL, cookieSecure: cookieSecure}
+}
+
+// Register wires both a public /auth group (register/login/refresh/logout)
+// and a /users group gated by RequireAuth — public vs protected is decided
+// here, per domain, not centrally in main.go.
+func (h *Handler) Register(rg gin.IRouter) {
+	authGroup := rg.Group("/auth")
+	authGroup.POST("/register", h.register)
+	authGroup.POST("/login", h.login)
+	authGroup.POST("/refresh", h.refresh)
+	authGroup.POST("/logout", h.logout)
+
+	usersGroup := rg.Group("/users", middleware.RequireAuth(h.jwtSecret))
+	usersGroup.GET("/me", h.me)
+	// go-scaffold:user-routes
+}
+
+func (h *Handler) register(c *gin.Context) {
+	var in registerInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	auth, err := h.svc.Register(c.Request.Context(), in)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusCreated, toCookieResponse(auth))
+}
+
+func (h *Handler) login(c *gin.Context) {
+	var in loginInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	auth, err := h.svc.Login(c.Request.Context(), in)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusOK, toCookieResponse(auth))
+}
+
+func (h *Handler) refresh(c *gin.Context) {
+	raw, err := c.Cookie(refreshCookieName)
+	if err != nil || raw == "" {
+		c.Error(errInvalidToken())
+		return
+	}
+	auth, err := h.svc.Refresh(c.Request.Context(), raw)
+	if err != nil {
+		h.clearRefreshCookie(c)
+		c.Error(err)
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusOK, toCookieResponse(auth))
+}
+
+func (h *Handler) logout(c *gin.Context) {
+	raw, _ := c.Cookie(refreshCookieName)
+	_ = h.svc.Logout(c.Request.Context(), raw)
+	h.clearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) me(c *gin.Context) {
+	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
+	u, err := h.svc.Get(c.Request.Context(), userID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, toMeResponse(u))
+}
+
+func (h *Handler) setRefreshCookie(c *gin.Context, token string) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(refreshCookieName, token, int(h.refreshTTL.Seconds()), "/", "", h.cookieSecure, true)
+}
+
+func (h *Handler) clearRefreshCookie(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(refreshCookieName, "", -1, "/", "", h.cookieSecure, true)
+}

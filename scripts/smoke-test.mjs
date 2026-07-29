@@ -375,6 +375,85 @@ func main() {
   }
 });
 
+// `add auth` requires `add worker` to already have run (needs Redis for the
+// refresh token store) — proven against the real compiled server: register,
+// a duplicate register, a wrong-password login, /me with/without a token,
+// refresh rotation, and reuse-detection (replaying a rotated-out refresh
+// token must revoke every session for that user, not just the replayed one).
+step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
+  if (!hasDocker) return;
+
+  goScaffold(["add", "auth"], fullApp);
+  run("go", ["mod", "tidy"], fullApp);
+  run("go", ["build", "./..."], fullApp);
+  run("go", ["vet", "./..."], fullApp);
+
+  run("make", ["db-drop"], fullApp);
+  run("make", ["db-create"], fullApp);
+
+  run(
+    "bash",
+    ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=true go run ./cmd/api >/tmp/go-scaffold-smoke-auth-boot.log 2>&1 & sleep 3`],
+    fullApp
+  );
+
+  const B = "http://localhost:8080/v1";
+  const jsonHeader = ["-H", "Content-Type: application/json"];
+  const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
+  const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
+  const cookie = (out) => (out.match(/Set-Cookie: refresh_token=([^;]*);/) ?? [])[1];
+
+  const register = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery","name":"Alice"}']);
+  if (!/^HTTP\/1\.1 201/.test(register)) throw new Error(`expected 201 on register, got:\n${register}`);
+  const registerCookie = cookie(register);
+  if (!registerCookie) throw new Error(`expected a refresh_token cookie on register, got:\n${register}`);
+
+  const dup = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery","name":"Alice"}']);
+  if (status(dup) !== "409" || !dup.includes("USER_EMAIL_TAKEN")) throw new Error(`expected 409 USER_EMAIL_TAKEN on duplicate register, got:\n${dup}`);
+
+  const badLogin = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"wrong"}']);
+  if (status(badLogin) !== "401" || !badLogin.includes("AUTH_INVALID_CREDENTIALS")) throw new Error(`expected 401 AUTH_INVALID_CREDENTIALS on wrong password, got:\n${badLogin}`);
+
+  const login = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery"}']);
+  if (!/^HTTP\/1\.1 200/.test(login)) throw new Error(`expected 200 on login, got:\n${login}`);
+  const access = field(login, "access_token");
+  const loginCookie = cookie(login);
+  if (!access || !loginCookie) throw new Error(`expected access_token + refresh_token cookie on login, got:\n${login}`);
+
+  const meNoToken = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me`]);
+  if (status(meNoToken) !== "401") throw new Error(`expected 401 on /me with no token, got:\n${meNoToken}`);
+
+  const meWithToken = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me`, "-H", `Authorization: Bearer ${access}`]);
+  if (status(meWithToken) !== "200" || !meWithToken.includes('"email":"alice@example.com"')) {
+    throw new Error(`expected 200 with alice's email on /me, got:\n${meWithToken}`);
+  }
+
+  const rotated = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${loginCookie}`]);
+  if (!/^HTTP\/1\.1 200/.test(rotated)) throw new Error(`expected 200 on refresh, got:\n${rotated}`);
+  const rotatedCookie = cookie(rotated);
+  if (!rotatedCookie || rotatedCookie === loginCookie) throw new Error(`expected a NEW refresh_token cookie after rotation, got:\n${rotated}`);
+
+  const reuseOld = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${loginCookie}`]);
+  if (status(reuseOld) !== "401") throw new Error(`expected 401 replaying the already-rotated-out refresh token, got:\n${reuseOld}`);
+
+  // reuse-detection's whole point: replaying the old token above must have
+  // revoked the WHOLE session family, including the token that replaced it —
+  // not just refused the replay itself.
+  const reuseRotated = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${rotatedCookie}`]);
+  if (status(reuseRotated) !== "401") throw new Error(`expected replaying a rotated-out token to revoke the whole session family (rotated token should now 401 too), got:\n${reuseRotated}`);
+
+  const logout = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/logout`, "-H", `Cookie: refresh_token=${registerCookie}`]);
+  if (status(logout) !== "204") throw new Error(`expected 204 on logout, got:\n${logout}`);
+  const logoutAgain = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/logout`, "-H", `Cookie: refresh_token=${registerCookie}`]);
+  if (status(logoutAgain) !== "204") throw new Error(`expected logout to be idempotent (204 again), got:\n${logoutAgain}`);
+  const refreshAfterLogout = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${registerCookie}`]);
+  if (status(refreshAfterLogout) !== "401") throw new Error(`expected 401 refreshing after logout, got:\n${refreshAfterLogout}`);
+
+  run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
+  execFileSync("sleep", ["1"]);
+  run("make", ["db-drop"], fullApp);
+});
+
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app_test");
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "golangci-lint-action");

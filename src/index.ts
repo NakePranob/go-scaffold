@@ -9,6 +9,7 @@ import { generateMigration } from "./commands/migration";
 import { removeModule } from "./commands/remove";
 import { cliVersion } from "./utils/version";
 import { addWorker } from "./commands/worker";
+import { addAuth } from "./commands/auth";
 import { MethodType, GetMethodMode } from "./types";
 
 const program = new Command();
@@ -134,6 +135,18 @@ add
   .action(async () => {
     try {
       await addWorker();
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+add
+  .command("auth")
+  .description("add email/password auth: JWT access tokens, Redis-backed refresh token rotation, register/login/refresh/logout/me (requires `add worker` first)")
+  .action(async () => {
+    try {
+      await addAuth();
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;
