@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"{{goModule}}/internal/app/user/model"
@@ -297,6 +298,30 @@ func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInf
 		if dberr.IsDuplicate(err) {
 			return nil, errEmailTaken()
 		}
+		return nil, apperror.NewInternal()
+	}
+	return u, nil
+}
+
+// EnsureUser is idempotent: an existing user with this email is returned
+// as-is (password untouched — cmd/seed shouldn't silently reset a real
+// password on every deploy), otherwise a new local user+identity is
+// created. Used by cmd/seed only — nothing in the HTTP API calls this.
+func (s *Service) EnsureUser(ctx context.Context, email, password, name string) (*model.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if u, err := s.repo.FindByEmail(ctx, email); err == nil {
+		return u, nil
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	hashStr := string(hash)
+
+	u := &model.User{ID: id.New(), Email: email, Name: name}
+	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
 		return nil, apperror.NewInternal()
 	}
 	return u, nil

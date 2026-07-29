@@ -504,6 +504,44 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
 
   run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
   execFileSync("sleep", ["1"]);
+
+  // cmd/seed talks to Postgres directly (config.Load() + database.Open, same
+  // as cmd/api) — no server, no Redis, run it as a plain one-shot process.
+  const seedOut = run("go", ["run", "./cmd/seed"], fullApp, {
+    SEED_ADMIN_EMAIL: "seed-admin@example.com",
+    SEED_ADMIN_PASSWORD: "seedpassword123",
+    SEED_ADMIN_NAME: "Seed Admin",
+  });
+  if (!seedOut.includes('"msg":"admin user ready"') || !seedOut.includes("seed-admin@example.com")) {
+    throw new Error(`expected cmd/seed to report the admin user ready, got:\n${seedOut}`);
+  }
+  const seedID = field(seedOut, "id");
+  if (!seedID) throw new Error(`expected cmd/seed's log line to include the user id, got:\n${seedOut}`);
+
+  // idempotent: re-running with a DIFFERENT password must return the SAME
+  // user id (found, not recreated) rather than a fresh one.
+  const seedAgainOut = run("go", ["run", "./cmd/seed"], fullApp, {
+    SEED_ADMIN_EMAIL: "seed-admin@example.com",
+    SEED_ADMIN_PASSWORD: "a-completely-different-password",
+    SEED_ADMIN_NAME: "Seed Admin",
+  });
+  if (field(seedAgainOut, "id") !== seedID) {
+    throw new Error(`expected re-running cmd/seed to return the same user id (idempotent), got:\n${seedAgainOut}\nfirst run:\n${seedOut}`);
+  }
+
+  let missingPasswordFailed = false;
+  try {
+    run("go", ["run", "./cmd/seed"], fullApp, { SEED_ADMIN_EMAIL: "no-password@example.com" });
+  } catch {
+    missingPasswordFailed = true;
+  }
+  if (!missingPasswordFailed) throw new Error("expected cmd/seed to exit nonzero when SEED_ADMIN_PASSWORD is missing but SEED_ADMIN_EMAIL is set");
+
+  const fixturesOut = run("go", ["run", "./cmd/seed", "--fixtures"], fullApp);
+  if (!fixturesOut.includes("dev.one@example.com") || !fixturesOut.includes("dev.two@example.com")) {
+    throw new Error(`expected --fixtures to seed both dev sample users, got:\n${fixturesOut}`);
+  }
+
   run("make", ["db-drop"], fullApp);
 });
 

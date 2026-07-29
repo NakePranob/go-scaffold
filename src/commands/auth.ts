@@ -55,14 +55,41 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
   patchEnvExample(path.join(projectDir, ".env.example"));
+  patchMakefile(path.join(projectDir, "Makefile"));
 
   gofmtTree(projectDir);
 
   writeConfig(projectDir, { ...config, features: { ...config.features, auth: true } });
 
-  console.log(pc.green("\nadded internal/app/user/ and internal/shared/middleware/auth.go"));
-  console.log("registered POST /auth/{register,login,refresh,logout} and GET /users/me in cmd/api/main.go");
-  console.log(pc.dim("\nnext: go mod tidy, then apply the new migrations (AUTO_MIGRATE=true picks them up automatically in dev)"));
+  console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
+  console.log(
+    "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password}, " +
+      "GET /auth/google/{login,callback}, and GET /users/me in cmd/api/main.go"
+  );
+  console.log(
+    pc.dim(
+      "\nnext: go mod tidy, then apply the new migrations (AUTO_MIGRATE=true picks them up automatically in dev)\n" +
+        "seed an admin: SEED_ADMIN_EMAIL=... SEED_ADMIN_PASSWORD=... make seed"
+    )
+  );
+}
+
+function patchMakefile(makefilePath: string): void {
+  if (!fs.existsSync(makefilePath)) return;
+  let content = fs.readFileSync(makefilePath, "utf8");
+  if (content.includes("\nseed:\n")) return; // already added
+
+  content = content.replace(/^\.PHONY: /m, ".PHONY: seed ");
+
+  const target =
+    "\n# bootstrap an admin user (idempotent) — SEED_ADMIN_EMAIL/PASSWORD from the\n" +
+    "# environment, not .env, so a real secret never sits in a checked-in file.\n" +
+    "# --fixtures adds throwaway dev sample users, never use it outside dev.\n" +
+    "seed:\n" +
+    "\t@[ -f .env ] && export $$(grep -v '^#' .env | sed -E 's/[[:space:]]+#.*$//' | xargs); go run ./cmd/seed $(ARGS)\n";
+
+  content = content.replace(/\nbuild:/, `${target}\nbuild:`);
+  fs.writeFileSync(makefilePath, content);
 }
 
 function patchEnvExample(envExamplePath: string): void {
