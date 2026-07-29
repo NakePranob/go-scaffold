@@ -2,7 +2,10 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"net/http"
 	"time"
 
 	"{{goModule}}/internal/app/user/model"
@@ -13,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"gorm.io/gorm"
 )
 
@@ -22,24 +27,48 @@ type repository interface {
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	FindIdentity(ctx context.Context, userID uuid.UUID, provider model.Provider) (*model.Identity, error)
+	FindIdentityByProviderUID(ctx context.Context, provider model.Provider, providerUID string) (*model.Identity, error)
 	CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error
+	CreateIdentity(ctx context.Context, i *model.Identity) error
+	UpdateIdentity(ctx context.Context, i *model.Identity) error
+}
+
+// mailer = what the service needs to send an email — satisfied by
+// platform/mail's AsyncClient (enqueues onto cmd/worker instead of blocking
+// the request on SMTP).
+type mailer interface {
+	Send(to, subject, body string) error
 }
 
 type Service struct {
-	repo      repository
-	tokens    tokenStore
-	jwtSecret string
-	accessTTL time.Duration
+	repo       repository
+	tokens     tokenStore
+	mailer     mailer
+	jwtSecret  string
+	accessTTL  time.Duration
 	refreshTTL time.Duration
+	resetTTL   time.Duration
+	resetURL   string
+	googleOAuth *oauth2.Config
 }
 
-func NewService(repo repository, tokens tokenStore, cfg config.Config) *Service {
+func NewService(repo repository, tokens tokenStore, mailer mailer, cfg config.Config) *Service {
 	return &Service{
 		repo:       repo,
 		tokens:     tokens,
+		mailer:     mailer,
 		jwtSecret:  cfg.JWTSecret,
 		accessTTL:  cfg.JWTAccessTTL,
 		refreshTTL: cfg.JWTRefreshTTL,
+		resetTTL:   cfg.PasswordResetTTL,
+		resetURL:   cfg.PasswordResetURL,
+		googleOAuth: &oauth2.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+			Scopes:       []string{"openid", "email", "profile"},
+			Endpoint:     google.Endpoint,
+		},
 	}
 }
 
@@ -127,6 +156,146 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errNotFound()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return u, nil
+}
+
+// ForgotPassword always succeeds from the caller's point of view — whether
+// the email exists or not — so a login-attempt-shaped probe can't be used to
+// enumerate registered accounts. Only if the email resolves to a local
+// (password-based) identity does it actually issue+email a reset token.
+func (s *Service) ForgotPassword(ctx context.Context, email string) error {
+	u, err := s.repo.FindByEmail(ctx, email)
+	if err != nil {
+		return nil
+	}
+	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
+	if err != nil || ident.PasswordHash == nil {
+		return nil // google-only account has no password to reset
+	}
+
+	raw, err := randomToken()
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if err := s.tokens.SetPasswordResetToken(ctx, hashToken(raw), u.ID, s.resetTTL); err != nil {
+		return apperror.NewInternal()
+	}
+
+	link := s.resetURL + "?token=" + raw
+	if err := s.mailer.Send(u.Email, "Reset your password", "Reset your password: "+link); err != nil {
+		// token's already stored — a mail failure shouldn't fail the request,
+		// just get logged so it's visible operationally.
+		slog.Error("send password reset email", "error", err)
+	}
+	return nil
+}
+
+// ResetPassword consumes a one-time reset token (GETDEL — see
+// tokenStore.ConsumePasswordResetToken), sets the new password, and revokes
+// every existing session for that user: a password reset should end every
+// session an attacker (or the legitimate user on another device) still holds.
+func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
+	userID, ok, err := s.tokens.ConsumePasswordResetToken(ctx, hashToken(rawToken))
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if !ok {
+		return errInvalidToken()
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	hashStr := string(hash)
+
+	ident, err := s.repo.FindIdentity(ctx, userID, model.ProviderLocal)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	ident.PasswordHash = &hashStr
+	if err := s.repo.UpdateIdentity(ctx, ident); err != nil {
+		return apperror.NewInternal()
+	}
+	return s.tokens.RevokeAllRefreshTokens(ctx, userID)
+}
+
+// GoogleLoginURL signs a short-lived CSRF state token and builds the
+// redirect URL — stateless, no server-side row for the state (see jwt.go).
+func (s *Service) GoogleLoginURL() (string, error) {
+	state, err := s.issueOAuthState()
+	if err != nil {
+		return "", apperror.NewInternal()
+	}
+	return s.googleOAuth.AuthCodeURL(state), nil
+}
+
+type googleUserInfo struct {
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+	Picture       string `json:"picture"`
+}
+
+func (s *Service) GoogleCallback(ctx context.Context, code, state string) (*authResponse, error) {
+	if err := s.verifyOAuthState(state); err != nil {
+		return nil, err
+	}
+	tok, err := s.googleOAuth.Exchange(ctx, code)
+	if err != nil {
+		return nil, errInvalidToken()
+	}
+
+	resp, err := s.googleOAuth.Client(ctx, tok).Get("https://openidconnect.googleapis.com/v1/userinfo")
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, apperror.NewInternal()
+	}
+	var info googleUserInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, apperror.NewInternal()
+	}
+
+	u, err := s.findOrCreateGoogleUser(ctx, info)
+	if err != nil {
+		return nil, err
+	}
+	return s.issueTokens(ctx, u)
+}
+
+// findOrCreateGoogleUser: (1) an existing google identity for this sub wins
+// outright; (2) failing that, ONLY if Google says the email is verified, link
+// a new google identity onto an existing local account with that email — an
+// unverified email can't be used to take over someone else's account; (3)
+// otherwise, brand new user + identity.
+func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInfo) (*model.User, error) {
+	if ident, err := s.repo.FindIdentityByProviderUID(ctx, model.ProviderGoogle, info.Sub); err == nil {
+		return s.repo.FindByID(ctx, ident.UserID)
+	}
+
+	providerUID := info.Sub
+	if info.EmailVerified {
+		if u, err := s.repo.FindByEmail(ctx, info.Email); err == nil {
+			ident := &model.Identity{ID: id.New(), UserID: u.ID, Provider: model.ProviderGoogle, ProviderUID: &providerUID}
+			if err := s.repo.CreateIdentity(ctx, ident); err != nil {
+				return nil, apperror.NewInternal()
+			}
+			return u, nil
+		}
+	}
+
+	u := &model.User{ID: id.New(), Email: info.Email, Name: info.Name, AvatarURL: info.Picture, EmailVerified: info.EmailVerified}
+	ident := &model.Identity{ID: id.New(), Provider: model.ProviderGoogle, ProviderUID: &providerUID}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, ident); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errEmailTaken()
 		}
 		return nil, apperror.NewInternal()
 	}

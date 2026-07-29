@@ -76,6 +76,12 @@ function patchEnvExample(envExamplePath: string): void {
     "JWT_SECRET=dev-secret-change-me\n" +
     "JWT_ACCESS_TTL_MIN=15\n" +
     "JWT_REFRESH_TTL_MIN=43200\n" +
-    "COOKIE_SECURE=false\n";
+    "COOKIE_SECURE=false\n" +
+    "\nPASSWORD_RESET_TTL_MIN=30\n" +
+    "PASSWORD_RESET_URL=http://localhost:3000/reset-password\n" +
+    "\n# leave the Google vars unset to disable Google login (register/login/refresh still work)\n" +
+    "GOOGLE_CLIENT_ID=\n" +
+    "GOOGLE_CLIENT_SECRET=\n" +
+    "GOOGLE_REDIRECT_URL=\n";
   fs.writeFileSync(envExamplePath, content);
 }

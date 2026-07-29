@@ -19,6 +19,15 @@ type loginInput struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type forgotPasswordInput struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+type resetPasswordInput struct {
+	Token       string `json:"token" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required,min=8"`
+}
+
 // authResponse is what the service returns internally (both tokens); the
 // handler sends the refresh token as an httpOnly cookie instead of echoing
 // it in the body, so meResponse never carries it — see toCookieResponse.

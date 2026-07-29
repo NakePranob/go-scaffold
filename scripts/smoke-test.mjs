@@ -380,7 +380,7 @@ func main() {
 // a duplicate register, a wrong-password login, /me with/without a token,
 // refresh rotation, and reuse-detection (replaying a rotated-out refresh
 // token must revoke every session for that user, not just the replayed one).
-step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
+step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/google-oauth-redirect against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
   if (!hasDocker) return;
 
   goScaffold(["add", "auth"], fullApp);
@@ -441,6 +441,59 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   // not just refused the replay itself.
   const reuseRotated = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${rotatedCookie}`]);
   if (status(reuseRotated) !== "401") throw new Error(`expected replaying a rotated-out token to revoke the whole session family (rotated token should now 401 too), got:\n${reuseRotated}`);
+
+  // forgot-password/reset-password go through the real async queue (same
+  // worker binary + PID-kill lesson as the "add worker" step above: build
+  // and run the binary directly, not `go run`, so $! is the real PID).
+  run("go", ["build", "-o", "auth-worker-bin", "./cmd/worker"], fullApp);
+  const workerLogPath = path.join(fullApp, "auth-worker.log");
+  const workerPid = run(
+    "bash",
+    ["-c", `REDIS_URL='${sharedRedisUrl}' ./auth-worker-bin >'${workerLogPath}' 2>&1 & echo $!`],
+    fullApp
+  ).trim();
+  execFileSync("sleep", ["2"]);
+
+  const forgotExisting = run("curl", ["-s", "-X", "POST", `${B}/auth/forgot-password`, ...jsonHeader, "-d", '{"email":"alice@example.com"}']);
+  const forgotMissing = run("curl", ["-s", "-X", "POST", `${B}/auth/forgot-password`, ...jsonHeader, "-d", '{"email":"nobody@example.com"}']);
+  if (forgotExisting !== forgotMissing) {
+    throw new Error(`expected forgot-password to respond identically for an existing vs unknown email (anti-enumeration), got:\n${forgotExisting}\nvs\n${forgotMissing}`);
+  }
+
+  execFileSync("sleep", ["2"]); // let the worker process the enqueued email
+  run("bash", ["-c", `kill -9 ${workerPid} 2>/dev/null || true`]);
+  const workerLog = readFileSync(workerLogPath, "utf8");
+  const resetToken = (workerLog.match(/reset-password\?token=([0-9a-f]+)/) ?? [])[1];
+  if (!resetToken) throw new Error(`expected a password reset link in the worker log, got:\n${workerLog}`);
+
+  const badReset = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/reset-password`, ...jsonHeader, "-d", '{"token":"garbage","new_password":"irrelevant123"}']);
+  if (status(badReset) !== "401") throw new Error(`expected 401 resetting with a garbage token, got:\n${badReset}`);
+
+  const goodReset = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/reset-password`, ...jsonHeader, "-d", `{"token":"${resetToken}","new_password":"brandnewpassword123"}`]);
+  if (status(goodReset) !== "204") throw new Error(`expected 204 on a valid reset-password, got:\n${goodReset}`);
+
+  const resetReuse = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/reset-password`, ...jsonHeader, "-d", `{"token":"${resetToken}","new_password":"anotherpassword123"}`]);
+  if (status(resetReuse) !== "401") throw new Error(`expected 401 reusing an already-consumed reset token (GETDEL is one-time), got:\n${resetReuse}`);
+
+  const loginOldPassword = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery"}']);
+  if (status(loginOldPassword) !== "401") throw new Error(`expected 401 logging in with the pre-reset password, got:\n${loginOldPassword}`);
+
+  const loginNewPassword = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
+  if (status(loginNewPassword) !== "200") throw new Error(`expected 200 logging in with the post-reset password, got:\n${loginNewPassword}`);
+
+  rmSync(path.join(fullApp, "auth-worker-bin"), { force: true });
+  rmSync(workerLogPath, { force: true });
+
+  // Google OAuth: only what's testable without a live Google app — the login
+  // redirect targets Google with a signed state param, and the callback
+  // rejects a state that isn't a validly-signed oauth_state JWT.
+  const googleLogin = run("curl", ["-s", "-i", `${B}/auth/google/login`]);
+  if (!/^HTTP\/1\.1 302/.test(googleLogin)) throw new Error(`expected 302 on GET /auth/google/login, got:\n${googleLogin}`);
+  if (!/Location: https:\/\/accounts\.google\.com\/.*state=/.test(googleLogin)) {
+    throw new Error(`expected a redirect to accounts.google.com with a state param, got:\n${googleLogin}`);
+  }
+  const googleCallbackBadState = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/auth/google/callback?code=fake&state=garbage`]);
+  if (status(googleCallbackBadState) !== "401") throw new Error(`expected 401 on google callback with an invalid state, got:\n${googleCallbackBadState}`);
 
   const logout = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/logout`, "-H", `Cookie: refresh_token=${registerCookie}`]);
   if (status(logout) !== "204") throw new Error(`expected 204 on logout, got:\n${logout}`);

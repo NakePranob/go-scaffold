@@ -10,10 +10,16 @@ import (
 	"github.com/google/uuid"
 )
 
-const tokenTypeAccess = "access"
+const (
+	tokenTypeAccess     = "access"
+	tokenTypeOAuthState = "oauth_state"
+	oauthStateTTL       = 10 * time.Minute
+)
 
 // accessClaims — see internal/shared/middleware/auth.go for why this struct
-// is duplicated there instead of imported.
+// is duplicated there instead of imported. Also reused (with no Subject) for
+// the Google OAuth CSRF state token below — Typ is what stops one kind being
+// presented where the other is expected.
 type accessClaims struct {
 	Typ string `json:"typ"`
 	jwt.RegisteredClaims
@@ -29,6 +35,31 @@ func (s *Service) issueAccessToken(userID uuid.UUID) (string, error) {
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.jwtSecret))
+}
+
+// issueOAuthState / verifyOAuthState round-trip a short-lived, stateless CSRF
+// token through Google's own redirect — no server-side row needed, the JWT's
+// signature + short TTL is the whole protection.
+func (s *Service) issueOAuthState() (string, error) {
+	claims := accessClaims{
+		Typ: tokenTypeOAuthState,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(oauthStateTTL)),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.jwtSecret))
+}
+
+func (s *Service) verifyOAuthState(raw string) error {
+	var claims accessClaims
+	_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) {
+		return []byte(s.jwtSecret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}))
+	if err != nil || claims.Typ != tokenTypeOAuthState {
+		return errInvalidToken()
+	}
+	return nil
 }
 
 // randomToken generates an opaque refresh token — deliberately not a JWT:

@@ -41,6 +41,25 @@ func (r *Repository) FindIdentity(ctx context.Context, userID uuid.UUID, provide
 	return &i, nil
 }
 
+func (r *Repository) FindIdentityByProviderUID(ctx context.Context, provider model.Provider, providerUID string) (*model.Identity, error) {
+	var i model.Identity
+	if err := r.db.WithContext(ctx).First(&i, "provider = ? AND provider_uid = ?", provider, providerUID).Error; err != nil {
+		return nil, err
+	}
+	return &i, nil
+}
+
+// CreateIdentity links a new login method onto an EXISTING user (e.g.
+// Google linking onto an account that registered with a password first) —
+// see CreateUserWithIdentity for the "brand new user" case.
+func (r *Repository) CreateIdentity(ctx context.Context, i *model.Identity) error {
+	return r.db.WithContext(ctx).Create(i).Error
+}
+
+func (r *Repository) UpdateIdentity(ctx context.Context, i *model.Identity) error {
+	return r.db.WithContext(ctx).Save(i).Error
+}
+
 // CreateUserWithIdentity inserts the profile and its first login method in
 // one transaction — a user with no identity at all can't log in any way, so
 // the two rows always exist together or not at all.

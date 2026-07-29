@@ -33,6 +33,10 @@ func (h *Handler) Register(rg gin.IRouter) {
 	authGroup.POST("/login", h.login)
 	authGroup.POST("/refresh", h.refresh)
 	authGroup.POST("/logout", h.logout)
+	authGroup.POST("/forgot-password", h.forgotPassword)
+	authGroup.POST("/reset-password", h.resetPassword)
+	authGroup.GET("/google/login", h.googleLogin)
+	authGroup.GET("/google/callback", h.googleCallback)
 
 	usersGroup := rg.Group("/users", middleware.RequireAuth(h.jwtSecret))
 	usersGroup.GET("/me", h.me)
@@ -90,6 +94,53 @@ func (h *Handler) logout(c *gin.Context) {
 	_ = h.svc.Logout(c.Request.Context(), raw)
 	h.clearRefreshCookie(c)
 	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) forgotPassword(c *gin.Context) {
+	var in forgotPasswordInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.ForgotPassword(c.Request.Context(), in.Email); err != nil {
+		c.Error(err)
+		return
+	}
+	// always the same response, whether or not the email exists — see
+	// Service.ForgotPassword for why.
+	c.JSON(http.StatusOK, gin.H{"message": "if that email exists, a reset link has been sent"})
+}
+
+func (h *Handler) resetPassword(c *gin.Context) {
+	var in resetPasswordInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.ResetPassword(c.Request.Context(), in.Token, in.NewPassword); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) googleLogin(c *gin.Context) {
+	url, err := h.svc.GoogleLoginURL()
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.Redirect(http.StatusFound, url)
+}
+
+func (h *Handler) googleCallback(c *gin.Context) {
+	auth, err := h.svc.GoogleCallback(c.Request.Context(), c.Query("code"), c.Query("state"))
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusOK, toCookieResponse(auth))
 }
 
 func (h *Handler) me(c *gin.Context) {
