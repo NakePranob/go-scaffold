@@ -1,0 +1,48 @@
+package mail
+
+import (
+	"fmt"
+	"log/slog"
+	"net/smtp"
+
+	"{{goModule}}/internal/shared/config"
+)
+
+// Client sends plain-text email over SMTP (net/smtp already handles STARTTLS
+// when the server offers it, which covers Gmail/SendGrid/Mailgun/SES/Resend
+// SMTP relays on port 587) — talks to a real external system, so it lives in
+// platform/, not shared/.
+type Client struct {
+	host, port, username, password, from string
+}
+
+func Open(cfg config.Config) *Client {
+	return &Client{
+		host:     cfg.SMTPHost,
+		port:     cfg.SMTPPort,
+		username: cfg.SMTPUsername,
+		password: cfg.SMTPPassword,
+		from:     cfg.SMTPFrom,
+	}
+}
+
+// Send delivers a plain-text email. If SMTP isn't configured (dev default —
+// SMTP_HOST unset), it logs the message instead of failing, so flows that
+// send email stay testable without a real mail server.
+func (c *Client) Send(to, subject, body string) error {
+	if c.host == "" {
+		// ponytail: no SMTP configured — log instead of failing. Upgrade path:
+		// set SMTP_HOST (+ USERNAME/PASSWORD/FROM) once a real environment needs it.
+		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", subject, "body", body)
+		return nil
+	}
+	msg := fmt.Sprintf("To: %s\r\nFrom: %s\r\nSubject: %s\r\n\r\n%s\r\n", to, c.from, subject, body)
+	// nil Auth when no username is set — a relay/local catcher that doesn't
+	// require auth (or doesn't advertise AUTH at all) rejects a non-nil Auth
+	// outright, even with empty credentials.
+	var auth smtp.Auth
+	if c.username != "" {
+		auth = smtp.PlainAuth("", c.username, c.password, c.host)
+	}
+	return smtp.SendMail(c.host+":"+c.port, auth, c.from, []string{to}, []byte(msg))
+}

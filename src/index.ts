@@ -8,6 +8,7 @@ import { generateMethod } from "./commands/method";
 import { generateMigration } from "./commands/migration";
 import { removeModule } from "./commands/remove";
 import { cliVersion } from "./utils/version";
+import { addWorker } from "./commands/worker";
 import { MethodType, GetMethodMode } from "./types";
 
 const program = new Command();
@@ -119,6 +120,20 @@ generate
   .action(async (name) => {
     try {
       await generateMigration(name);
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+const add = program.command("add").description("add opt-in infrastructure to an existing go-scaffold project");
+
+add
+  .command("worker")
+  .description("add Redis, an Asynq task queue, SMTP mail, and cmd/worker (opt-in — most projects don't need this on day one)")
+  .action(async () => {
+    try {
+      await addWorker();
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

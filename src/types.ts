@@ -1,6 +1,8 @@
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;
+  /** set by `go-scaffold add worker` — cache/queue/mail + cmd/worker exist */
+  worker?: boolean;
 }
 
 export interface ProjectConfig {

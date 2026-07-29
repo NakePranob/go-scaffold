@@ -1,0 +1,77 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"{{goModule}}/internal/platform/mail"
+	"{{goModule}}/internal/platform/queue"
+	"{{goModule}}/internal/shared/config"
+	// go-scaffold:imports
+)
+
+func main() {
+	cfg := config.Load()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
+	slog.SetDefault(logger)
+
+	srv, err := queue.NewServer(cfg.RedisURL)
+	if err != nil {
+		logger.Error("new queue server", "error", err)
+		os.Exit(1)
+	}
+
+	srv.Handle(mail.TypeSendEmail, mail.HandleSendEmail(mail.Open(cfg)))
+	// go-scaffold:queue-handlers
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		logger.Info("worker started")
+		if err := srv.Start(); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("worker server", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("shutting down worker")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// asynq's Shutdown() blocks until in-flight tasks finish (or the process
+	// is killed) with no context/timeout parameter of its own — run it in a
+	// goroutine and race it against shutdownCtx so a stuck task can't hang
+	// the process forever.
+	done := make(chan struct{}, 1)
+	go func() {
+		srv.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-shutdownCtx.Done():
+		logger.Warn("worker shutdown timed out")
+	}
+	logger.Info("worker stopped")
+}
+
+func parseLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

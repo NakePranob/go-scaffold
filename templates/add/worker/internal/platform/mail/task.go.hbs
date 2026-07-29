@@ -1,0 +1,52 @@
+package mail
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/hibiken/asynq"
+)
+
+const TypeSendEmail = "email:send"
+
+type sendEmailPayload struct {
+	To      string
+	Subject string
+	Body    string
+}
+
+func NewSendEmailTask(p sendEmailPayload) *asynq.Task {
+	payload, _ := json.Marshal(p)
+	return asynq.NewTask(TypeSendEmail, payload)
+}
+
+func HandleSendEmail(client *Client) asynq.Handler {
+	return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
+		var p sendEmailPayload
+		if err := json.Unmarshal(task.Payload(), &p); err != nil {
+			return err
+		}
+		return client.Send(p.To, p.Subject, p.Body)
+	})
+}
+
+type AsyncClient struct {
+	q interface {
+		Enqueue(task *asynq.Task, opts ...asynq.Option) (string, error)
+	}
+}
+
+func NewAsyncClient(q interface {
+	Enqueue(task *asynq.Task, opts ...asynq.Option) (string, error)
+}) *AsyncClient {
+	return &AsyncClient{q: q}
+}
+
+// Send enqueues the email instead of sending it inline, so the caller (an
+// HTTP handler) returns in ~µs instead of blocking on SMTP. cmd/worker picks
+// it up and calls Client.Send.
+func (c *AsyncClient) Send(to, subject, body string) error {
+	task := NewSendEmailTask(sendEmailPayload{To: to, Subject: subject, Body: body})
+	_, err := c.q.Enqueue(task, asynq.MaxRetry(5))
+	return err
+}

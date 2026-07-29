@@ -1,0 +1,68 @@
+package queue
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/hibiken/asynq"
+)
+
+// Server runs the background worker. Created by cmd/worker; handlers register
+// their task types on the mux before Start is called.
+type Server struct {
+	inner *asynq.Server
+	mux   *asynq.ServeMux
+}
+
+// slogAdapter wraps *slog.Logger to implement asynq.Logger. Asynq calls these
+// like the stdlib `log` package (a plain message, sometimes several args
+// meant to be concatenated) — fmt.Sprint joins them into one message string
+// rather than passing them as slog key-value pairs, which would otherwise
+// misinterpret a lone message argument as a key with no value.
+type slogAdapter struct {
+	inner *slog.Logger
+}
+
+func (a *slogAdapter) Debug(args ...interface{}) { a.inner.Debug(fmt.Sprint(args...)) }
+func (a *slogAdapter) Info(args ...interface{})  { a.inner.Info(fmt.Sprint(args...)) }
+func (a *slogAdapter) Warn(args ...interface{})  { a.inner.Warn(fmt.Sprint(args...)) }
+func (a *slogAdapter) Error(args ...interface{}) { a.inner.Error(fmt.Sprint(args...)) }
+func (a *slogAdapter) Fatal(args ...interface{}) { a.inner.Error(fmt.Sprint(args...)) }
+
+func NewServer(redisURL string) (*Server, error) {
+	opt, err := asynq.ParseRedisURI(redisURL)
+	if err != nil {
+		return nil, err
+	}
+	srv := &Server{
+		inner: asynq.NewServer(opt, asynq.Config{
+			Concurrency: 10,
+			Logger:      &slogAdapter{inner: slog.Default()},
+		}),
+		mux: asynq.NewServeMux(),
+	}
+	// Global error handler for tasks that panic or return a non-Retryable error.
+	srv.mux.Use(func(next asynq.Handler) asynq.Handler {
+		return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
+			err := next.ProcessTask(ctx, task)
+			if err != nil {
+				slog.Error("task failed", "type", task.Type(), "error", err)
+			}
+			return err
+		})
+	})
+	return srv, nil
+}
+
+func (s *Server) Handle(pattern string, handler asynq.Handler) {
+	s.mux.Handle(pattern, handler)
+}
+
+func (s *Server) Start() error {
+	return s.inner.Start(s.mux)
+}
+
+func (s *Server) Shutdown() {
+	s.inner.Shutdown()
+}

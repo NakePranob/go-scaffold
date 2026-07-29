@@ -69,7 +69,23 @@ function assertFileContains(filePath, needle) {
   if (!content.includes(needle)) throw new Error(`${filePath} doesn't contain "${needle}"`);
 }
 
+// Set by the "add worker" step once it patches fullApp's readyz to also ping
+// Redis — every later step in this file that boots fullApp's cmd/api shares
+// that same project, so it needs a reachable Redis from that point on too,
+// not just its own concern (DB, CORS, migrations, ...). Kept alive for the
+// rest of the run instead of torn down at the end of that one step; cleaned
+// up here at the very end.
+let sharedRedisContainerId = null;
+let sharedRedisUrl = null;
+
 function cleanup() {
+  if (sharedRedisContainerId) {
+    try {
+      execFileSync("docker", ["rm", "-f", sharedRedisContainerId], { stdio: "ignore" });
+    } catch {
+      // best-effort — a failed cleanup here shouldn't mask the real test result
+    }
+  }
   if (scratch && existsSync(scratch)) rmSync(scratch, { recursive: true, force: true });
 }
 
@@ -188,6 +204,177 @@ func main() {
   }
 });
 
+let hasDocker = true;
+try {
+  run("docker", ["--version"]);
+} catch {
+  hasDocker = false;
+}
+
+// docker port prints one line per protocol family ("0.0.0.0:PORT" and
+// "[::]:PORT") for an ephemeral (-p 0:CONTAINER_PORT) mapping — both name the
+// same host port, so the last field after splitting on ":" is it regardless
+// of which line answers first.
+function readMappedPort(containerId) {
+  const portMap = run("docker", ["port", containerId, "6379/tcp"]).trim();
+  return portMap.split(":").pop();
+}
+
+// polls a localhost TCP port via bash's /dev/tcp (no netcat/redis-cli
+// dependency on the host) — used to wait out the gap between `docker start`
+// returning and the host-mapped port actually accepting connections again.
+function waitForPort(port, attempts = 30) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      run("bash", ["-c", `echo > /dev/tcp/127.0.0.1/${port}`]);
+      return;
+    } catch {
+      run("sleep", ["0.3"]);
+    }
+  }
+  throw new Error(`port ${port} never accepted a connection`);
+}
+
+// `add worker` end to end: readyz picks up a real Redis outage, and a task
+// enqueued through mail.AsyncClient is actually processed by cmd/worker (dev
+// fallback: logs instead of sending, since SMTP_HOST is unset). Runs its own
+// throwaway Redis on a Docker-assigned ephemeral port — not the host's
+// default 6379 — so it can't collide with a Redis someone already has
+// running (this dev machine's own has auth enabled, which would otherwise
+// make the readyz check fail for a reason that has nothing to do with the
+// scaffold's own correctness).
+step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires readyz, processes a real task" : "add worker: skipped (needs Docker for an isolated Redis)", () => {
+  if (!hasDocker) return;
+
+  goScaffold(["add", "worker"], fullApp);
+  run("go", ["mod", "tidy"], fullApp);
+  run("go", ["build", "./..."], fullApp);
+  run("go", ["vet", "./..."], fullApp);
+
+  // cmd/api opens Postgres before it ever gets to Redis (database.Open runs
+  // first in main()) — needs a real DB up before it'll boot far enough to
+  // reach the readyz check this step is actually testing. Let the Makefile
+  // target handle its own local-psql-vs-docker fallback, same as every other
+  // step that needs a DB.
+  run("make", ["db-drop"], fullApp);
+  run("make", ["db-create"], fullApp);
+
+  // no --rm: this step stops the container mid-test (to prove readyz notices
+  // Redis going down) then starts it again. It also stays alive past the end
+  // of this step (cleaned up in the top-level cleanup() instead): once
+  // patched, every later step that boots fullApp's cmd/api needs Redis
+  // reachable too, since they all share this one scratch project — not just
+  // this step's own concern.
+  const containerId = run("docker", ["run", "-d", "-p", "0:6379", "redis:7-alpine"]).trim();
+  sharedRedisContainerId = containerId;
+  {
+    let redisPort = readMappedPort(containerId);
+    let redisUrl = `redis://localhost:${redisPort}/0`;
+
+    // `docker exec redis-cli ping` only proves the container's *internal*
+    // network is up — it says nothing about the host-mapped port this test
+    // (and the app) actually connects through, which can lag behind after a
+    // stop/start cycle. Poll the real host port instead, via bash's /dev/tcp
+    // (no extra tool dependency).
+    waitForPort(redisPort);
+
+    const up = run(
+      "bash",
+      [
+        "-c",
+        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & sleep 3; ` +
+          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "lsof -ti:8080 | xargs -r kill -9; " +
+          "echo \"READYZ=$CODE\"",
+      ],
+      fullApp
+    );
+    if (!/READYZ=200/.test(up)) throw new Error(`expected readyz 200 with Redis reachable, got: ${up}`);
+
+    run("docker", ["stop", containerId]);
+    const down = run(
+      "bash",
+      [
+        "-c",
+        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & sleep 3; ` +
+          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "lsof -ti:8080 | xargs -r kill -9; " +
+          "echo \"READYZ=$CODE\"",
+      ],
+      fullApp
+    );
+    if (!/READYZ=503/.test(down)) throw new Error(`expected readyz 503 with Redis down, got: ${down}`);
+    run("docker", ["start", containerId]);
+    // Docker Desktop can hand out a *different* random host port on restart
+    // when the container was published with an ephemeral mapping (-p 0:6379)
+    // — re-read it rather than assuming `docker start` preserves the one from
+    // `docker run`. Silently reusing the stale port here is exactly what
+    // produced a flaky "port never accepted a connection" failure while
+    // testing this: the container's logs showed Redis back up and accepting
+    // connections in well under a second, on a port one number higher than
+    // what this step kept polling.
+    redisPort = readMappedPort(containerId);
+    redisUrl = `redis://localhost:${redisPort}/0`;
+    waitForPort(redisPort);
+
+    const probeDir = path.join(fullApp, "cmd", "_smoke_probe_enqueue");
+    execFileSync("mkdir", ["-p", probeDir]);
+    writeFileSync(
+      path.join(probeDir, "main.go"),
+      `package main
+
+import (
+	"full-app/internal/platform/mail"
+	"full-app/internal/platform/queue"
+)
+
+func main() {
+	q, err := queue.NewClient("${redisUrl}")
+	if err != nil {
+		panic(err)
+	}
+	ac := mail.NewAsyncClient(q)
+	if err := ac.Send("someone@example.com", "smoke test", "processed by cmd/worker"); err != nil {
+		panic(err)
+	}
+}
+`
+    );
+
+    // `go run ./cmd/worker & WPID=$!` doesn't work: `go run` compiles then
+    // execs the binary as its OWN child, so $! is the `go` wrapper's PID, not
+    // the actual worker process — `kill -9 $WPID` kills the wrapper and
+    // leaves the real worker running forever, retrying against a container
+    // that's long gone. Confirmed the hard way: seven of these accumulated
+    // over the course of testing this step, one alive for hours, still
+    // burning CPU on retry loops. Build the binary and run *that* directly so
+    // the PID this test captures is the PID that actually needs to die.
+    const workerLogPath = path.join(fullApp, "worker.log");
+    run("go", ["build", "-o", "worker-bin", "./cmd/worker"], fullApp);
+    run(
+      "bash",
+      [
+        "-c",
+        `REDIS_URL='${redisUrl}' ./worker-bin >'${workerLogPath}' 2>&1 & WPID=$!; sleep 2; ` +
+          "go run ./cmd/_smoke_probe_enqueue; sleep 2; kill -9 $WPID 2>/dev/null",
+      ],
+      fullApp
+    );
+    rmSync(path.join(fullApp, "worker-bin"), { force: true });
+    const workerLog = readFileSync(workerLogPath, "utf8");
+    if (!workerLog.includes("email not sent (SMTP not configured)") || !workerLog.includes("processed by cmd/worker")) {
+      throw new Error(`expected cmd/worker to process the enqueued task (dev SMTP fallback), got:\n${workerLog}`);
+    }
+    if (workerLog.includes("!BADKEY")) {
+      throw new Error(`asynq's own log lines are leaking through the slog adapter malformed, got:\n${workerLog}`);
+    }
+
+    rmSync(probeDir, { recursive: true, force: true });
+    run("make", ["db-drop"], fullApp);
+    sharedRedisUrl = redisUrl; // later steps that boot fullApp's cmd/api reuse this
+  }
+});
+
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app_test");
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "golangci-lint-action");
@@ -293,7 +480,11 @@ step(
       "bash",
       [
         "-c",
-        "go run ./cmd/api >/tmp/go-scaffold-smoke-cors.log 2>&1 & sleep 3; " +
+        // fullApp already has cache/redis wired into readyz once "add worker"
+        // has run earlier in this suite (same shared scratch project) —
+        // needs REDIS_URL too, or the server never becomes ready to answer
+        // anything, CORS included.
+        `REDIS_URL='${sharedRedisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-cors.log 2>&1 & sleep 3; ` +
           "echo '===ALLOWED==='; " +
           "curl -s -i -X OPTIONS http://localhost:8080/livez -H 'Origin: http://localhost:3000' -H 'Access-Control-Request-Method: GET'; " +
           "echo '===DISALLOWED==='; " +
@@ -503,10 +694,16 @@ step(
     run("make", ["db-drop"], fullApp);
     run("make", ["db-create"], fullApp);
 
-    writeFileSync(
-      path.join(fullApp, ".env"),
-      readFileSync(path.join(fullApp, ".env.example"), "utf8").replace("AUTO_MIGRATE=true", "AUTO_MIGRATE=false")
-    );
+    // fullApp already has Redis wired into readyz once "add worker" has run
+    // earlier in this suite (same shared scratch project) — .env.example's
+    // own REDIS_URL default (port 6379) won't reach the throwaway container's
+    // actual ephemeral port. A shell-level `REDIS_URL=... make run` prefix
+    // doesn't survive this: the Makefile's own `export $(... .env ...)` step
+    // re-exports .env's REDIS_URL line and clobbers it. Bake the real URL
+    // into .env itself instead.
+    let envContent = readFileSync(path.join(fullApp, ".env.example"), "utf8").replace("AUTO_MIGRATE=true", "AUTO_MIGRATE=false");
+    if (sharedRedisUrl) envContent = envContent.replace(/REDIS_URL=.*/, `REDIS_URL=${sharedRedisUrl}`);
+    writeFileSync(path.join(fullApp, ".env"), envContent);
 
     // `kill -9 $PID` isn't enough to stop the server: `make run`'s PID is `make`
     // itself, and the actual listening binary is a grandchild via `go run` —
@@ -539,6 +736,8 @@ step(
       "bash",
       [
         "-c",
+        // REDIS_URL is already baked into .env above (needed once "add worker"
+        // has run earlier in this suite) — `make run` loads it from there.
         "make run >/tmp/go-scaffold-smoke-boot.log 2>&1 & sleep 3; " +
           "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
           "lsof -ti:8080 | xargs -r kill -9; " +
