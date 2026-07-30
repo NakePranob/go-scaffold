@@ -88,7 +88,7 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string): void {
   content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine2, migrateLine2);
 
   const routeLine =
-    "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure).Register(api)";
+    "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(/\n\t_ = api \/\/ dropped once `generate module` registers the first route\n/, "\n");
 

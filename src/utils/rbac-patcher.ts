@@ -174,12 +174,12 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
   }
 
   const oldRouteLine =
-    "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure).Register(api)";
+    "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
   if (content.includes(oldRouteLine)) {
     const newRouteBlock = [
       "roleSvc := role.NewService(role.NewRepository(db))",
       "authz := middleware.NewAuthz(roleSvc.PermissionsOf)",
-      "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg, roleSvc), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, authz).Register(api)",
+      "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg, roleSvc), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb, authz).Register(api)",
       "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)",
     ].join("\n");
     content = content.replace(oldRouteLine, newRouteBlock);

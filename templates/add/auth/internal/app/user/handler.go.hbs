@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 const refreshCookieName = "refresh_token"
@@ -20,6 +21,7 @@ type Handler struct {
 	jwtSecret    string
 	refreshTTL   time.Duration
 	cookieSecure bool
+	rdb          *redis.Client
 	// go-scaffold:user-handler-fields
 }
 
@@ -28,6 +30,7 @@ func NewHandler(
 	jwtSecret string,
 	refreshTTL time.Duration,
 	cookieSecure bool,
+	rdb *redis.Client,
 	// go-scaffold:user-handler-params
 ) *Handler {
 	return &Handler{
@@ -35,6 +38,7 @@ func NewHandler(
 		jwtSecret:    jwtSecret,
 		refreshTTL:   refreshTTL,
 		cookieSecure: cookieSecure,
+		rdb:          rdb,
 		// go-scaffold:user-handler-init
 	}
 }
@@ -43,13 +47,22 @@ func NewHandler(
 // and a /users group gated by RequireAuth — public vs protected is decided
 // here, per domain, not centrally in main.go.
 func (h *Handler) Register(rg gin.IRouter) {
+	// per-IP, per-route budgets — separate names so a burst on one endpoint
+	// doesn't spend another's budget. refresh/logout/google aren't limited:
+	// refresh/logout are gated by possessing a valid cookie already, and the
+	// Google flow's abuse surface lives on Google's side, not ours.
+	loginLimit := middleware.RateLimit(h.rdb, "login", 10, time.Minute)
+	registerLimit := middleware.RateLimit(h.rdb, "register", 5, time.Minute)
+	forgotPasswordLimit := middleware.RateLimit(h.rdb, "forgot-password", 5, time.Minute)
+	resetPasswordLimit := middleware.RateLimit(h.rdb, "reset-password", 10, time.Minute)
+
 	authGroup := rg.Group("/auth")
-	authGroup.POST("/register", h.register)
-	authGroup.POST("/login", h.login)
+	authGroup.POST("/register", registerLimit, h.register)
+	authGroup.POST("/login", loginLimit, h.login)
 	authGroup.POST("/refresh", h.refresh)
 	authGroup.POST("/logout", h.logout)
-	authGroup.POST("/forgot-password", h.forgotPassword)
-	authGroup.POST("/reset-password", h.resetPassword)
+	authGroup.POST("/forgot-password", forgotPasswordLimit, h.forgotPassword)
+	authGroup.POST("/reset-password", resetPasswordLimit, h.resetPassword)
 	authGroup.GET("/google/login", h.googleLogin)
 	authGroup.GET("/google/callback", h.googleCallback)
 

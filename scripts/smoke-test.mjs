@@ -380,7 +380,7 @@ func main() {
 // a duplicate register, a wrong-password login, /me with/without a token,
 // refresh rotation, and reuse-detection (replaying a rotated-out refresh
 // token must revoke every session for that user, not just the replayed one).
-step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/google-oauth-redirect against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
+step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/google-oauth-redirect/rate-limiting against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
   if (!hasDocker) return;
 
   goScaffold(["add", "auth"], fullApp);
@@ -501,6 +501,38 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   if (status(logoutAgain) !== "204") throw new Error(`expected logout to be idempotent (204 again), got:\n${logoutAgain}`);
   const refreshAfterLogout = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${registerCookie}`]);
   if (status(refreshAfterLogout) !== "401") throw new Error(`expected 401 refreshing after logout, got:\n${refreshAfterLogout}`);
+
+  // Rate limiting: register/login/forgot-password/reset-password are each
+  // throttled per-IP via Redis (middleware.RateLimit). Flush the shared
+  // Redis first so this doesn't depend on how many times the assertions
+  // above already spent the budget (also sidesteps having to guess whether
+  // curl-to-localhost counts as client IP 127.0.0.1 or ::1), and flush again
+  // after so a budget this test deliberately exhausts doesn't bleed into a
+  // later step that shares the same container (e.g. "add rbac"'s own
+  // /auth/register call). Safe to nuke everything here — this is the last
+  // thing this step does before the server gets killed.
+  const resetRateLimits = () => run("docker", ["exec", sharedRedisContainerId, "redis-cli", "FLUSHDB"]);
+  resetRateLimits();
+
+  // register is capped at 5/min — fire 6 back-to-back and expect only the 6th to 429.
+  for (let i = 1; i <= 6; i++) {
+    const out = run("curl", [
+      "-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/register`, ...jsonHeader,
+      "-d", `{"email":"burst${i}@example.com","password":"correcthorsebattery","name":"Burst"}`,
+    ]);
+    if (i <= 5) {
+      if (status(out) === "429") throw new Error(`expected request ${i}/6 to register to stay under the 5/min limit, got 429:\n${out}`);
+    } else if (status(out) !== "429" || !out.includes("RATE_LIMITED")) {
+      throw new Error(`expected the 6th rapid register within a minute to be rate limited (429 RATE_LIMITED), got:\n${out}`);
+    }
+  }
+
+  // a DIFFERENT route's budget must be untouched — proves limits are
+  // per-route, not one shared global counter.
+  const loginStillWorks = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"burst1@example.com","password":"correcthorsebattery"}']);
+  if (status(loginStillWorks) !== "200") throw new Error(`expected /auth/login to be unaffected by /auth/register's exhausted rate limit, got:\n${loginStillWorks}`);
+
+  resetRateLimits();
 
   run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
   execFileSync("sleep", ["1"]);

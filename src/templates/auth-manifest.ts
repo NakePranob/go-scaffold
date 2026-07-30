@@ -1,6 +1,7 @@
 // output paths are relative to the project root
 export const AUTH_FILES: { template: string; output: string }[] = [
   { template: "add/auth/internal/shared/middleware/auth.go.hbs", output: "internal/shared/middleware/auth.go" },
+  { template: "add/auth/internal/shared/middleware/ratelimit.go.hbs", output: "internal/shared/middleware/ratelimit.go" },
   { template: "add/auth/internal/app/user/model/user.go.hbs", output: "internal/app/user/model/user.go" },
   { template: "add/auth/internal/app/user/model/identity.go.hbs", output: "internal/app/user/model/identity.go" },
   { template: "add/auth/internal/app/user/dto.go.hbs", output: "internal/app/user/dto.go" },
