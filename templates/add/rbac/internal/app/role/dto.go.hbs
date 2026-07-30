@@ -1,0 +1,40 @@
+package role
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/role/model"
+)
+
+// response = the DTO sent out (kept separate from the model so a later DB column doesn't leak automatically)
+type response struct {
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	IsSystem    bool      `json:"is_system"`
+	Permissions []string  `json:"permissions"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func toResponse(m *model.Role, perms []string) response {
+	return response{Code: m.Code, Name: m.Name, IsSystem: m.IsSystem, Permissions: perms, CreatedAt: m.CreatedAt}
+}
+
+type CreateInput struct {
+	Code string `json:"code" binding:"required,max=20"`
+	Name string `json:"name" binding:"required"`
+}
+
+// SetPermissionsInput.PermissionCodes is deliberately not `binding:"required"`
+// — an empty list is valid (it revokes every permission the role had).
+type SetPermissionsInput struct {
+	PermissionCodes []string `json:"permission_codes"`
+}
+
+type permissionResponse struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+}
+
+func toPermissionResponse(m *model.Permission) permissionResponse {
+	return permissionResponse{Code: m.Code, Description: m.Description}
+}

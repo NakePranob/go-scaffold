@@ -13,15 +13,30 @@ import (
 
 const refreshCookieName = "refresh_token"
 
+// go-scaffold:user-handler-consts
+
 type Handler struct {
 	svc          *Service
 	jwtSecret    string
 	refreshTTL   time.Duration
 	cookieSecure bool
+	// go-scaffold:user-handler-fields
 }
 
-func NewHandler(svc *Service, jwtSecret string, refreshTTL time.Duration, cookieSecure bool) *Handler {
-	return &Handler{svc: svc, jwtSecret: jwtSecret, refreshTTL: refreshTTL, cookieSecure: cookieSecure}
+func NewHandler(
+	svc *Service,
+	jwtSecret string,
+	refreshTTL time.Duration,
+	cookieSecure bool,
+	// go-scaffold:user-handler-params
+) *Handler {
+	return &Handler{
+		svc:          svc,
+		jwtSecret:    jwtSecret,
+		refreshTTL:   refreshTTL,
+		cookieSecure: cookieSecure,
+		// go-scaffold:user-handler-init
+	}
 }
 
 // Register wires both a public /auth group (register/login/refresh/logout)
@@ -152,6 +167,8 @@ func (h *Handler) me(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, toMeResponse(u))
 }
+
+// go-scaffold:user-handler-funcs
 
 func (h *Handler) setRefreshCookie(c *gin.Context, token string) {
 	c.SetSameSite(http.SameSiteStrictMode)

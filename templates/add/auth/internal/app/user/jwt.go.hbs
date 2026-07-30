@@ -22,12 +22,17 @@ const (
 // presented where the other is expected.
 type accessClaims struct {
 	Typ string `json:"typ"`
+	// go-scaffold:jwt-claims
 	jwt.RegisteredClaims
 }
 
-func (s *Service) issueAccessToken(userID uuid.UUID) (string, error) {
+func (s *Service) issueAccessToken(
+	userID uuid.UUID,
+	// go-scaffold:issue-access-token-params
+) (string, error) {
 	claims := accessClaims{
 		Typ: tokenTypeAccess,
+		// go-scaffold:jwt-claims-values
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

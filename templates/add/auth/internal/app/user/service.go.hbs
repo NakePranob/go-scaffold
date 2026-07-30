@@ -27,11 +27,13 @@ import (
 type repository interface {
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+	UpdateUser(ctx context.Context, u *model.User) error
 	FindIdentity(ctx context.Context, userID uuid.UUID, provider model.Provider) (*model.Identity, error)
 	FindIdentityByProviderUID(ctx context.Context, provider model.Provider, providerUID string) (*model.Identity, error)
 	CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error
 	CreateIdentity(ctx context.Context, i *model.Identity) error
 	UpdateIdentity(ctx context.Context, i *model.Identity) error
+	// go-scaffold:user-repository-interface
 }
 
 // mailer = what the service needs to send an email — satisfied by
@@ -40,6 +42,8 @@ type repository interface {
 type mailer interface {
 	Send(to, subject, body string) error
 }
+
+// go-scaffold:user-interfaces
 
 type Service struct {
 	repo       repository
@@ -51,9 +55,16 @@ type Service struct {
 	resetTTL   time.Duration
 	resetURL   string
 	googleOAuth *oauth2.Config
+	// go-scaffold:user-service-fields
 }
 
-func NewService(repo repository, tokens tokenStore, mailer mailer, cfg config.Config) *Service {
+func NewService(
+	repo repository,
+	tokens tokenStore,
+	mailer mailer,
+	cfg config.Config,
+	// go-scaffold:user-service-params
+) *Service {
 	return &Service{
 		repo:       repo,
 		tokens:     tokens,
@@ -70,6 +81,7 @@ func NewService(repo repository, tokens tokenStore, mailer mailer, cfg config.Co
 			Scopes:       []string{"openid", "email", "profile"},
 			Endpoint:     google.Endpoint,
 		},
+		// go-scaffold:user-service-init
 	}
 }
 
@@ -327,8 +339,13 @@ func (s *Service) EnsureUser(ctx context.Context, email, password, name string) 
 	return u, nil
 }
 
+// go-scaffold:user-service-methods
+
 func (s *Service) issueTokens(ctx context.Context, u *model.User) (*authResponse, error) {
-	access, err := s.issueAccessToken(u.ID)
+	access, err := s.issueAccessToken(
+		u.ID,
+		// go-scaffold:issue-access-token-args
+	)
 	if err != nil {
 		return nil, apperror.NewInternal()
 	}

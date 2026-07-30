@@ -5,6 +5,8 @@ export interface ProjectFeatures {
   worker?: boolean;
   /** set by `go-scaffold add auth` — internal/app/user + auth middleware exist */
   auth?: boolean;
+  /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */
+  rbac?: boolean;
 }
 
 export interface ProjectConfig {

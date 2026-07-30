@@ -755,6 +755,105 @@ step(
   }
 );
 
+// `add rbac` requires real seed data (roles/permissions rows), which only
+// the SQL migration provides — AUTO_MIGRATE=true creates the tables via
+// AutoMigrate but never runs the migration's INSERT statements, so this
+// step applies the real migration via the `migrate` CLI rather than
+// AUTO_MIGRATE=true like earlier steps.
+step(
+  hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
+    ? "add rbac: default role, permission-gated admin routes, last-role-manager lockout guard, cmd/seed promotes to admin"
+    : "add rbac: skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
+
+    goScaffold(["add", "rbac"], fullApp);
+    run("go", ["mod", "tidy"], fullApp);
+    run("go", ["build", "./..."], fullApp);
+    run("go", ["vet", "./..."], fullApp);
+
+    run("make", ["db-drop"], fullApp);
+    run("make", ["db-create"], fullApp);
+    const dsn = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    run("migrate", ["-path", "migrations", "-database", dsn, "up"], fullApp);
+
+    // also proves SetRole works standalone (not just reachable via HTTP)
+    run("go", ["run", "./cmd/seed"], fullApp, {
+      SEED_ADMIN_EMAIL: "rbac-admin@example.com",
+      SEED_ADMIN_PASSWORD: "adminpassword123",
+      SEED_ADMIN_NAME: "RBAC Admin",
+    });
+
+    run("bash", ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=false go run ./cmd/api >/tmp/go-scaffold-smoke-rbac-boot.log 2>&1 & sleep 3`], fullApp);
+
+    const B = "http://localhost:8080/v1";
+    const jsonHeader = ["-H", "Content-Type: application/json"];
+    const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
+    const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
+
+    const staffRegister = run("curl", ["-s", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"rbac-staff@example.com","password":"correcthorsebattery","name":"Staff"}']);
+    const staffAccess = field(staffRegister, "access_token");
+    if (!staffAccess) throw new Error(`expected an access token on register, got:\n${staffRegister}`);
+
+    const staffMe = run("curl", ["-s", `${B}/users/me`, "-H", `Authorization: Bearer ${staffAccess}`]);
+    if (!staffMe.includes('"role":"staff"')) throw new Error(`expected a freshly registered user's default role to be "staff", got:\n${staffMe}`);
+    const staffID = field(staffMe, "id");
+
+    const noAuthRoles = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/roles`]);
+    if (status(noAuthRoles) !== "401") throw new Error(`expected 401 (not 403) listing /roles unauthenticated, got:\n${noAuthRoles}`);
+
+    const staffForbidden = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/roles`, "-H", `Authorization: Bearer ${staffAccess}`]);
+    if (status(staffForbidden) !== "403") throw new Error(`expected 403 listing /roles as staff (no role:manage granted), got:\n${staffForbidden}`);
+
+    const adminLogin = run("curl", ["-s", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"rbac-admin@example.com","password":"adminpassword123"}']);
+    const adminAccess = field(adminLogin, "access_token");
+    if (!adminAccess) throw new Error(`expected the seeded admin to log in, got:\n${adminLogin}`);
+
+    const adminRoles = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/roles`, "-H", `Authorization: Bearer ${adminAccess}`]);
+    if (status(adminRoles) !== "200" || !adminRoles.includes('"code":"admin"') || !adminRoles.includes('"code":"staff"')) {
+      throw new Error(`expected the admin to list both seeded roles, got:\n${adminRoles}`);
+    }
+
+    // the trickiest business rule here: revoking role:manage from the only
+    // role that grants it must be blocked, or an admin could lock everyone
+    // (including themselves) out of role management with no way back in.
+    const lastManager = run("curl", [
+      "-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "PATCH", `${B}/roles/admin/permissions`,
+      "-H", `Authorization: Bearer ${adminAccess}`, ...jsonHeader, "-d", '{"permission_codes":["user:manage-role"]}',
+    ]);
+    if (status(lastManager) !== "409" || !lastManager.includes("ROLE_LAST_MANAGER")) {
+      throw new Error(`expected 409 ROLE_LAST_MANAGER revoking role:manage from the only manager, got:\n${lastManager}`);
+    }
+
+    const promote = run("curl", [
+      "-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "PATCH", `${B}/users/${staffID}/set-role`,
+      "-H", `Authorization: Bearer ${adminAccess}`, ...jsonHeader, "-d", '{"role":"admin"}',
+    ]);
+    if (status(promote) !== "200" || !promote.includes('"role":"admin"')) {
+      throw new Error(`expected 200 with role "admin" after set-role, got:\n${promote}`);
+    }
+
+    const unknownRole = run("curl", [
+      "-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "PATCH", `${B}/users/${staffID}/set-role`,
+      "-H", `Authorization: Bearer ${adminAccess}`, ...jsonHeader, "-d", '{"role":"superuser"}',
+    ]);
+    if (status(unknownRole) !== "422" || !unknownRole.includes("USER_UNKNOWN_ROLE")) {
+      throw new Error(`expected 422 USER_UNKNOWN_ROLE for an unknown role code, got:\n${unknownRole}`);
+    }
+
+    // the promoted user's role only changes in a FRESH token — the JWT is
+    // stateless, so a re-login (or refresh) is what actually applies it.
+    const promotedLogin = run("curl", ["-s", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"rbac-staff@example.com","password":"correcthorsebattery"}']);
+    const promotedAccess = field(promotedLogin, "access_token");
+    const promotedRoles = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/roles`, "-H", `Authorization: Bearer ${promotedAccess}`]);
+    if (status(promotedRoles) !== "200") throw new Error(`expected the promoted user's new token to grant /roles access, got:\n${promotedRoles}`);
+
+    run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
+    execFileSync("sleep", ["1"]);
+    run("make", ["db-drop"], fullApp);
+  }
+);
+
 step("generate module order (full CRUD)", () => {
   goScaffold(["generate", "module", "order"], fullApp);
 });

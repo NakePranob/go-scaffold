@@ -10,6 +10,7 @@ import { removeModule } from "./commands/remove";
 import { cliVersion } from "./utils/version";
 import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
+import { addRbac } from "./commands/rbac";
 import { MethodType, GetMethodMode } from "./types";
 
 const program = new Command();
@@ -147,6 +148,18 @@ add
   .action(async () => {
     try {
       await addAuth();
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+add
+  .command("rbac")
+  .description("add role-based access control: roles/permissions admin API, cached Authz middleware, PATCH /users/:id/set-role (requires `add auth` first)")
+  .action(async () => {
+    try {
+      await addRbac();
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

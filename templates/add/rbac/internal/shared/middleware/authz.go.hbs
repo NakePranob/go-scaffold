@@ -1,0 +1,88 @@
+package middleware
+
+import (
+	"context"
+	"net/http"
+	"sync"
+	"time"
+
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/gin-gonic/gin"
+)
+
+// Authz answers "does this role have this permission?". shared/ can't import
+// a domain package (see RequireAuth's comment), so the role->permission
+// lookup is injected as a func value from main.go instead of calling the
+// role domain directly.
+type Authz struct {
+	resolve func(ctx context.Context, roleCode string) (map[string]struct{}, error)
+	ttl     time.Duration
+
+	mu    sync.RWMutex
+	cache map[string]cachedPerms
+}
+
+type cachedPerms struct {
+	perms   map[string]struct{}
+	expires time.Time
+}
+
+// NewAuthz builds an Authz that calls resolve on a cache miss. The cache key
+// is the role code, not the user or the request — a handful of roles means
+// a handful of DB round trips per TTL window, independent of traffic.
+func NewAuthz(resolve func(context.Context, string) (map[string]struct{}, error)) *Authz {
+	return &Authz{resolve: resolve, ttl: time.Minute, cache: map[string]cachedPerms{}}
+}
+
+// Require 403s unless the caller's role (set by RequireAuth) grants perm.
+// Must run after RequireAuth.
+func (a *Authz) Require(perm string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		perms, err := a.permsOf(c.Request.Context(), c.GetString(RoleKey))
+		if err != nil {
+			c.Error(err)
+			c.Abort()
+			return
+		}
+		if _, ok := perms[perm]; !ok {
+			c.Error(apperror.New(http.StatusForbidden, "FORBIDDEN", "insufficient permissions"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// ponytail: process-local cache, a handful of roles x 60s TTL — a role's
+// permission grants take effect within the TTL, no pub/sub needed. Move to
+// Redis only if instant cross-pod invalidation turns out to matter.
+//
+// Double-checked locking: the common case (cache hit) only needs RLock, so
+// concurrent requests for different roles never block each other. Only a
+// miss takes the exclusive Lock, and only for the one role being resolved —
+// ceiling is that a miss still blocks other roles' misses (not their hits)
+// for the duration of one resolve() call; move to a per-role singleflight
+// if that contention ever actually shows up under load.
+func (a *Authz) permsOf(ctx context.Context, role string) (map[string]struct{}, error) {
+	a.mu.RLock()
+	e, ok := a.cache[role]
+	a.mu.RUnlock()
+	if ok && time.Now().Before(e.expires) {
+		return e.perms, nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// re-check: another goroutine may have refreshed this role while we
+	// were waiting for the write lock.
+	if e, ok := a.cache[role]; ok && time.Now().Before(e.expires) {
+		return e.perms, nil
+	}
+	perms, err := a.resolve(ctx, role)
+	if err != nil {
+		return nil, err
+	}
+	a.cache[role] = cachedPerms{perms: perms, expires: time.Now().Add(a.ttl)}
+	return perms, nil
+}

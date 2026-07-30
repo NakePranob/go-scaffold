@@ -9,6 +9,7 @@ import (
 	"{{goModule}}/internal/app/user"
 	"{{goModule}}/internal/platform/database"
 	"{{goModule}}/internal/shared/config"
+	// go-scaffold:seed-imports
 )
 
 // cmd/seed is a one-off operational task, like `migrate` — not part of the
@@ -28,7 +29,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	svc := user.NewService(user.NewRepository(db), nil, nil, cfg)
+	// go-scaffold:seed-services
+	svc := user.NewService(
+		user.NewRepository(db), nil, nil, cfg,
+		// go-scaffold:seed-user-service-args
+	)
 	ctx := context.Background()
 
 	if email := os.Getenv("SEED_ADMIN_EMAIL"); email != "" {
@@ -47,6 +52,7 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("admin user ready", "email", u.Email, "id", u.ID)
+		// go-scaffold:seed-admin-role
 	}
 
 	if *withFixtures {

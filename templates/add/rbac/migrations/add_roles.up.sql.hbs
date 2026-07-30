@@ -1,0 +1,34 @@
+CREATE TABLE roles (
+    code       VARCHAR(20) PRIMARY KEY,
+    name       TEXT NOT NULL,
+    is_system  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE permissions (
+    code        VARCHAR(50) PRIMARY KEY,
+    description TEXT NOT NULL
+);
+
+CREATE TABLE role_permissions (
+    role_code       VARCHAR(20) NOT NULL REFERENCES roles(code) ON DELETE CASCADE,
+    permission_code VARCHAR(50) NOT NULL REFERENCES permissions(code) ON DELETE CASCADE,
+    PRIMARY KEY (role_code, permission_code)
+);
+
+INSERT INTO roles (code, name, is_system) VALUES
+    ('staff', 'Staff', TRUE),
+    ('admin', 'Admin', TRUE);
+
+INSERT INTO permissions (code, description) VALUES
+    ('role:manage',       'Create roles and change their permissions'),
+    ('user:manage-role',  'Change a user''s assigned role');
+
+-- admin gets every permission that exists, staff gets none — no behavior
+-- change for existing users until an admin explicitly grants something.
+INSERT INTO role_permissions (role_code, permission_code)
+SELECT 'admin', code FROM permissions;
+
+ALTER TABLE users
+    ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff' REFERENCES roles(code);

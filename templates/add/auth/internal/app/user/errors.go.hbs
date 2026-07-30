@@ -28,3 +28,5 @@ func errInvalidCredentials() *apperror.AppError {
 func errInvalidToken() *apperror.AppError {
 	return apperror.New(http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "invalid or expired refresh token")
 }
+
+// go-scaffold:user-errors

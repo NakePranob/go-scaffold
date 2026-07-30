@@ -1,0 +1,210 @@
+package role
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"slices"
+
+	"{{goModule}}/internal/app/role/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/dberr"
+
+	"gorm.io/gorm"
+)
+
+// repository = what the service needs from the data layer (declared on the
+// consumer side, so it can be faked in tests)
+type repository interface {
+	PermissionCodes(ctx context.Context, roleCode string) ([]string, error)
+	FindAll(ctx context.Context, limit, offset int) ([]model.Role, error)
+	FindByCode(ctx context.Context, code string) (*model.Role, error)
+	Create(ctx context.Context, m *model.Role) error
+	SetPermissions(ctx context.Context, roleCode string, permissionCodes []string) error
+	Delete(ctx context.Context, code string) error
+	FindAllPermissions(ctx context.Context, limit, offset int) ([]model.Permission, error)
+	AllPermissionCodes(ctx context.Context) ([]string, error)
+	CountRolesWithPermission(ctx context.Context, permissionCode, excludeCode string) (int64, error)
+}
+
+// Service = business logic for role (rules live here, it knows nothing about HTTP)
+type Service struct {
+	repo repository
+}
+
+func NewService(repo repository) *Service {
+	return &Service{repo: repo}
+}
+
+// PermissionsOf resolves roleCode's permission set. This is the func value
+// injected into middleware.Authz from main.go — shared/ can't import a
+// domain package, so it calls this through a func, not a direct dependency.
+func (s *Service) PermissionsOf(ctx context.Context, roleCode string) (map[string]struct{}, error) {
+	codes, err := s.repo.PermissionCodes(ctx, roleCode)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(codes))
+	for _, c := range codes {
+		set[c] = struct{}{}
+	}
+	return set, nil
+}
+
+// CodeExists reports whether code names a real role — used by user.Service's
+// SetRole to validate a role assignment: AutoMigrate-only test schemas never
+// create the users_role_fkey FK, so that alone can't be relied on to reject
+// an unknown code.
+func (s *Service) CodeExists(ctx context.Context, code string) (bool, error) {
+	if _, err := s.repo.FindByCode(ctx, code); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// roleListItem pairs a role with its granted permission codes — every
+// role-shaped response (list, create, set-permissions) carries both.
+type roleListItem struct {
+	model.Role
+	Permissions []string
+}
+
+func (s *Service) List(ctx context.Context, limit, offset int) ([]roleListItem, error) {
+	roles, err := s.repo.FindAll(ctx, limit, offset)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	out := make([]roleListItem, len(roles))
+	for i, r := range roles {
+		perms, err := s.repo.PermissionCodes(ctx, r.Code)
+		if err != nil {
+			return nil, apperror.NewInternal()
+		}
+		out[i] = roleListItem{Role: r, Permissions: perms}
+	}
+	return out, nil
+}
+
+// roleCodePattern mirrors the seeded system codes' shape (staff, admin) —
+// lowercase, no spaces, safe to use as a URL path segment and a JWT claim.
+var roleCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+func (s *Service) Create(ctx context.Context, in CreateInput) (*roleListItem, error) {
+	if !roleCodePattern.MatchString(in.Code) {
+		return nil, errInvalidCode()
+	}
+	m := &model.Role{Code: in.Code, Name: in.Name}
+	if err := s.repo.Create(ctx, m); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errConflict()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return &roleListItem{Role: *m, Permissions: []string{}}, nil
+}
+
+// SetPermissions replaces code's entire permission grant set with
+// permissionCodes — a full-replace, not add/remove, matches a checkbox-style
+// admin UI ("here's the new full set") better than diffing.
+func (s *Service) SetPermissions(ctx context.Context, code string, permissionCodes []string) (*roleListItem, error) {
+	m, err := s.repo.FindByCode(ctx, code)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	if err := s.validatePermissionCodes(ctx, permissionCodes); err != nil {
+		return nil, err
+	}
+	if !slices.Contains(permissionCodes, PermRoleManage) {
+		isLast, err := s.isLastRoleManager(ctx, code)
+		if err != nil {
+			return nil, apperror.NewInternal()
+		}
+		if isLast {
+			return nil, errLastRoleManager()
+		}
+	}
+	if err := s.repo.SetPermissions(ctx, code, permissionCodes); err != nil {
+		// the migration's FK is a backstop for this same check — reachable
+		// only under a race with a concurrent permission deletion.
+		if dberr.IsForeignKey(err) {
+			return nil, errUnknownPermission()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return &roleListItem{Role: *m, Permissions: permissionCodes}, nil
+}
+
+// validatePermissionCodes checks every code against the actual permission
+// catalog — the DB's FK alone isn't enough (AutoMigrate, used in dev/tests,
+// never creates it, only the raw migration SQL does).
+func (s *Service) validatePermissionCodes(ctx context.Context, codes []string) error {
+	all, err := s.repo.AllPermissionCodes(ctx)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	valid := make(map[string]struct{}, len(all))
+	for _, c := range all {
+		valid[c] = struct{}{}
+	}
+	for _, c := range codes {
+		if _, ok := valid[c]; !ok {
+			return errUnknownPermission()
+		}
+	}
+	return nil
+}
+
+func (s *Service) Delete(ctx context.Context, code string) error {
+	m, err := s.repo.FindByCode(ctx, code)
+	if err != nil {
+		return wrapFindErr(err)
+	}
+	if m.IsSystem {
+		return errSystemRole()
+	}
+	isLast, err := s.isLastRoleManager(ctx, code)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if isLast {
+		return errLastRoleManager()
+	}
+	if err := s.repo.Delete(ctx, code); err != nil {
+		if dberr.IsForeignKey(err) {
+			return errHasReferences()
+		}
+		return apperror.NewInternal()
+	}
+	return nil
+}
+
+// isLastRoleManager reports whether code is the only role left granting
+// PermRoleManage — blocks a self-lockout no one could fix back through this
+// same API. Best-effort: reachable only under a race with a concurrent edit
+// to the same permission, not worth a serializable transaction for an
+// admin-only, low-traffic action.
+func (s *Service) isLastRoleManager(ctx context.Context, code string) (bool, error) {
+	others, err := s.repo.CountRolesWithPermission(ctx, PermRoleManage, code)
+	if err != nil {
+		return false, err
+	}
+	return others == 0, nil
+}
+
+func (s *Service) ListPermissions(ctx context.Context, limit, offset int) ([]model.Permission, error) {
+	items, err := s.repo.FindAllPermissions(ctx, limit, offset)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return items, nil
+}
+
+func wrapFindErr(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errNotFound()
+	}
+	return apperror.NewInternal()
+}

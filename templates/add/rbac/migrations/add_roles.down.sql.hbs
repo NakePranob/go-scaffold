@@ -1,0 +1,15 @@
+-- if an admin created a custom role after this migration and it's still
+-- assigned to any user, dropping the roles table would orphan that value —
+-- raise a clear, actionable error instead of a raw FK-violation.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM users WHERE role NOT IN ('staff', 'admin')) THEN
+        RAISE EXCEPTION 'cannot roll back add_roles: users still have a role other than staff/admin — reassign them to staff/admin first';
+    END IF;
+END $$;
+
+ALTER TABLE users DROP COLUMN role;
+
+DROP TABLE role_permissions;
+DROP TABLE permissions;
+DROP TABLE roles;

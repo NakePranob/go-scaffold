@@ -1,0 +1,8 @@
+package model
+
+// RolePermission = the grant between Role and Permission — the one thing
+// admins actually edit; Role and Permission rows themselves stay fixed.
+type RolePermission struct {
+	RoleCode       string `json:"role_code" gorm:"primaryKey;type:varchar(20)"`
+	PermissionCode string `json:"permission_code" gorm:"primaryKey;type:varchar(50)"`
+}
