@@ -54,6 +54,8 @@ type Service struct {
 	refreshTTL time.Duration
 	resetTTL   time.Duration
 	resetURL   string
+	verifyTTL  time.Duration
+	verifyURL  string
 	googleOAuth *oauth2.Config
 	// go-scaffold:user-service-fields
 }
@@ -74,6 +76,8 @@ func NewService(
 		refreshTTL: cfg.JWTRefreshTTL,
 		resetTTL:   cfg.PasswordResetTTL,
 		resetURL:   cfg.PasswordResetURL,
+		verifyTTL:  cfg.EmailVerifyTTL,
+		verifyURL:  cfg.EmailVerifyURL,
 		googleOAuth: &oauth2.Config{
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
@@ -100,6 +104,9 @@ func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse
 		}
 		return nil, apperror.NewInternal()
 	}
+	// best-effort: a mail failure shouldn't block registration — the user can
+	// always ask for another link via ResendVerificationEmail.
+	s.sendVerificationEmail(ctx, u)
 	return s.issueTokens(ctx, u)
 }
 
@@ -234,6 +241,62 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword strin
 		return apperror.NewInternal()
 	}
 	return s.tokens.RevokeAllRefreshTokens(ctx, userID)
+}
+
+// sendVerificationEmail issues a one-time token and emails the link — called
+// from Register (best-effort) and ResendVerificationEmail. Not exported:
+// callers that want to send one go through one of those two, which decide
+// whether it's appropriate to (e.g. ResendVerificationEmail checks the user
+// isn't already verified first).
+func (s *Service) sendVerificationEmail(ctx context.Context, u *model.User) {
+	raw, err := randomToken()
+	if err != nil {
+		slog.Error("generate email verification token", "error", err)
+		return
+	}
+	if err := s.tokens.SetEmailVerifyToken(ctx, hashToken(raw), u.ID, s.verifyTTL); err != nil {
+		slog.Error("store email verification token", "error", err)
+		return
+	}
+	link := s.verifyURL + "?token=" + raw
+	if err := s.mailer.Send(u.Email, "Verify your email", "Verify your email: "+link); err != nil {
+		slog.Error("send email verification email", "error", err)
+	}
+}
+
+// ResendVerificationEmail is the authenticated counterpart to the automatic
+// send in Register — for when the first email never arrived or its token
+// expired. Rejects an already-verified user instead of silently no-op'ing:
+// unlike ForgotPassword this is authenticated, so there's no enumeration
+// concern in telling the caller their own account's real state.
+func (s *Service) ResendVerificationEmail(ctx context.Context, userID uuid.UUID) error {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if u.EmailVerified {
+		return errAlreadyVerified()
+	}
+	s.sendVerificationEmail(ctx, u)
+	return nil
+}
+
+// VerifyEmail consumes a one-time verification token (GETDEL — see
+// tokenStore.ConsumeEmailVerifyToken) and marks the user verified.
+func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
+	userID, ok, err := s.tokens.ConsumeEmailVerifyToken(ctx, hashToken(rawToken))
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if !ok {
+		return errInvalidToken()
+	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	u.EmailVerified = true
+	return s.repo.UpdateUser(ctx, u)
 }
 
 // GoogleLoginURL signs a short-lived CSRF state token and builds the

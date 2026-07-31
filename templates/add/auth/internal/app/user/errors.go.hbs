@@ -29,4 +29,8 @@ func errInvalidToken() *apperror.AppError {
 	return apperror.New(http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "invalid or expired refresh token")
 }
 
+func errAlreadyVerified() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "AUTH_ALREADY_VERIFIED", "email is already verified")
+}
+
 // go-scaffold:user-errors

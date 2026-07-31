@@ -380,7 +380,7 @@ func main() {
 // a duplicate register, a wrong-password login, /me with/without a token,
 // refresh rotation, and reuse-detection (replaying a rotated-out refresh
 // token must revoke every session for that user, not just the replayed one).
-step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/google-oauth-redirect/rate-limiting against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
+step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/verify-email/google-oauth-redirect/rate-limiting against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
   if (!hasDocker) return;
 
   goScaffold(["add", "auth"], fullApp);
@@ -460,11 +460,48 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     throw new Error(`expected forgot-password to respond identically for an existing vs unknown email (anti-enumeration), got:\n${forgotExisting}\nvs\n${forgotMissing}`);
   }
 
-  execFileSync("sleep", ["2"]); // let the worker process the enqueued email
+  // Register sends a verification email automatically — same queue, same worker.
+  const verifymeRegister = run("curl", ["-s", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"verifyme@example.com","password":"correcthorsebattery","name":"Verify Me"}']);
+  const verifymeAccess = field(verifymeRegister, "access_token");
+  if (!verifymeAccess) throw new Error(`expected an access token registering verifyme@example.com, got:\n${verifymeRegister}`);
+
+  execFileSync("sleep", ["2"]); // let the worker process the enqueued emails
   run("bash", ["-c", `kill -9 ${workerPid} 2>/dev/null || true`]);
   const workerLog = readFileSync(workerLogPath, "utf8");
   const resetToken = (workerLog.match(/reset-password\?token=([0-9a-f]+)/) ?? [])[1];
   if (!resetToken) throw new Error(`expected a password reset link in the worker log, got:\n${workerLog}`);
+
+  const verifyTokenMatch = workerLog.match(/"to":"verifyme@example\.com"[^\n]*verify-email\?token=([0-9a-f]+)/);
+  const verifyToken = verifyTokenMatch?.[1];
+  if (!verifyToken) throw new Error(`expected a verification link for verifyme@example.com in the worker log, got:\n${workerLog}`);
+
+  const meBeforeVerify = run("curl", ["-s", `${B}/users/me`, "-H", `Authorization: Bearer ${verifymeAccess}`]);
+  if (!meBeforeVerify.includes('"email_verified":false')) throw new Error(`expected a freshly registered user to be unverified, got:\n${meBeforeVerify}`);
+
+  const badVerify = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/verify-email`, ...jsonHeader, "-d", '{"token":"garbage"}']);
+  if (status(badVerify) !== "401") throw new Error(`expected 401 verifying with a garbage token, got:\n${badVerify}`);
+
+  const goodVerify = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/verify-email`, ...jsonHeader, "-d", `{"token":"${verifyToken}"}`]);
+  if (status(goodVerify) !== "204") throw new Error(`expected 204 on a valid email verification, got:\n${goodVerify}`);
+
+  const verifyReuse = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/verify-email`, ...jsonHeader, "-d", `{"token":"${verifyToken}"}`]);
+  if (status(verifyReuse) !== "401") throw new Error(`expected 401 reusing an already-consumed verify token (GETDEL is one-time), got:\n${verifyReuse}`);
+
+  const meAfterVerify = run("curl", ["-s", `${B}/users/me`, "-H", `Authorization: Bearer ${verifymeAccess}`]);
+  if (!meAfterVerify.includes('"email_verified":true')) throw new Error(`expected the user to show verified after a successful verify-email, got:\n${meAfterVerify}`);
+
+  const resendNoAuth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/resend-verification`]);
+  if (status(resendNoAuth) !== "401") throw new Error(`expected 401 resending verification with no token, got:\n${resendNoAuth}`);
+
+  const resendAlreadyVerified = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/resend-verification`, "-H", `Authorization: Bearer ${verifymeAccess}`]);
+  if (status(resendAlreadyVerified) !== "409" || !resendAlreadyVerified.includes("AUTH_ALREADY_VERIFIED")) {
+    throw new Error(`expected 409 AUTH_ALREADY_VERIFIED resending for an already-verified user, got:\n${resendAlreadyVerified}`);
+  }
+
+  const resendmeRegister = run("curl", ["-s", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"resendme@example.com","password":"correcthorsebattery","name":"Resend Me"}']);
+  const resendmeAccess = field(resendmeRegister, "access_token");
+  const resendUnverified = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/resend-verification`, "-H", `Authorization: Bearer ${resendmeAccess}`]);
+  if (status(resendUnverified) !== "204") throw new Error(`expected 204 resending verification for a not-yet-verified user, got:\n${resendUnverified}`);
 
   const badReset = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/reset-password`, ...jsonHeader, "-d", '{"token":"garbage","new_password":"irrelevant123"}']);
   if (status(badReset) !== "401") throw new Error(`expected 401 resetting with a garbage token, got:\n${badReset}`);

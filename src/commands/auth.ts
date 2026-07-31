@@ -106,6 +106,8 @@ function patchEnvExample(envExamplePath: string): void {
     "COOKIE_SECURE=false\n" +
     "\nPASSWORD_RESET_TTL_MIN=30\n" +
     "PASSWORD_RESET_URL=http://localhost:3000/reset-password\n" +
+    "\nEMAIL_VERIFY_TTL_MIN=1440\n" +
+    "EMAIL_VERIFY_URL=http://localhost:3000/verify-email\n" +
     "\n# leave the Google vars unset to disable Google login (register/login/refresh still work)\n" +
     "GOOGLE_CLIENT_ID=\n" +
     "GOOGLE_CLIENT_SECRET=\n" +

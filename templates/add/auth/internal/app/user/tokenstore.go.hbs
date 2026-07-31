@@ -13,6 +13,7 @@ const (
 	refreshUserKeyPrefix = "user:refresh:user:"  // +userID -> SET of active token hashes
 	refreshUsedKeyPrefix = "user:refresh:used:"  // +hash -> userID, TTL = refreshTTL (reuse-detection tombstone)
 	pwresetKeyPrefix     = "user:pwreset:"       // +hash -> userID, TTL = resetTTL, GETDEL on consume
+	emailVerifyKeyPrefix = "user:emailverify:"   // +hash -> userID, TTL = emailVerifyTTL, GETDEL on consume
 )
 
 // tokenStore is what Service needs from Redis for refresh tokens — declared
@@ -26,6 +27,8 @@ type tokenStore interface {
 	IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 	SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
 	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
+	ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 }
 
 type redisTokenStore struct {
@@ -121,6 +124,27 @@ func (s *redisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash s
 // atomic, so a token can't be raced into being consumed twice.
 func (s *redisTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	raw, err := s.rdb.GetDel(ctx, pwresetKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return id, true, nil
+}
+
+func (s *redisTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.rdb.Set(ctx, emailVerifyKeyPrefix+tokenHash, userID.String(), ttl).Err()
+}
+
+// ConsumeEmailVerifyToken is one-time-use by construction, same as
+// ConsumePasswordResetToken — GETDEL is atomic.
+func (s *redisTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.GetDel(ctx, emailVerifyKeyPrefix+tokenHash).Result()
 	if err == redis.Nil {
 		return uuid.Nil, false, nil
 	}

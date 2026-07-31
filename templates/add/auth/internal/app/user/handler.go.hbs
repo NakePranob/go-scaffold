@@ -55,6 +55,8 @@ func (h *Handler) Register(rg gin.IRouter) {
 	registerLimit := middleware.RateLimit(h.rdb, "register", 5, time.Minute)
 	forgotPasswordLimit := middleware.RateLimit(h.rdb, "forgot-password", 5, time.Minute)
 	resetPasswordLimit := middleware.RateLimit(h.rdb, "reset-password", 10, time.Minute)
+	verifyEmailLimit := middleware.RateLimit(h.rdb, "verify-email", 10, time.Minute)
+	resendVerificationLimit := middleware.RateLimit(h.rdb, "resend-verification", 5, time.Minute)
 
 	authGroup := rg.Group("/auth")
 	authGroup.POST("/register", registerLimit, h.register)
@@ -63,11 +65,13 @@ func (h *Handler) Register(rg gin.IRouter) {
 	authGroup.POST("/logout", h.logout)
 	authGroup.POST("/forgot-password", forgotPasswordLimit, h.forgotPassword)
 	authGroup.POST("/reset-password", resetPasswordLimit, h.resetPassword)
+	authGroup.POST("/verify-email", verifyEmailLimit, h.verifyEmail)
 	authGroup.GET("/google/login", h.googleLogin)
 	authGroup.GET("/google/callback", h.googleCallback)
 
 	usersGroup := rg.Group("/users", middleware.RequireAuth(h.jwtSecret))
 	usersGroup.GET("/me", h.me)
+	usersGroup.POST("/me/resend-verification", resendVerificationLimit, h.resendVerification)
 	// go-scaffold:user-routes
 }
 
@@ -146,6 +150,28 @@ func (h *Handler) resetPassword(c *gin.Context) {
 		return
 	}
 	if err := h.svc.ResetPassword(c.Request.Context(), in.Token, in.NewPassword); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) verifyEmail(c *gin.Context) {
+	var in verifyEmailInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.VerifyEmail(c.Request.Context(), in.Token); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) resendVerification(c *gin.Context) {
+	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
+	if err := h.svc.ResendVerificationEmail(c.Request.Context(), userID); err != nil {
 		c.Error(err)
 		return
 	}
