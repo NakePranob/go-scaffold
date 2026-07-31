@@ -28,6 +28,7 @@ type repository interface {
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	UpdateUser(ctx context.Context, u *model.User) error
+	FindAll(ctx context.Context, limit, offset int) ([]model.User, error)
 	FindIdentity(ctx context.Context, userID uuid.UUID, provider model.Provider) (*model.Identity, error)
 	FindIdentityByProviderUID(ctx context.Context, provider model.Provider, providerUID string) (*model.Identity, error)
 	CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error
@@ -180,6 +181,17 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error
 		return nil, apperror.NewInternal()
 	}
 	return u, nil
+}
+
+// List is unused until an admin-facing route calls it (see `add rbac`'s
+// GET /users) — kept here rather than gated behind a patch since it's a
+// generically useful piece of data access, same as UpdateUser.
+func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, error) {
+	items, err := s.repo.FindAll(ctx, limit, offset)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return items, nil
 }
 
 // ForgotPassword always succeeds from the caller's point of view — whether

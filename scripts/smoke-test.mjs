@@ -831,7 +831,7 @@ step(
 // AUTO_MIGRATE=true like earlier steps.
 step(
   hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
-    ? "add rbac: default role, permission-gated admin routes, last-role-manager lockout guard, cmd/seed promotes to admin"
+    ? "add rbac: default role, list/view/set-role admin routes, last-role-manager lockout guard, cmd/seed promotes to admin"
     : "add rbac: skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
@@ -923,6 +923,40 @@ step(
     const promotedAccess = field(promotedLogin, "access_token");
     const promotedRoles = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/roles`, "-H", `Authorization: Bearer ${promotedAccess}`]);
     if (status(promotedRoles) !== "200") throw new Error(`expected the promoted user's new token to grant /roles access, got:\n${promotedRoles}`);
+
+    // GET /users, GET /users/:id — admin can't manage anyone through the API
+    // without a way to find their id first; staffID above got promoted to
+    // admin already, so register a fresh unprivileged user for the 403 checks.
+    const staff2Register = run("curl", ["-s", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"rbac-staff2@example.com","password":"correcthorsebattery","name":"Staff Two"}']);
+    const staff2Access = field(staff2Register, "access_token");
+    if (!staff2Access) throw new Error(`expected an access token registering a second staff user, got:\n${staff2Register}`);
+
+    const noAuthUsers = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users`]);
+    if (status(noAuthUsers) !== "401") throw new Error(`expected 401 (not 403) listing /users unauthenticated, got:\n${noAuthUsers}`);
+
+    const staff2Forbidden = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users`, "-H", `Authorization: Bearer ${staff2Access}`]);
+    if (status(staff2Forbidden) !== "403") throw new Error(`expected 403 listing /users as staff (no user:read granted), got:\n${staff2Forbidden}`);
+
+    const adminUsers = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users`, "-H", `Authorization: Bearer ${adminAccess}`]);
+    if (status(adminUsers) !== "200" || !adminUsers.includes("rbac-staff2@example.com")) {
+      throw new Error(`expected the admin to list users including the freshly registered one (user:read auto-granted from the same seed migration), got:\n${adminUsers}`);
+    }
+
+    const adminGetByID = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/${staffID}`, "-H", `Authorization: Bearer ${adminAccess}`]);
+    if (status(adminGetByID) !== "200") throw new Error(`expected 200 viewing a specific user by id as admin, got:\n${adminGetByID}`);
+
+    const adminGetMissing = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/00000000-0000-0000-0000-000000000000`, "-H", `Authorization: Bearer ${adminAccess}`]);
+    if (status(adminGetMissing) !== "404") throw new Error(`expected 404 for a well-formed but nonexistent user id, got:\n${adminGetMissing}`);
+
+    const adminGetInvalid = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/not-a-uuid`, "-H", `Authorization: Bearer ${adminAccess}`]);
+    if (status(adminGetInvalid) !== "400") throw new Error(`expected 400 for a malformed user id, got:\n${adminGetInvalid}`);
+
+    const staff2GetByID = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/${staffID}`, "-H", `Authorization: Bearer ${staff2Access}`]);
+    if (status(staff2GetByID) !== "403") throw new Error(`expected 403 viewing another user by id as staff (no user:read granted), got:\n${staff2GetByID}`);
+
+    // /me must be completely unaffected by adding /users and /users/:id next to it.
+    const staff2Me = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me`, "-H", `Authorization: Bearer ${staff2Access}`]);
+    if (status(staff2Me) !== "200") throw new Error(`expected /users/me to still work unaffected by the new /users routes, got:\n${staff2Me}`);
 
     run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
     execFileSync("sleep", ["1"]);

@@ -20,9 +20,11 @@ import {
 // addRbac layers role-based access control on top of `add auth`: a role
 // domain (roles/permissions/role_permissions, admin-manageable), an Authz
 // middleware with a cached role->permission lookup, a Role claim threaded
-// through the JWT, and one admin endpoint (PATCH /users/:id/set-role) that
-// actually needs it. Opt-in on top of an opt-in — most projects need "is
-// this caller logged in" long before they need "can this caller do X".
+// through the JWT, and the admin endpoints that actually need it: listing/
+// viewing other users (GET /users, GET /users/:id) and changing a user's
+// role (PATCH /users/:id/set-role). Opt-in on top of an opt-in — most
+// projects need "is this caller logged in" long before they need "can this
+// caller do X".
 export async function addRbac(projectDir: string = process.cwd()): Promise<void> {
   const config = readConfig(projectDir);
 
@@ -54,7 +56,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserJWTForRbac(path.join(projectDir, "internal", "app", "user", "jwt.go"));
   patchUserServiceForRbac(path.join(projectDir, "internal", "app", "user", "service.go"));
   patchUserDTOForRbac(path.join(projectDir, "internal", "app", "user", "dto.go"));
-  patchUserHandlerForRbac(path.join(projectDir, "internal", "app", "user", "handler.go"));
+  patchUserHandlerForRbac(path.join(projectDir, "internal", "app", "user", "handler.go"), config.goModule);
   patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
   patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
@@ -64,7 +66,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   writeConfig(projectDir, { ...config, features: { ...config.features, rbac: true } });
 
   console.log(pc.green("\nadded internal/app/role/ and internal/shared/middleware/authz.go"));
-  console.log("registered PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/main.go");
+  console.log("registered GET /users, GET /users/:id, PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/main.go");
   console.log(
     pc.yellow(
       "\n⚠ AUTO_MIGRATE=true does NOT seed the role/permission data — it only creates the\n" +

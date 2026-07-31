@@ -105,13 +105,18 @@ export function patchUserDTOForRbac(dtoGoPath: string): void {
 }
 
 // patchUserHandlerForRbac wires an *middleware.Authz into Handler and adds
-// the one admin route this PR ships: changing a user's role. (Listing/
-// viewing/suspending users are a separate concern — see the role domain's
-// own /roles, /permissions for the actual role/permission management API.)
-export function patchUserHandlerForRbac(handlerGoPath: string): void {
+// the admin routes this PR ships: listing/viewing other users (PermUserRead)
+// and changing a user's role (PermUserManageRole). Suspending a user is a
+// separate concern, not RBAC's — see the role domain's own /roles,
+// /permissions for the actual role/permission management API.
+export function patchUserHandlerForRbac(handlerGoPath: string, goModule: string): void {
   let content = fs.readFileSync(handlerGoPath, "utf8");
 
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-consts", 'const PermUserManageRole = "user:manage-role"', "PermUserManageRole");
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-consts", 'const PermUserRead = "user:read"', "PermUserRead");
+
+  const paginationImport = `"${goModule}/internal/shared/pagination"`;
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-imports", paginationImport, "internal/shared/pagination");
 
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-fields", "authz *middleware.Authz", "authz *middleware.Authz");
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-params", "authz *middleware.Authz,", "authz *middleware.Authz,");
@@ -120,9 +125,54 @@ export function patchUserHandlerForRbac(handlerGoPath: string): void {
   content = insertBeforeMarkerOnce(
     content,
     "// go-scaffold:user-routes",
+    'usersGroup.GET("", h.authz.Require(PermUserRead), h.adminListUsers)',
+    'usersGroup.GET("", h.authz.Require(PermUserRead)'
+  );
+  content = insertBeforeMarkerOnce(
+    content,
+    "// go-scaffold:user-routes",
+    'usersGroup.GET("/:id", h.authz.Require(PermUserRead), h.adminGetUser)',
+    'usersGroup.GET("/:id", h.authz.Require(PermUserRead)'
+  );
+  content = insertBeforeMarkerOnce(
+    content,
+    "// go-scaffold:user-routes",
     'usersGroup.PATCH("/:id/set-role", h.authz.Require(PermUserManageRole), h.setRole)',
     'usersGroup.PATCH("/:id/set-role"'
   );
+
+  const adminListHandler = [
+    "func (h *Handler) adminListUsers(c *gin.Context) {",
+    "\tp := pagination.Parse(c)",
+    "\titems, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)",
+    "\tif err != nil {",
+    "\t\tc.Error(err)",
+    "\t\treturn",
+    "\t}",
+    "\tout := make([]meResponse, len(items))",
+    "\tfor i := range items {",
+    "\t\tout[i] = toMeResponse(&items[i])",
+    "\t}",
+    "\tc.JSON(http.StatusOK, p.Response(out))",
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-funcs", adminListHandler, "func (h *Handler) adminListUsers(");
+
+  const adminGetHandler = [
+    "func (h *Handler) adminGetUser(c *gin.Context) {",
+    "\tid, ok := httpx.ParseID(c)",
+    "\tif !ok {",
+    "\t\treturn",
+    "\t}",
+    "\tu, err := h.svc.Get(c.Request.Context(), id)",
+    "\tif err != nil {",
+    "\t\tc.Error(err)",
+    "\t\treturn",
+    "\t}",
+    "\tc.JSON(http.StatusOK, toMeResponse(u))",
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-funcs", adminGetHandler, "func (h *Handler) adminGetUser(");
 
   const setRoleHandler = [
     "func (h *Handler) setRole(c *gin.Context) {",

@@ -23,7 +23,8 @@ INSERT INTO roles (code, name, is_system) VALUES
 
 INSERT INTO permissions (code, description) VALUES
     ('role:manage',       'Create roles and change their permissions'),
-    ('user:manage-role',  'Change a user''s assigned role');
+    ('user:manage-role',  'Change a user''s assigned role'),
+    ('user:read',         'List and view other users');
 
 -- admin gets every permission that exists, staff gets none — no behavior
 -- change for existing users until an admin explicitly grants something.
