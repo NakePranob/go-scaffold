@@ -13,7 +13,11 @@ import { promptModuleName } from "../prompts/generate-wizard";
 
 export interface GenerateModuleOptions {
   full?: boolean;
+  auth?: boolean;
+  permission?: string;
 }
+
+const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9:_-]*$/;
 
 export async function generateModule(
   rawName: string | undefined,
@@ -21,6 +25,25 @@ export async function generateModule(
   projectDir: string = process.cwd()
 ): Promise<void> {
   const config = readConfig(projectDir);
+
+  // --permission implies --auth (authz.Require must run after RequireAuth) —
+  // require both explicitly rather than silently turning one on, so the
+  // generated route's protection matches what the command line actually said.
+  if (opts.permission && !opts.auth) {
+    throw new Error("--permission requires --auth (permission checks run after auth) — pass both, e.g. --auth --permission products:manage");
+  }
+  if (opts.auth && !config.features.auth) {
+    throw new Error("--auth requires `go-scaffold add auth` first — there's no RequireAuth middleware yet");
+  }
+  if (opts.permission) {
+    if (!config.features.rbac) {
+      throw new Error("--permission requires `go-scaffold add rbac` first — there's no permissions table or authz middleware yet");
+    }
+    if (!PERMISSION_CODE_PATTERN.test(opts.permission)) {
+      throw new Error(`invalid permission code "${opts.permission}" — must start with a lowercase letter and contain only lowercase letters, digits, ':', '_', or '-'`);
+    }
+  }
+
   const naming = resolveModuleNaming(rawName ?? (await promptModuleName()));
   const modulePath = naming.pkg;
 
@@ -38,6 +61,8 @@ export async function generateModule(
     goModule: config.goModule,
     dbName: toDbName(config.projectName),
     modulePath,
+    auth: opts.auth,
+    permission: opts.permission,
   };
 
   const moduleFiles = opts.full ? MODULE_FILES : MODULE_FILES_MINIMAL;
@@ -69,12 +94,34 @@ export async function generateModule(
     await applyTemplateEntries(projectDir, migrationEntries, context);
   }
 
+  // --permission needs the code to actually exist before any role can be
+  // granted it — SetPermissions validates against the real catalog and
+  // rejects unknown codes, so an ungenerated permission would leave the
+  // route permanently unreachable by anyone, admin included.
+  let permissionSeq = "";
+  if (opts.permission) {
+    permissionSeq = newMigrationVersion(migrationsDir);
+    const permissionEntries = [
+      {
+        template: "generate/module/permission.up.sql.hbs",
+        output: path.join("migrations", `${permissionSeq}_add_${naming.plural}_permission.up.sql`),
+      },
+      {
+        template: "generate/module/permission.down.sql.hbs",
+        output: path.join("migrations", `${permissionSeq}_add_${naming.plural}_permission.down.sql`),
+      },
+    ];
+    await applyTemplateEntries(projectDir, permissionEntries, context);
+  }
+
   const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
   patchMainGo(mainGoPath, {
     goModule: config.goModule,
     modulePath,
     pkg: naming.pkg,
     pascalName: naming.pascalName,
+    auth: opts.auth,
+    permission: opts.permission,
   });
 
   let docsMessage = "";
@@ -103,10 +150,22 @@ export async function generateModule(
         `add endpoints with \`go-scaffold generate method ${naming.pkg} <name> --type ...\``
     );
   }
+  if (opts.permission) {
+    console.log(`protected: requires a valid access token AND the "${opts.permission}" permission`);
+  } else if (opts.auth) {
+    console.log("protected: requires a valid access token (no specific permission)");
+  } else if (config.features.auth) {
+    console.log(
+      pc.yellow(`note: this project has auth installed, but ${routePath} is PUBLIC — re-run with --auth (and --permission <code> if you also have rbac) to require login`)
+    );
+  }
   if (seq) {
     console.log(`migration: migrations/${seq}_create_${naming.plural}.{up,down}.sql`);
   } else {
     console.log(`migration: reused existing migrations/*_create_${naming.plural}.{up,down}.sql`);
+  }
+  if (permissionSeq) {
+    console.log(`migration: migrations/${permissionSeq}_add_${naming.plural}_permission.{up,down}.sql (seeds the "${opts.permission}" permission — grant it to a role via PATCH /roles/:code/permissions)`);
   }
   if (docsMessage) console.log(docsMessage);
   console.log(

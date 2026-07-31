@@ -14,12 +14,19 @@ export interface RoutePatch {
   modulePath: string;
   pkg: string;
   pascalName: string;
+  /** wires middleware.RequireAuth(cfg.JWTSecret) into the module's route group */
+  auth?: boolean;
+  /** also wires authz.Require(permission) — requires auth too */
+  permission?: string;
 }
 
 // the exact lines patchMainGo inserts for a module — one source of truth so
 // unpatchMainGo removes precisely what patch added.
 function mainGoLines(patch: RoutePatch) {
   const modelAlias = `${patch.pkg}model`; // every domain's model subpackage is named "model"
+  const handlerArgs = [`${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))`];
+  if (patch.auth) handlerArgs.push("cfg.JWTSecret");
+  if (patch.permission) handlerArgs.push("authz");
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
     modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`,
@@ -27,7 +34,9 @@ function mainGoLines(patch: RoutePatch) {
     // `api` is the one route group declared by main.go.hbs, prefixed with
     // whatever apiPrefix the project chose at create time (e.g. /v1, /api,
     // or none) — every module registers on it, there is no per-module choice.
-    routeLine: `${patch.pkg}.NewHandler(${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))).Register(api)`,
+    // `authz` only exists in main.go once `add rbac` has run — patch.permission
+    // is only ever set once that's already been verified by the caller.
+    routeLine: `${patch.pkg}.NewHandler(${handlerArgs.join(", ")}).Register(api)`,
   };
 }
 

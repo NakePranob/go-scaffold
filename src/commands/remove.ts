@@ -39,6 +39,18 @@ export async function removeModule(
     if (!ok) throw new Error("removal cancelled");
   }
 
+  // detect --auth/--permission from the generated handler.go itself (not
+  // stored anywhere else) — unpatchMainGo needs the exact same flags used at
+  // generate-time to reconstruct the identical line it's removing.
+  const handlerGoPath = path.join(moduleDir, "handler.go");
+  let auth: boolean | undefined;
+  let permission: string | undefined;
+  if (fs.existsSync(handlerGoPath)) {
+    const handlerContent = fs.readFileSync(handlerGoPath, "utf8");
+    auth = /jwtSecret\s+string/.test(handlerContent);
+    permission = handlerContent.match(/h\.authz\.Require\("([^"]+)"\)/)?.[1];
+  }
+
   // 1. the domain package
   fs.removeSync(moduleDir);
 
@@ -48,6 +60,8 @@ export async function removeModule(
     modulePath,
     pkg: naming.pkg,
     pascalName: naming.pascalName,
+    auth,
+    permission,
   });
 
   // 3. openapi index + per-module docs
@@ -57,12 +71,18 @@ export async function removeModule(
     fs.removeSync(path.join(projectDir, "docs", naming.plural));
   }
 
-  // 4. migration files (up + down)
+  // 4. migration files (up + down) — including the --permission seed
+  // migration, if this module was generated with one.
   const migrationsDir = path.join(projectDir, "migrations");
   const removedMigrations: string[] = [];
   if (fs.existsSync(migrationsDir)) {
     for (const f of fs.readdirSync(migrationsDir)) {
-      if (f.endsWith(`_create_${naming.plural}.up.sql`) || f.endsWith(`_create_${naming.plural}.down.sql`)) {
+      if (
+        f.endsWith(`_create_${naming.plural}.up.sql`) ||
+        f.endsWith(`_create_${naming.plural}.down.sql`) ||
+        f.endsWith(`_add_${naming.plural}_permission.up.sql`) ||
+        f.endsWith(`_add_${naming.plural}_permission.down.sql`)
+      ) {
         fs.removeSync(path.join(migrationsDir, f));
         removedMigrations.push(f);
       }

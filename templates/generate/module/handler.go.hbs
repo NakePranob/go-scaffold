@@ -4,6 +4,9 @@ import (
 	"net/http"
 
 	"{{goModule}}/internal/shared/httpx"
+{{#if auth}}
+	"{{goModule}}/internal/shared/middleware"
+{{/if}}
 	"{{goModule}}/internal/shared/pagination"
 
 	"github.com/gin-gonic/gin"
@@ -12,15 +15,29 @@ import (
 // Handler = delivery for {{pkg}} (parses HTTP, calls the service, attaches errors for the middleware to render)
 type Handler struct {
 	svc *Service
+{{#if auth}}
+	jwtSecret string
+{{/if}}
+{{#if permission}}
+	authz *middleware.Authz
+{{/if}}
 }
 
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc *Service{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+	return &Handler{
+		svc: svc,
+{{#if auth}}
+		jwtSecret: jwtSecret,
+{{/if}}
+{{#if permission}}
+		authz: authz,
+{{/if}}
+	}
 }
 
 // Register wires {{pkg}}'s routes onto the router group (takes an IRouter so it can be nested under /v1)
 func (h *Handler) Register(rg gin.IRouter) {
-	g := rg.Group("/{{plural}}")
+	g := rg.Group("/{{plural}}"{{#if auth}}, middleware.RequireAuth(h.jwtSecret){{/if}}{{#if permission}}, h.authz.Require("{{permission}}"){{/if}})
 	g.POST("", h.create)
 	g.GET("", h.list)
 	g.GET("/:id", h.get)

@@ -1,0 +1,4 @@
+-- ON CONFLICT DO NOTHING: safe to re-generate a module reusing a permission
+-- code another module already inserted (e.g. a shared "orders:manage").
+INSERT INTO permissions (code, description) VALUES ('{{permission}}', '{{permission}}')
+ON CONFLICT (code) DO NOTHING;

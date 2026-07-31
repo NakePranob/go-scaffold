@@ -1,0 +1,5 @@
+-- intentionally not deleting the permission row: another module generated
+-- later may have reused this same code (the up migration's ON CONFLICT
+-- assumes exactly that), and this file can't know whether that happened.
+-- An unused permission row with no route checking it is harmless — delete
+-- it by hand if you're sure nothing else references '{{permission}}'.

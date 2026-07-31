@@ -78,9 +78,11 @@ generate
     "--no-full",
     "minimal skeleton (model/errors/repository, no default CRUD) — add endpoints one at a time with `generate method`"
   )
+  .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
+  .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; implies --auth)")
   .action(async (name, opts) => {
     try {
-      await generateModule(name, { full: opts.full });
+      await generateModule(name, { full: opts.full, auth: opts.auth, permission: opts.permission });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

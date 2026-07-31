@@ -886,6 +886,85 @@ step(
   }
 );
 
+// generate module --auth [--permission <code>]: without this, every module
+// this suite generates from here on would be reachable with no token at all
+// even though fullApp already has auth+rbac installed — the exact gap this
+// flag exists to close.
+step(
+  hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
+    ? "generate module --auth [--permission]: wires RequireAuth/authz.Require, validates flag combos, seeds the permission"
+    : "generate module --auth: skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
+
+    // --permission without --auth must be rejected before anything is written.
+    expectThrows(() => goScaffold(["generate", "module", "shouldfail", "--permission", "shouldfail:manage"], fullApp), "--permission requires --auth");
+    if (existsSync(path.join(fullApp, "internal", "app", "shouldfail"))) {
+      throw new Error("expected the rejected --permission-without-auth call to write nothing");
+    }
+
+    // invalid permission code shape.
+    expectThrows(() => goScaffold(["generate", "module", "shouldfail2", "--auth", "--permission", "Not Valid"], fullApp), "invalid permission code");
+
+    goScaffold(["generate", "module", "cart", "--auth"], fullApp);
+    goScaffold(["generate", "module", "secret", "--auth", "--permission", "secret:manage"], fullApp);
+    const noteOut = goScaffold(["generate", "module", "note"], fullApp);
+    if (!noteOut.includes("PUBLIC")) throw new Error(`expected a PUBLIC-route reminder since fullApp already has auth installed, got:\n${noteOut}`);
+
+    assertFileContains(path.join(fullApp, "internal", "app", "cart", "handler.go"), "middleware.RequireAuth(h.jwtSecret)");
+    assertFileContains(path.join(fullApp, "internal", "app", "secret", "handler.go"), 'h.authz.Require("secret:manage")');
+
+    const permMigration = readdirSync(path.join(fullApp, "migrations")).find((f) => f.endsWith("_add_secrets_permission.up.sql"));
+    if (!permMigration) throw new Error("expected a *_add_secrets_permission.up.sql migration to be generated");
+    assertFileContains(path.join(fullApp, "migrations", permMigration), "secret:manage");
+
+    run("go", ["build", "./..."], fullApp);
+    run("go", ["vet", "./..."], fullApp);
+
+    run("make", ["db-drop"], fullApp);
+    run("make", ["db-create"], fullApp);
+    const dsn = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    run("migrate", ["-path", "migrations", "-database", dsn, "up"], fullApp);
+
+    run("go", ["run", "./cmd/seed"], fullApp, {
+      SEED_ADMIN_EMAIL: "genmod-admin@example.com",
+      SEED_ADMIN_PASSWORD: "adminpassword123",
+      SEED_ADMIN_NAME: "Genmod Admin",
+    });
+
+    run("bash", ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=false go run ./cmd/api >/tmp/go-scaffold-smoke-genmod-boot.log 2>&1 & sleep 3`], fullApp);
+
+    const B = "http://localhost:8080/v1";
+    const jsonHeader = ["-H", "Content-Type: application/json"];
+    const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
+    const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
+
+    const noAuthCart = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/carts`, ...jsonHeader, "-d", "{}"]);
+    if (status(noAuthCart) !== "401") throw new Error(`expected 401 posting to an --auth-only module with no token, got:\n${noAuthCart}`);
+
+    const staffRegister = run("curl", ["-s", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"genmod-staff@example.com","password":"correcthorsebattery","name":"Staff"}']);
+    const staffAccess = field(staffRegister, "access_token");
+    if (!staffAccess) throw new Error(`expected an access token registering the staff user, got:\n${staffRegister}`);
+
+    const staffCart = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/carts`, ...jsonHeader, "-H", `Authorization: Bearer ${staffAccess}`, "-d", "{}"]);
+    if (status(staffCart) !== "201") throw new Error(`expected 201 posting to an --auth-only module with a valid token (no specific permission needed), got:\n${staffCart}`);
+
+    const staffSecret = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/secrets`, ...jsonHeader, "-H", `Authorization: Bearer ${staffAccess}`, "-d", "{}"]);
+    if (status(staffSecret) !== "403") throw new Error(`expected 403 posting to a --permission-gated module as staff (no secret:manage granted), got:\n${staffSecret}`);
+
+    const adminLogin = run("curl", ["-s", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"genmod-admin@example.com","password":"adminpassword123"}']);
+    const adminAccess = field(adminLogin, "access_token");
+    const adminSecretBeforeGrant = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/secrets`, ...jsonHeader, "-H", `Authorization: Bearer ${adminAccess}`, "-d", "{}"]);
+    if (status(adminSecretBeforeGrant) !== "403") {
+      throw new Error(`expected 403 even for the seeded admin — the permission exists but isn't auto-granted to any role, got:\n${adminSecretBeforeGrant}`);
+    }
+
+    run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
+    execFileSync("sleep", ["1"]);
+    run("make", ["db-drop"], fullApp);
+  }
+);
+
 step("generate module order (full CRUD)", () => {
   goScaffold(["generate", "module", "order"], fullApp);
 });
