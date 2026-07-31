@@ -65,5 +65,15 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
 
   console.log(pc.green("\nadded internal/app/role/ and internal/shared/middleware/authz.go"));
   console.log("registered PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/main.go");
-  console.log(pc.dim("\nnext: go mod tidy, apply the new migration, then SEED_ADMIN_EMAIL=... make seed to get an admin"));
+  console.log(
+    pc.yellow(
+      "\n⚠ AUTO_MIGRATE=true does NOT seed the role/permission data — it only creates the\n" +
+        "  tables from the Go structs. The \"staff\"/\"admin\" roles and their permissions live\n" +
+        "  in the migration's SQL (INSERT statements), which AutoMigrate never runs. Without\n" +
+        "  applying it for real, `make seed` fails with \"unknown role code\" and nobody can be\n" +
+        "  granted anything. Apply it before relying on RBAC, even in dev:\n" +
+        "    migrate -path migrations -database \"$DB_DSN\" up   (or: make migrate-up)"
+    )
+  );
+  console.log(pc.dim("\nnext: go mod tidy, then SEED_ADMIN_EMAIL=... SEED_ADMIN_PASSWORD=... make seed to get an admin"));
 }

@@ -799,7 +799,14 @@ step(
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
 
-    goScaffold(["add", "rbac"], fullApp);
+    const rbacOut = goScaffold(["add", "rbac"], fullApp);
+    // AUTO_MIGRATE=true creates the tables but never runs the migration's
+    // seed INSERTs — a dev following the normal AUTO_MIGRATE=true dev flow
+    // would otherwise hit "unknown role code" from `make seed` with no clue
+    // why, so `add rbac` must say so loudly, not just in a doc.
+    if (!rbacOut.includes("AUTO_MIGRATE=true") || !rbacOut.includes("does NOT seed")) {
+      throw new Error(`expected \`add rbac\` to warn that AUTO_MIGRATE=true doesn't seed role/permission data, got:\n${rbacOut}`);
+    }
     run("go", ["mod", "tidy"], fullApp);
     run("go", ["build", "./..."], fullApp);
     run("go", ["vet", "./..."], fullApp);
