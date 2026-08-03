@@ -1,0 +1,159 @@
+package user
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	refreshKeyPrefix     = "user:refresh:"      // +hash -> userID, TTL = refreshTTL
+	refreshUserKeyPrefix = "user:refresh:user:"  // +userID -> SET of active token hashes
+	refreshUsedKeyPrefix = "user:refresh:used:"  // +hash -> userID, TTL = refreshTTL (reuse-detection tombstone)
+	pwresetKeyPrefix     = "user:pwreset:"       // +hash -> userID, TTL = resetTTL, GETDEL on consume
+	emailVerifyKeyPrefix = "user:emailverify:"   // +hash -> userID, TTL = emailVerifyTTL, GETDEL on consume
+)
+
+// tokenStore is what Service needs from Redis for refresh tokens — declared
+// consumer-side so it can be faked in tests without a real Redis.
+type tokenStore interface {
+	SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
+	GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error
+	RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error
+	MarkRefreshTokenUsed(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
+	IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
+	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
+	ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+}
+
+type redisTokenStore struct {
+	rdb *redis.Client
+}
+
+func NewRedisTokenStore(rdb *redis.Client) *redisTokenStore {
+	return &redisTokenStore{rdb: rdb}
+}
+
+func (s *redisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	pipe := s.rdb.TxPipeline()
+	pipe.Set(ctx, refreshKeyPrefix+tokenHash, userID.String(), ttl)
+	pipe.SAdd(ctx, refreshUserKeyPrefix+userID.String(), tokenHash)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (s *redisTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.Get(ctx, refreshKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return id, true, nil
+}
+
+func (s *redisTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error {
+	pipe := s.rdb.TxPipeline()
+	pipe.Del(ctx, refreshKeyPrefix+tokenHash)
+	pipe.SRem(ctx, refreshUserKeyPrefix+userID.String(), tokenHash)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// RevokeAllRefreshTokens walks the per-user session set and deletes every
+// active refresh token for that user — used when reuse of an already-rotated
+// token is detected (see Service.Refresh): that means the raw token leaked,
+// so every session, not just the replayed one, is treated as compromised.
+//
+// ponytail: the per-user set has no per-member TTL cleanup of its own — a
+// member outlives its key's TTL as a stale entry until the next revoke or
+// rotation touches it. Self-heals over time; revisit if a single user's
+// session count grows large enough to matter.
+func (s *redisTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
+	setKey := refreshUserKeyPrefix + userID.String()
+	hashes, err := s.rdb.SMembers(ctx, setKey).Result()
+	if err != nil {
+		return err
+	}
+	if len(hashes) == 0 {
+		return nil
+	}
+	pipe := s.rdb.TxPipeline()
+	for _, h := range hashes {
+		pipe.Del(ctx, refreshKeyPrefix+h)
+	}
+	pipe.Del(ctx, setKey)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (s *redisTokenStore) MarkRefreshTokenUsed(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.rdb.Set(ctx, refreshUsedKeyPrefix+tokenHash, userID.String(), ttl).Err()
+}
+
+func (s *redisTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.Get(ctx, refreshUsedKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return id, true, nil
+}
+
+func (s *redisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.rdb.Set(ctx, pwresetKeyPrefix+tokenHash, userID.String(), ttl).Err()
+}
+
+// ConsumePasswordResetToken is one-time-use by construction: GETDEL is
+// atomic, so a token can't be raced into being consumed twice.
+func (s *redisTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.GetDel(ctx, pwresetKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return id, true, nil
+}
+
+func (s *redisTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.rdb.Set(ctx, emailVerifyKeyPrefix+tokenHash, userID.String(), ttl).Err()
+}
+
+// ConsumeEmailVerifyToken is one-time-use by construction, same as
+// ConsumePasswordResetToken — GETDEL is atomic.
+func (s *redisTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.GetDel(ctx, emailVerifyKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return id, true, nil
+}

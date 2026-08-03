@@ -1,0 +1,18 @@
+// Package model holds this domain's GORM tables — a folder (not a single
+// file) so a domain with more than one table can add a file per table
+// without cluttering the domain package's top level.
+package model
+
+import "time"
+
+// Role = an assignable permission level, backed by a real table instead of a
+// hardcoded enum — adding one is a row insert, not a migration + redeploy.
+// Code is the primary key (not a generated UUID): users.role already stores
+// this string, so using it as the join key needs zero data migration.
+type Role struct {
+	Code      string    `json:"code" gorm:"type:varchar(20);primaryKey"`
+	Name      string    `json:"name" gorm:"not null"`
+	IsSystem  bool      `json:"is_system" gorm:"not null;default:false"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

@@ -5,14 +5,19 @@ import pc from "picocolors";
 import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
 import { generateMethod } from "./commands/method";
+import { generateMigration } from "./commands/migration";
 import { removeModule } from "./commands/remove";
+import { cliVersion } from "./utils/version";
+import { addWorker } from "./commands/worker";
+import { addAuth } from "./commands/auth";
+import { addRbac } from "./commands/rbac";
 import { MethodType, GetMethodMode } from "./types";
 
 const program = new Command();
 program
   .name("go-scaffold")
   .description("Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard")
-  .version("0.1.0");
+  .version(cliVersion());
 
 program
   .command("create [name]")
@@ -49,12 +54,15 @@ const generate = program
         choices: [
           { name: "Module (full CRUD domain)", value: "module" },
           { name: "Method (add one endpoint to an existing module)", value: "method" },
+          { name: "Migration (reserve a timestamped up/down SQL file pair)", value: "migration" },
         ],
       });
       if (target === "module") {
         await generateModule(undefined, { full: true });
-      } else {
+      } else if (target === "method") {
         await generateMethod(undefined, undefined, {});
+      } else {
+        await generateMigration(undefined);
       }
     } catch (err) {
       console.error(pc.red((err as Error).message));
@@ -70,9 +78,11 @@ generate
     "--no-full",
     "minimal skeleton (model/errors/repository, no default CRUD) — add endpoints one at a time with `generate method`"
   )
+  .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
+  .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; implies --auth)")
   .action(async (name, opts) => {
     try {
-      await generateModule(name, { full: opts.full });
+      await generateModule(name, { full: opts.full, auth: opts.auth, permission: opts.permission });
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;
@@ -101,6 +111,57 @@ generate
         getMode,
         field: opts.field,
       });
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+generate
+  .command("migration [name]")
+  .alias("mig")
+  .description("reserve a timestamped migrations/<version>_<name>.{up,down}.sql pair (stubs only — you write the SQL)")
+  .action(async (name) => {
+    try {
+      await generateMigration(name);
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+const add = program.command("add").description("add opt-in infrastructure to an existing go-scaffold project");
+
+add
+  .command("worker")
+  .description("add Redis, an Asynq task queue, SMTP mail, and cmd/worker (opt-in — most projects don't need this on day one)")
+  .action(async () => {
+    try {
+      await addWorker();
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+add
+  .command("auth")
+  .description("add email/password auth: JWT access tokens, Redis-backed refresh token rotation, register/login/refresh/logout/me (requires `add worker` first)")
+  .action(async () => {
+    try {
+      await addAuth();
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+add
+  .command("rbac")
+  .description("add role-based access control: roles/permissions admin API, cached Authz middleware, PATCH /users/:id/set-role (requires `add auth` first)")
+  .action(async () => {
+    try {
+      await addRbac();
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

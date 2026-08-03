@@ -52,6 +52,14 @@ export async function promptGetMode(): Promise<GetMethodMode> {
   });
 }
 
+export async function promptMigrationName(): Promise<string> {
+  const name = await input({
+    message: "Migration name (e.g. add_status_to_orders):",
+    validate: (value) => (value.trim() ? true : "migration name is required"),
+  });
+  return name.trim();
+}
+
 export async function promptLookupField(): Promise<string> {
   const field = await input({
     message: "Lookup field (e.g. email, status, slug):",

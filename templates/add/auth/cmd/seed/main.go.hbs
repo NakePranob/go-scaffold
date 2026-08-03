@@ -1,0 +1,76 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"os"
+
+	"{{goModule}}/internal/app/user"
+	"{{goModule}}/internal/platform/database"
+	"{{goModule}}/internal/shared/config"
+	// go-scaffold:seed-imports
+)
+
+// cmd/seed is a one-off operational task, like `migrate` — not part of the
+// API server's runtime, so it's a separate binary rather than a flag on
+// cmd/api. tokens/mailer are nil: EnsureUser never touches them (no login
+// or email flow runs during seeding).
+func main() {
+	withFixtures := flag.Bool("fixtures", false, "also seed sample dev users — do not use against a real environment")
+	flag.Parse()
+
+	cfg := config.Load()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	db, err := database.Open(cfg)
+	if err != nil {
+		logger.Error("open db", "error", err)
+		os.Exit(1)
+	}
+
+	// go-scaffold:seed-services
+	svc := user.NewService(
+		user.NewRepository(db), nil, nil, cfg,
+		// go-scaffold:seed-user-service-args
+	)
+	ctx := context.Background()
+
+	if email := os.Getenv("SEED_ADMIN_EMAIL"); email != "" {
+		password := os.Getenv("SEED_ADMIN_PASSWORD")
+		if password == "" {
+			logger.Error("SEED_ADMIN_PASSWORD is required when SEED_ADMIN_EMAIL is set")
+			os.Exit(1)
+		}
+		name := os.Getenv("SEED_ADMIN_NAME")
+		if name == "" {
+			name = "Admin"
+		}
+		u, err := svc.EnsureUser(ctx, email, password, name)
+		if err != nil {
+			logger.Error("seed admin user", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("admin user ready", "email", u.Email, "id", u.ID)
+		// go-scaffold:seed-admin-role
+	}
+
+	if *withFixtures {
+		seedFixtures(ctx, svc, logger)
+	}
+}
+
+func seedFixtures(ctx context.Context, svc *user.Service, logger *slog.Logger) {
+	fixtures := []struct{ email, name string }{
+		{email: "dev.one@example.com", name: "Dev One"},
+		{email: "dev.two@example.com", name: "Dev Two"},
+	}
+	for _, f := range fixtures {
+		u, err := svc.EnsureUser(ctx, f.email, "password123", f.name)
+		if err != nil {
+			logger.Error("seed fixture user", "email", f.email, "error", err)
+			continue
+		}
+		logger.Info("fixture user ready", "email", u.Email, "id", u.ID)
+	}
+}

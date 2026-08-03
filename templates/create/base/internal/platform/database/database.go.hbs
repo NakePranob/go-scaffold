@@ -1,7 +1,12 @@
 package database
 
 import (
+	"fmt"
+	"regexp"
+	"strconv"
+
 	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/migrations"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -25,4 +30,43 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
 
 	return db, nil
+}
+
+var migrationVersionRe = regexp.MustCompile(`^(\d+)_.*\.up\.sql$`)
+
+// CheckMigrationVersion fails fast if the DB's applied schema version (the
+// golang-migrate CLI's own schema_migrations table) doesn't match the newest
+// migration file baked into this binary — instead of booting against a stale
+// or half-applied schema and failing later on whatever query hits the
+// missing column first. Only meaningful when AutoMigrate is off (prod); call
+// this from that branch only.
+func CheckMigrationVersion(db *gorm.DB) error {
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		return fmt.Errorf("read embedded migrations: %w", err)
+	}
+	var latest int
+	for _, e := range entries {
+		m := migrationVersionRe.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		if v, _ := strconv.Atoi(m[1]); v > latest {
+			latest = v
+		}
+	}
+
+	var version int
+	var dirty bool
+	row := db.Raw("SELECT version, dirty FROM schema_migrations").Row()
+	if err := row.Scan(&version, &dirty); err != nil {
+		return fmt.Errorf("read schema_migrations (did you run `make migrate-up`?): %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("schema_migrations is dirty at version %d — a previous migration failed partway; fix it before starting the app", version)
+	}
+	if version != latest {
+		return fmt.Errorf("DB schema is at migration %d, this binary expects %d — run `make migrate-up`", version, latest)
+	}
+	return nil
 }

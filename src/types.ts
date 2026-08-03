@@ -1,6 +1,12 @@
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;
+  /** set by `go-scaffold add worker` — cache/queue/mail + cmd/worker exist */
+  worker?: boolean;
+  /** set by `go-scaffold add auth` — internal/app/user + auth middleware exist */
+  auth?: boolean;
+  /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */
+  rbac?: boolean;
 }
 
 export interface ProjectConfig {
@@ -9,6 +15,13 @@ export interface ProjectConfig {
   /** URL prefix every route is grouped under, e.g. "v1" -> /v1/orders. "" means no prefix. */
   apiPrefix: string;
   features: ProjectFeatures;
+  /**
+   * CLI version that scaffolded this project. Optional: projects created
+   * before this was stamped (and the go.mod-based fallback in detectConfig)
+   * don't have one — it's a diagnostic shown when generated code fails to
+   * compile, not something to branch behavior on.
+   */
+  scaffoldVersion?: string;
 }
 
 export interface ModuleNaming {

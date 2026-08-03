@@ -1,0 +1,447 @@
+package user
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/internal/shared/dberr"
+	"{{goModule}}/internal/shared/id"
+
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"gorm.io/gorm"
+)
+
+// repository = what the service needs from the data layer (declared on the
+// consumer side, so it can be faked in tests).
+type repository interface {
+	FindByEmail(ctx context.Context, email string) (*model.User, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+	UpdateUser(ctx context.Context, u *model.User) error
+	FindAll(ctx context.Context, limit, offset int) ([]model.User, error)
+	FindIdentity(ctx context.Context, userID uuid.UUID, provider model.Provider) (*model.Identity, error)
+	FindIdentityByProviderUID(ctx context.Context, provider model.Provider, providerUID string) (*model.Identity, error)
+	CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error
+	CreateIdentity(ctx context.Context, i *model.Identity) error
+	UpdateIdentity(ctx context.Context, i *model.Identity) error
+	// go-scaffold:user-repository-interface
+}
+
+// mailer = what the service needs to send an email — satisfied by
+// platform/mail's AsyncClient (enqueues onto cmd/worker instead of blocking
+// the request on SMTP).
+type mailer interface {
+	Send(to, subject, body string) error
+}
+
+// go-scaffold:user-interfaces
+
+type Service struct {
+	repo       repository
+	tokens     tokenStore
+	mailer     mailer
+	jwtSecret  string
+	accessTTL  time.Duration
+	refreshTTL time.Duration
+	resetTTL   time.Duration
+	resetURL   string
+	verifyTTL  time.Duration
+	verifyURL  string
+	googleOAuth *oauth2.Config
+	// go-scaffold:user-service-fields
+}
+
+func NewService(
+	repo repository,
+	tokens tokenStore,
+	mailer mailer,
+	cfg config.Config,
+	// go-scaffold:user-service-params
+) *Service {
+	return &Service{
+		repo:       repo,
+		tokens:     tokens,
+		mailer:     mailer,
+		jwtSecret:  cfg.JWTSecret,
+		accessTTL:  cfg.JWTAccessTTL,
+		refreshTTL: cfg.JWTRefreshTTL,
+		resetTTL:   cfg.PasswordResetTTL,
+		resetURL:   cfg.PasswordResetURL,
+		verifyTTL:  cfg.EmailVerifyTTL,
+		verifyURL:  cfg.EmailVerifyURL,
+		googleOAuth: &oauth2.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+			Scopes:       []string{"openid", "email", "profile"},
+			Endpoint:     google.Endpoint,
+		},
+		// go-scaffold:user-service-init
+	}
+}
+
+func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	hashStr := string(hash)
+
+	u := &model.User{ID: id.New(), Email: in.Email, Name: in.Name}
+	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errEmailTaken()
+		}
+		return nil, apperror.NewInternal()
+	}
+	// best-effort: a mail failure shouldn't block registration — the user can
+	// always ask for another link via ResendVerificationEmail.
+	s.sendVerificationEmail(ctx, u)
+	return s.issueTokens(ctx, u)
+}
+
+func (s *Service) Login(ctx context.Context, in loginInput) (*authResponse, error) {
+	u, err := s.repo.FindByEmail(ctx, in.Email)
+	if err != nil {
+		return nil, errInvalidCredentials()
+	}
+	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
+	if err != nil || ident.PasswordHash == nil {
+		return nil, errInvalidCredentials()
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(*ident.PasswordHash), []byte(in.Password)); err != nil {
+		return nil, errInvalidCredentials()
+	}
+	return s.issueTokens(ctx, u)
+}
+
+// Refresh rotates a refresh token: the presented one is consumed (deleted +
+// tombstoned as "used") and a fresh pair is issued. If the presented token
+// isn't active but WAS already used, that means this exact raw value got
+// replayed after rotation — i.e. it leaked — so every session for that user
+// is revoked, not just this one.
+func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*authResponse, error) {
+	hash := hashToken(rawRefreshToken)
+	userID, ok, err := s.tokens.GetRefreshToken(ctx, hash)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	if !ok {
+		if reusedBy, used, uerr := s.tokens.IsRefreshTokenUsed(ctx, hash); uerr == nil && used {
+			_ = s.tokens.RevokeAllRefreshTokens(ctx, reusedBy)
+		}
+		return nil, errInvalidToken()
+	}
+
+	if err := s.tokens.DeleteRefreshToken(ctx, hash, userID); err != nil {
+		return nil, apperror.NewInternal()
+	}
+	if err := s.tokens.MarkRefreshTokenUsed(ctx, hash, userID, s.refreshTTL); err != nil {
+		return nil, apperror.NewInternal()
+	}
+
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, errInvalidToken()
+	}
+	return s.issueTokens(ctx, u)
+}
+
+// Logout is intentional, not reuse — no tombstoning, and idempotent (a
+// missing/already-gone token still succeeds).
+func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
+	if rawRefreshToken == "" {
+		return nil
+	}
+	hash := hashToken(rawRefreshToken)
+	userID, ok, err := s.tokens.GetRefreshToken(ctx, hash)
+	if err != nil || !ok {
+		return nil
+	}
+	return s.tokens.DeleteRefreshToken(ctx, hash, userID)
+}
+
+// LogoutAll is the authenticated, self-service version of what ResetPassword
+// already does automatically: end every session for this user, not just the
+// one making the request — e.g. "log out everywhere" after a lost device.
+func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) error {
+	return s.tokens.RevokeAllRefreshTokens(ctx, userID)
+}
+
+func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errNotFound()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return u, nil
+}
+
+// List is unused until an admin-facing route calls it (see `add rbac`'s
+// GET /users) — kept here rather than gated behind a patch since it's a
+// generically useful piece of data access, same as UpdateUser.
+func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, error) {
+	items, err := s.repo.FindAll(ctx, limit, offset)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return items, nil
+}
+
+// ForgotPassword always succeeds from the caller's point of view — whether
+// the email exists or not — so a login-attempt-shaped probe can't be used to
+// enumerate registered accounts. Only if the email resolves to a local
+// (password-based) identity does it actually issue+email a reset token.
+func (s *Service) ForgotPassword(ctx context.Context, email string) error {
+	u, err := s.repo.FindByEmail(ctx, email)
+	if err != nil {
+		return nil
+	}
+	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
+	if err != nil || ident.PasswordHash == nil {
+		return nil // google-only account has no password to reset
+	}
+
+	raw, err := randomToken()
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if err := s.tokens.SetPasswordResetToken(ctx, hashToken(raw), u.ID, s.resetTTL); err != nil {
+		return apperror.NewInternal()
+	}
+
+	link := s.resetURL + "?token=" + raw
+	if err := s.mailer.Send(u.Email, "Reset your password", "Reset your password: "+link); err != nil {
+		// token's already stored — a mail failure shouldn't fail the request,
+		// just get logged so it's visible operationally.
+		slog.Error("send password reset email", "error", err)
+	}
+	return nil
+}
+
+// ResetPassword consumes a one-time reset token (GETDEL — see
+// tokenStore.ConsumePasswordResetToken), sets the new password, and revokes
+// every existing session for that user: a password reset should end every
+// session an attacker (or the legitimate user on another device) still holds.
+func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
+	userID, ok, err := s.tokens.ConsumePasswordResetToken(ctx, hashToken(rawToken))
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if !ok {
+		return errInvalidToken()
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	hashStr := string(hash)
+
+	ident, err := s.repo.FindIdentity(ctx, userID, model.ProviderLocal)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	ident.PasswordHash = &hashStr
+	if err := s.repo.UpdateIdentity(ctx, ident); err != nil {
+		return apperror.NewInternal()
+	}
+	return s.tokens.RevokeAllRefreshTokens(ctx, userID)
+}
+
+// sendVerificationEmail issues a one-time token and emails the link — called
+// from Register (best-effort) and ResendVerificationEmail. Not exported:
+// callers that want to send one go through one of those two, which decide
+// whether it's appropriate to (e.g. ResendVerificationEmail checks the user
+// isn't already verified first).
+func (s *Service) sendVerificationEmail(ctx context.Context, u *model.User) {
+	raw, err := randomToken()
+	if err != nil {
+		slog.Error("generate email verification token", "error", err)
+		return
+	}
+	if err := s.tokens.SetEmailVerifyToken(ctx, hashToken(raw), u.ID, s.verifyTTL); err != nil {
+		slog.Error("store email verification token", "error", err)
+		return
+	}
+	link := s.verifyURL + "?token=" + raw
+	if err := s.mailer.Send(u.Email, "Verify your email", "Verify your email: "+link); err != nil {
+		slog.Error("send email verification email", "error", err)
+	}
+}
+
+// ResendVerificationEmail is the authenticated counterpart to the automatic
+// send in Register — for when the first email never arrived or its token
+// expired. Rejects an already-verified user instead of silently no-op'ing:
+// unlike ForgotPassword this is authenticated, so there's no enumeration
+// concern in telling the caller their own account's real state.
+func (s *Service) ResendVerificationEmail(ctx context.Context, userID uuid.UUID) error {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if u.EmailVerified {
+		return errAlreadyVerified()
+	}
+	s.sendVerificationEmail(ctx, u)
+	return nil
+}
+
+// VerifyEmail consumes a one-time verification token (GETDEL — see
+// tokenStore.ConsumeEmailVerifyToken) and marks the user verified.
+func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
+	userID, ok, err := s.tokens.ConsumeEmailVerifyToken(ctx, hashToken(rawToken))
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	if !ok {
+		return errInvalidToken()
+	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return apperror.NewInternal()
+	}
+	u.EmailVerified = true
+	return s.repo.UpdateUser(ctx, u)
+}
+
+// GoogleLoginURL signs a short-lived CSRF state token and builds the
+// redirect URL — stateless, no server-side row for the state (see jwt.go).
+func (s *Service) GoogleLoginURL() (string, error) {
+	state, err := s.issueOAuthState()
+	if err != nil {
+		return "", apperror.NewInternal()
+	}
+	return s.googleOAuth.AuthCodeURL(state), nil
+}
+
+type googleUserInfo struct {
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+	Picture       string `json:"picture"`
+}
+
+func (s *Service) GoogleCallback(ctx context.Context, code, state string) (*authResponse, error) {
+	if err := s.verifyOAuthState(state); err != nil {
+		return nil, err
+	}
+	tok, err := s.googleOAuth.Exchange(ctx, code)
+	if err != nil {
+		return nil, errInvalidToken()
+	}
+
+	resp, err := s.googleOAuth.Client(ctx, tok).Get("https://openidconnect.googleapis.com/v1/userinfo")
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, apperror.NewInternal()
+	}
+	var info googleUserInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, apperror.NewInternal()
+	}
+
+	u, err := s.findOrCreateGoogleUser(ctx, info)
+	if err != nil {
+		return nil, err
+	}
+	return s.issueTokens(ctx, u)
+}
+
+// findOrCreateGoogleUser: (1) an existing google identity for this sub wins
+// outright; (2) failing that, ONLY if Google says the email is verified, link
+// a new google identity onto an existing local account with that email — an
+// unverified email can't be used to take over someone else's account; (3)
+// otherwise, brand new user + identity.
+func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInfo) (*model.User, error) {
+	if ident, err := s.repo.FindIdentityByProviderUID(ctx, model.ProviderGoogle, info.Sub); err == nil {
+		return s.repo.FindByID(ctx, ident.UserID)
+	}
+
+	providerUID := info.Sub
+	if info.EmailVerified {
+		if u, err := s.repo.FindByEmail(ctx, info.Email); err == nil {
+			ident := &model.Identity{ID: id.New(), UserID: u.ID, Provider: model.ProviderGoogle, ProviderUID: &providerUID}
+			if err := s.repo.CreateIdentity(ctx, ident); err != nil {
+				return nil, apperror.NewInternal()
+			}
+			return u, nil
+		}
+	}
+
+	u := &model.User{ID: id.New(), Email: info.Email, Name: info.Name, AvatarURL: info.Picture, EmailVerified: info.EmailVerified}
+	ident := &model.Identity{ID: id.New(), Provider: model.ProviderGoogle, ProviderUID: &providerUID}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, ident); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errEmailTaken()
+		}
+		return nil, apperror.NewInternal()
+	}
+	return u, nil
+}
+
+// EnsureUser is idempotent: an existing user with this email is returned
+// as-is (password untouched — cmd/seed shouldn't silently reset a real
+// password on every deploy), otherwise a new local user+identity is
+// created. Used by cmd/seed only — nothing in the HTTP API calls this.
+func (s *Service) EnsureUser(ctx context.Context, email, password, name string) (*model.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if u, err := s.repo.FindByEmail(ctx, email); err == nil {
+		return u, nil
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	hashStr := string(hash)
+
+	u := &model.User{ID: id.New(), Email: email, Name: name}
+	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return u, nil
+}
+
+// go-scaffold:user-service-methods
+
+func (s *Service) issueTokens(ctx context.Context, u *model.User) (*authResponse, error) {
+	access, err := s.issueAccessToken(
+		u.ID,
+		// go-scaffold:issue-access-token-args
+	)
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	refresh, err := randomToken()
+	if err != nil {
+		return nil, apperror.NewInternal()
+	}
+	if err := s.tokens.SetRefreshToken(ctx, hashToken(refresh), u.ID, s.refreshTTL); err != nil {
+		return nil, apperror.NewInternal()
+	}
+	return &authResponse{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		TokenType:    "Bearer",
+		ExpiresIn:    int(s.accessTTL.Seconds()),
+	}, nil
+}

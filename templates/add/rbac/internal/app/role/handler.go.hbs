@@ -1,0 +1,101 @@
+package role
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/shared/httpx"
+	"{{goModule}}/internal/shared/middleware"
+	"{{goModule}}/internal/shared/pagination"
+
+	"github.com/gin-gonic/gin"
+)
+
+// PermRoleManage gates every endpoint in this file — role/permission
+// management is a single admin capability, not split per-action.
+const PermRoleManage = "role:manage"
+
+type Handler struct {
+	svc       *Service
+	jwtSecret string
+	authz     *middleware.Authz
+}
+
+func NewHandler(svc *Service, jwtSecret string, authz *middleware.Authz) *Handler {
+	return &Handler{svc: svc, jwtSecret: jwtSecret, authz: authz}
+}
+
+// Register wires role's routes onto the router group (takes an IRouter so it can be nested under /v1)
+func (h *Handler) Register(rg gin.IRouter) {
+	roles := rg.Group("/roles", middleware.RequireAuth(h.jwtSecret), h.authz.Require(PermRoleManage))
+	roles.GET("", h.list)
+	roles.POST("", h.create)
+	roles.PATCH("/:code/permissions", h.setPermissions)
+	roles.DELETE("/:code", h.delete)
+
+	perms := rg.Group("/permissions", middleware.RequireAuth(h.jwtSecret), h.authz.Require(PermRoleManage))
+	perms.GET("", h.listPermissions)
+}
+
+func (h *Handler) list(c *gin.Context) {
+	p := pagination.Parse(c)
+	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	out := make([]response, len(items))
+	for i := range items {
+		out[i] = toResponse(&items[i].Role, items[i].Permissions)
+	}
+	c.JSON(http.StatusOK, p.Response(out))
+}
+
+func (h *Handler) create(c *gin.Context) {
+	var in CreateInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	item, err := h.svc.Create(c.Request.Context(), in)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusCreated, toResponse(&item.Role, item.Permissions))
+}
+
+func (h *Handler) setPermissions(c *gin.Context) {
+	var in SetPermissionsInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	item, err := h.svc.SetPermissions(c.Request.Context(), c.Param("code"), in.PermissionCodes)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, toResponse(&item.Role, item.Permissions))
+}
+
+func (h *Handler) delete(c *gin.Context) {
+	if err := h.svc.Delete(c.Request.Context(), c.Param("code")); err != nil {
+		c.Error(err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) listPermissions(c *gin.Context) {
+	p := pagination.Parse(c)
+	items, err := h.svc.ListPermissions(c.Request.Context(), p.Limit, p.Offset)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	out := make([]permissionResponse, len(items))
+	for i := range items {
+		out[i] = toPermissionResponse(&items[i])
+	}
+	c.JSON(http.StatusOK, p.Response(out))
+}

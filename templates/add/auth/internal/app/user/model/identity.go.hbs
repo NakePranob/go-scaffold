@@ -1,0 +1,28 @@
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type Provider string
+
+const (
+	ProviderLocal  Provider = "local"
+	ProviderGoogle Provider = "google"
+)
+
+// Identity = how you log in (one row per login method). PasswordHash is set
+// for a "local" identity; ProviderUID is set for "google" (the provider's own
+// subject id). Split from User so adding a login method never touches the
+// profile row — one person can have both and resolve to the same account.
+type Identity struct {
+	ID           uuid.UUID `json:"id" gorm:"type:uuid;primaryKey"`
+	UserID       uuid.UUID `json:"user_id" gorm:"type:uuid;not null;uniqueIndex:idx_identities_user_provider,priority:1"`
+	Provider     Provider  `json:"provider" gorm:"type:varchar(20);not null;uniqueIndex:idx_identities_user_provider,priority:2;uniqueIndex:idx_identities_provider_uid,priority:1"`
+	PasswordHash *string   `json:"-"`
+	ProviderUID  *string   `json:"-" gorm:"column:provider_uid;uniqueIndex:idx_identities_provider_uid,priority:2"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}

@@ -1,0 +1,44 @@
+package middleware
+
+import (
+	"net/http"
+	"time"
+
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+)
+
+// RateLimit throttles requests per client IP to `limit` within `window`,
+// keyed by `name` (a per-route label so /auth/login and /auth/register don't
+// share a budget) — a fixed-window counter via Redis INCR+EXPIRE.
+//
+// ponytail: fixed-window, not sliding — simple and correct, the tradeoff is
+// a client can burst up to ~2x limit right at a window boundary (limit
+// requests just before it resets, then limit more right after). Good enough
+// for throttling credential-stuffing/spam, not a hard quota; move to a
+// sliding-window log if that boundary burst ever actually matters.
+func RateLimit(rdb *redis.Client, name string, limit int, window time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := "ratelimit:" + name + ":" + c.ClientIP()
+		ctx := c.Request.Context()
+
+		count, err := rdb.Incr(ctx, key).Result()
+		if err != nil {
+			// fail open: a Redis blip shouldn't take down login/register
+			// entirely — the endpoint's own logic is still the real guard.
+			c.Next()
+			return
+		}
+		if count == 1 {
+			rdb.Expire(ctx, key, window)
+		}
+		if count > int64(limit) {
+			c.Error(apperror.New(http.StatusTooManyRequests, "RATE_LIMITED", "too many requests, try again later"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}

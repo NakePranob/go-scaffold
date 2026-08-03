@@ -1,0 +1,18 @@
+package cache
+
+import (
+	"{{goModule}}/internal/shared/config"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// Open connects to Redis — it talks to a real external system, so it lives
+// in platform/, not shared/. Used for ephemeral, TTL-bound data and as the
+// backing store for the async task queue (platform/queue).
+func Open(cfg config.Config) (*redis.Client, error) {
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		return nil, err
+	}
+	return redis.NewClient(opts), nil
+}

@@ -1,0 +1,11 @@
+CREATE TABLE identities (
+    id            UUID PRIMARY KEY,
+    user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider      VARCHAR(20) NOT NULL,
+    password_hash TEXT,
+    provider_uid  TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, provider),
+    UNIQUE (provider, provider_uid)
+);

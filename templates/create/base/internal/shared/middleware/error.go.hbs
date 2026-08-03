@@ -11,7 +11,12 @@ import (
 
 // Error reads the last error attached via c.Error() and renders it once, so
 // handlers only ever do c.Error(err); return — no c.JSON per call site.
-func Error() gin.HandlerFunc {
+//
+// exposeDetail controls whether an error's Details (a validation field map,
+// or an unexpected error's real message) is echoed back in the response body
+// — wire this to !cfg.IsProd() so a caller hitting the API directly never
+// learns field names/shape from prod responses; devs still get it locally.
+func Error(exposeDetail bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 
@@ -25,6 +30,13 @@ func Error() gin.HandlerFunc {
 			// Unexpected error: log the real thing, answer the client generically.
 			slog.Error("unhandled error", "error", err.Err, "request_id", c.GetString(RequestIDKey))
 			appErr = apperror.NewInternal()
+			if exposeDetail {
+				appErr.Details = err.Err.Error()
+			}
+		} else if !exposeDetail {
+			// Known AppError (e.g. VALIDATION_ERROR): still strip Details in
+			// prod, so a direct API call doesn't get field-level hints.
+			appErr.Details = nil
 		}
 
 		appErr.RequestID = c.GetString(RequestIDKey)

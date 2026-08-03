@@ -40,9 +40,13 @@ go mod tidy
 make run                           # AUTO_MIGRATE=true creates the schema automatically in dev
 ```
 
-`make run` loads `.env` if present (copy `.env.example` to `.env` to override
-defaults — the app itself just reads `os.Getenv`, no `.env` parsing at
-runtime).
+`make run`/`make test`/`make migrate-up`/`make migrate-down` load `.env` if
+present (copy `.env.example` to `.env` to override defaults — the app itself
+just reads `os.Getenv`, no `.env` parsing at runtime). Point them at another
+file with `ENV_FILE`: copy `.env.example` to `.env.production`, fill it in,
+then `make run ENV_FILE=.env.production`. Trailing `# ...` comments in the env
+file are stripped before loading, so a `# prod: ...` note next to a value is
+safe; a `#` inside a value (password, DSN) is kept.
 
 `make db-create` connects to Postgres at `DB_HOST`/`DB_PORT`/`DB_USER` (default:
 `localhost`/`5432`/`postgres`, matching `.env.example`) using the `psql`
@@ -68,15 +72,20 @@ make lint           # golangci-lint run (see .golangci.yml)
 make tidy           # go mod tidy
 make db-create       # create the database itself (safe to re-run)
 make db-drop         # drop the database
-make migrate-up      # apply migrations (needs $DB_DSN)
+make migrate-up      # apply migrations (reads DB_DSN from ENV_FILE)
 make migrate-down     # roll back one migration
+make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql (point DB_DSN at a throwaway DB)
 {{#if docker}}make docker-up       # docker compose up -d
 make docker-down     # docker compose down
 {{/if}}```
 
 ## Migrations
 
-Schema is managed with [golang-migrate](https://github.com/golang-migrate/migrate), files live in `migrations/`.
+Schema is managed with [golang-migrate](https://github.com/golang-migrate/migrate), files live in `migrations/`, named `<version>_<name>.{up,down}.sql`. `version` is a 14-digit UTC timestamp, not an incrementing counter — two people adding a migration off the same base branch get different filenames instead of both claiming the same number and colliding on merge. (`generate module` names its own migration the same way; existing sequential `0000NN_*` files from before this convention sort fine alongside timestamped ones either way.)
+
+```bash
+go-scaffold generate migration add_status_to_orders   # reserves migrations/<version>_add_status_to_orders.{up,down}.sql, TODO-stubbed — you write the SQL
+```
 
 ```bash
 brew install golang-migrate
@@ -84,16 +93,31 @@ brew install golang-migrate
 
 migrate -path migrations -database "$DB_DSN" up
 migrate -path migrations -database "$DB_DSN" down 1
-migrate create -ext sql -dir migrations -seq add_something
+migrate create -ext sql -dir migrations -seq=false add_something   # same as `go-scaffold generate migration`, if you'd rather not use the CLI
 ```
 
 **dev:** leave `AUTO_MIGRATE=true` (default) so GORM's AutoMigrate creates the schema quickly.
 **prod:** set `AUTO_MIGRATE=false` and run `migrate up` as a separate deploy step — versioned, has rollback (`down`), doesn't lock the table the way AutoMigrate does once there's real data.
 
+With `AUTO_MIGRATE=false`, the app checks the DB's applied migration version
+against the migration files baked into the binary (embedded at build time)
+before it starts serving traffic — a stale or half-applied schema fails fast
+at boot with a clear message, instead of failing later on whatever query
+happens to hit the missing column first:
+
+```text
+DB schema is at migration 3, this binary expects 5 — run `make migrate-up`
+```
+
+```bash
+make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql before you actually need a rollback (point DB_DSN at a throwaway DB first — this drops every table)
+```
+
 ## Env vars
 
 | var | default | notes |
 |---|---|---|
+| `APP_ENV` | `development` | `development` or `production` — **the prod gate**: hides error `details` from responses. App refuses to boot on any other value |
 | `PORT` | `8080` | |
 | `DB_DSN` | `postgres://postgres:postgres@localhost:5432/{{dbName}}?sslmode=disable` | used by both GORM and the `migrate` CLI |
 | `LOG_LEVEL` | `info` | debug/info/warn/error |
@@ -101,17 +125,21 @@ migrate create -ext sql -dir migrations -seq add_something
 | `DB_MAX_OPEN_CONNS` | `10` | |
 | `DB_MAX_IDLE_CONNS` | `10` | |
 | `DB_CONN_MAX_LIFETIME_MIN` | `5` | minutes |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | comma-separated frontend origins allowed to call this API with credentials (cookies) |
 
 ## Tests
 
 Integration tests (handler-level) run against a **real Postgres** instance (same engine as prod), each test in a transaction that's rolled back — no leftover rows. If the DB isn't reachable those tests **skip** (unit tests using a fake repo always run).
 
+They use a **separate `{{dbName}}_test` database**, not the one `DB_DSN` points at. That's deliberate: the harness runs `DropTable` + `AutoMigrate` on every real run, so pointing it at your dev database would wipe whatever `make migrate-up` built there — FK constraints and seed data included. Create it once:
+
 ```bash
 {{#if docker}}
 make docker-up      # local postgres first
 {{/if}}
+make db-create DB_NAME={{dbName}}_test
 make test
-# point at a different test DB: TEST_DB_DSN=postgres://... go test ./...
+# point somewhere else entirely: TEST_DB_DSN=postgres://... go test ./...
 ```
 
 ## Error payload
@@ -120,7 +148,7 @@ make test
 {"error":{"code":"VALIDATION_ERROR","message":"invalid input","details":{"email":"email"},"request_id":"a1b2..."}}
 ```
 
-`code` is machine-readable, `details` names the field that failed, `request_id` correlates with server logs (header `X-Request-ID`).
+`code` is machine-readable, `details` names the field that failed, `request_id` correlates with server logs (header `X-Request-ID`). `details` is **only returned outside production** (`APP_ENV` != `production`) — in prod it's stripped from every error so a direct caller can't learn the API's shape; the server log still has the full detail keyed by `request_id`.
 {{#if openapiDocs}}
 
 ## API spec
