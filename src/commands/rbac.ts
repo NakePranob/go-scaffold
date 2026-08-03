@@ -6,6 +6,7 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { RBAC_FILES } from "../templates/rbac-manifest";
 import { newMigrationVersion } from "../utils/migrations";
 import {
+  patchConfigForRbac,
   patchUserModelForRbac,
   patchMiddlewareAuthForRbac,
   patchUserJWTForRbac,
@@ -51,6 +52,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
     {}
   );
 
+  patchConfigForRbac(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchUserModelForRbac(path.join(projectDir, "internal", "app", "user", "model", "user.go"));
   patchMiddlewareAuthForRbac(path.join(projectDir, "internal", "shared", "middleware", "auth.go"));
   patchUserJWTForRbac(path.join(projectDir, "internal", "app", "user", "jwt.go"));
@@ -60,6 +62,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
   patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
+  patchEnvExample(path.join(projectDir, ".env.example"));
 
   gofmtTree(projectDir);
 
@@ -78,4 +81,17 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
     )
   );
   console.log(pc.dim("\nnext: go mod tidy, then SEED_ADMIN_EMAIL=... SEED_ADMIN_PASSWORD=... make seed to get an admin"));
+}
+
+function patchEnvExample(envExamplePath: string): void {
+  if (!fs.existsSync(envExamplePath)) return;
+  let content = fs.readFileSync(envExamplePath, "utf8");
+  if (content.includes("AUTHZ_CACHE_TTL_MIN")) return; // already added
+
+  content =
+    content.replace(/\n?$/, "\n") +
+    "\n# how long a role's permission set is cached before Authz.Require re-checks the DB —\n" +
+    "# a permission change takes effect for already-issued tokens within this window\n" +
+    "AUTHZ_CACHE_TTL_MIN=1\n";
+  fs.writeFileSync(envExamplePath, content);
 }

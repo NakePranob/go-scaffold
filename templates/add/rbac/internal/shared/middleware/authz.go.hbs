@@ -31,8 +31,8 @@ type cachedPerms struct {
 // NewAuthz builds an Authz that calls resolve on a cache miss. The cache key
 // is the role code, not the user or the request — a handful of roles means
 // a handful of DB round trips per TTL window, independent of traffic.
-func NewAuthz(resolve func(context.Context, string) (map[string]struct{}, error)) *Authz {
-	return &Authz{resolve: resolve, ttl: time.Minute, cache: map[string]cachedPerms{}}
+func NewAuthz(resolve func(context.Context, string) (map[string]struct{}, error), ttl time.Duration) *Authz {
+	return &Authz{resolve: resolve, ttl: ttl, cache: map[string]cachedPerms{}}
 }
 
 // Require 403s unless the caller's role (set by RequireAuth) grants perm.
@@ -54,9 +54,9 @@ func (a *Authz) Require(perm string) gin.HandlerFunc {
 	}
 }
 
-// ponytail: process-local cache, a handful of roles x 60s TTL — a role's
-// permission grants take effect within the TTL, no pub/sub needed. Move to
-// Redis only if instant cross-pod invalidation turns out to matter.
+// ponytail: process-local cache, a handful of roles x AUTHZ_CACHE_TTL_MIN —
+// a role's permission grants take effect within the TTL, no pub/sub needed.
+// Move to Redis only if instant cross-pod invalidation turns out to matter.
 //
 // Double-checked locking: the common case (cache hit) only needs RLock, so
 // concurrent requests for different roles never block each other. Only a

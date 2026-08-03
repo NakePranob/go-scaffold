@@ -76,7 +76,7 @@ func setup(t *testing.T) *gin.Engine {
 	// package's own tests), so the resolver doesn't need a real DB lookup.
 	authz := middleware.NewAuthz(func(_ context.Context, _ string) (map[string]struct{}, error) {
 		return map[string]struct{}{"{{permission}}": {}}, nil
-	})
+	}, time.Minute)
 {{/if}}
 	NewHandler(NewService(NewRepository(tx)){{#if auth}}, testJWTSecret{{/if}}{{#if permission}}, authz{{/if}}).Register(r)
 	return r

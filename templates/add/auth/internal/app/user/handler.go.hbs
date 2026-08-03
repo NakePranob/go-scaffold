@@ -73,6 +73,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	usersGroup := rg.Group("/users", middleware.RequireAuth(h.jwtSecret))
 	usersGroup.GET("/me", h.me)
 	usersGroup.POST("/me/resend-verification", resendVerificationLimit, h.resendVerification)
+	usersGroup.POST("/me/logout-all", h.logoutAll)
 	// go-scaffold:user-routes
 }
 
@@ -176,6 +177,19 @@ func (h *Handler) resendVerification(c *gin.Context) {
 		c.Error(err)
 		return
 	}
+	c.Status(http.StatusNoContent)
+}
+
+// logoutAll ends every session for the caller, not just the one making the
+// request — also clears this request's own cookie, since that session is
+// dead too now.
+func (h *Handler) logoutAll(c *gin.Context) {
+	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
+	if err := h.svc.LogoutAll(c.Request.Context(), userID); err != nil {
+		c.Error(err)
+		return
+	}
+	h.clearRefreshCookie(c)
 	c.Status(http.StatusNoContent)
 }
 

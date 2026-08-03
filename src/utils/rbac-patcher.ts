@@ -3,6 +3,23 @@ import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const MODEL_MARKER = "// go-scaffold:models";
+const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
+const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
+
+// patchConfigForRbac adds the Authz permission-cache TTL — configurable
+// instead of the hardcoded 1 minute it started as, same marker-based
+// insertion patchConfigForAuth uses.
+export function patchConfigForRbac(configGoPath: string): void {
+  let content = fs.readFileSync(configGoPath, "utf8");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, "AuthzCacheTTL time.Duration", "AuthzCacheTTL time.Duration");
+  content = insertBeforeMarkerOnce(
+    content,
+    CONFIG_LOAD_MARKER,
+    'AuthzCacheTTL: time.Duration(envInt("AUTHZ_CACHE_TTL_MIN", 1)) * time.Minute,',
+    "AuthzCacheTTL: time.Duration"
+  );
+  fs.writeFileSync(configGoPath, content);
+}
 
 // patchUserModelForRbac adds the Role column to model.User — default 'staff'
 // at the DB level (via the gorm tag), so every existing user-creation path
@@ -228,7 +245,7 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
   if (content.includes(oldRouteLine)) {
     const newRouteBlock = [
       "roleSvc := role.NewService(role.NewRepository(db))",
-      "authz := middleware.NewAuthz(roleSvc.PermissionsOf)",
+      "authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)",
       "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg, roleSvc), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb, authz).Register(api)",
       "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)",
     ].join("\n");

@@ -172,6 +172,13 @@ func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
 	return s.tokens.DeleteRefreshToken(ctx, hash, userID)
 }
 
+// LogoutAll is the authenticated, self-service version of what ResetPassword
+// already does automatically: end every session for this user, not just the
+// one making the request — e.g. "log out everywhere" after a lost device.
+func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) error {
+	return s.tokens.RevokeAllRefreshTokens(ctx, userID)
+}
+
 func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error) {
 	u, err := s.repo.FindByID(ctx, userID)
 	if err != nil {

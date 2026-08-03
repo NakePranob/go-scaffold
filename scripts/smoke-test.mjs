@@ -831,7 +831,7 @@ step(
 // AUTO_MIGRATE=true like earlier steps.
 step(
   hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
-    ? "add rbac: default role, list/view/set-role admin routes, last-role-manager lockout guard, cmd/seed promotes to admin"
+    ? "add rbac: default role, list/view/set-role admin routes, last-role-manager lockout guard, configurable authz cache TTL, logout-all, cmd/seed promotes to admin"
     : "add rbac: skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
@@ -860,7 +860,11 @@ step(
       SEED_ADMIN_NAME: "RBAC Admin",
     });
 
-    run("bash", ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=false go run ./cmd/api >/tmp/go-scaffold-smoke-rbac-boot.log 2>&1 & sleep 3`], fullApp);
+    // AUTHZ_CACHE_TTL_MIN=0 (vs. the .env.example default of 1) proves the
+    // value is actually threaded through config -> main.go -> NewAuthz, not
+    // just accepted and ignored — a permission grant takes effect on the
+    // very next request instead of needing to wait out any cache window.
+    run("bash", ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=false AUTHZ_CACHE_TTL_MIN=0 go run ./cmd/api >/tmp/go-scaffold-smoke-rbac-boot.log 2>&1 & sleep 3`], fullApp);
 
     const B = "http://localhost:8080/v1";
     const jsonHeader = ["-H", "Content-Type: application/json"];
@@ -957,6 +961,41 @@ step(
     // /me must be completely unaffected by adding /users and /users/:id next to it.
     const staff2Me = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me`, "-H", `Authorization: Bearer ${staff2Access}`]);
     if (status(staff2Me) !== "200") throw new Error(`expected /users/me to still work unaffected by the new /users routes, got:\n${staff2Me}`);
+
+    // authz cache TTL: grant "staff" the permission it was just denied above
+    // and confirm it takes effect on the very next request — this server was
+    // booted with AUTHZ_CACHE_TTL_MIN=0, so there's no window to wait out.
+    const grantStaffRead = run("curl", [
+      "-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "PATCH", `${B}/roles/staff/permissions`,
+      "-H", `Authorization: Bearer ${adminAccess}`, ...jsonHeader, "-d", '{"permission_codes":["user:read"]}',
+    ]);
+    if (status(grantStaffRead) !== "200") throw new Error(`expected 200 granting user:read to the staff role, got:\n${grantStaffRead}`);
+    const staff2AfterGrant = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users`, "-H", `Authorization: Bearer ${staff2Access}`]);
+    if (status(staff2AfterGrant) !== "200") {
+      throw new Error(`expected the staff role's new permission to apply immediately with AUTHZ_CACHE_TTL_MIN=0, got:\n${staff2AfterGrant}`);
+    }
+
+    // logout-all: revoking through ONE session's token must kill every
+    // session for that user, not just the one making the request. Session 1
+    // (register) supplies the access token that calls logout-all; session 2
+    // (a separate login) is the "other device" whose refresh cookie should
+    // die too, even though logout-all never sees its cookie at all.
+    const laRegister = run("curl", ["-s", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"rbac-logoutall@example.com","password":"correcthorsebattery","name":"Logout All"}']);
+    const laAccess1 = field(laRegister, "access_token");
+    const laLoginFull = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"rbac-logoutall@example.com","password":"correcthorsebattery"}']);
+    const laCookie2 = (laLoginFull.match(/Set-Cookie: refresh_token=([^;]*);/) ?? [])[1];
+    if (!laAccess1 || !laCookie2) throw new Error(`expected an access token and a second session's refresh cookie for the logout-all test, got register:\n${laRegister}\nand login:\n${laLoginFull}`);
+
+    const noAuthLogoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/logout-all`]);
+    if (status(noAuthLogoutAll) !== "401") throw new Error(`expected 401 calling logout-all with no token, got:\n${noAuthLogoutAll}`);
+
+    const logoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/logout-all`, "-H", `Authorization: Bearer ${laAccess1}`]);
+    if (status(logoutAll) !== "204") throw new Error(`expected 204 from logout-all, got:\n${logoutAll}`);
+
+    const refreshOtherSessionAfterLogoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${laCookie2}`]);
+    if (status(refreshOtherSessionAfterLogoutAll) !== "401") {
+      throw new Error(`expected logout-all (called from session 1, no cookie needed) to also kill session 2's refresh token, got:\n${refreshOtherSessionAfterLogoutAll}`);
+    }
 
     run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
     execFileSync("sleep", ["1"]);
