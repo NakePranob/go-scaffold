@@ -1399,6 +1399,75 @@ step("custom prefix: generate module + method, routes land under /beta", () => {
   run("go", ["vet", "./..."], betaApp);
 });
 
+step(
+  hasDocker && (hasPsql || dockerPgContainer)
+    ? "create --observability: /metrics is real Prometheus output, tracing no-ops with no OTEL endpoint configured, go.mod stays free of quic-go/mysql/clickhouse/mongo"
+    : "create --observability: skipped (needs Docker, psql/a Postgres container)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer))) return;
+
+    goScaffold(["create", "obs-app", "--defaults", "--observability"], scratch);
+    const obsApp = path.join(scratch, "obs-app");
+    run("go", ["mod", "tidy"], obsApp);
+
+    // the forced-upgrade risk this step exists to catch: otelgin/gorm.io's
+    // opentelemetry plugin drag in a newer Gin (-> HTTP/3/quic-go) and every
+    // DB driver they trace (MySQL, ClickHouse, MongoDB) respectively — this
+    // project hand-rolls both instead specifically to avoid that.
+    const goSum = readFileSync(path.join(obsApp, "go.sum"), "utf8");
+    for (const unwanted of ["quic-go", "go-sql-driver/mysql", "ClickHouse", "mongo-driver"]) {
+      if (goSum.includes(unwanted)) throw new Error(`expected go.sum to stay free of ${unwanted}, the whole point of hand-rolling tracing instead of otelgin/gorm.io's plugin`);
+    }
+
+    run("go", ["build", "./..."], obsApp);
+    run("go", ["vet", "./..."], obsApp);
+    if (hasGolangciLint) {
+      const lintOut = run("golangci-lint", ["run"], obsApp);
+      if (lintOut.trim() && !lintOut.includes("0 issues")) throw new Error(`expected 0 lint issues, got:\n${lintOut}`);
+    }
+
+    goScaffold(["generate", "module", "widget"], obsApp);
+    run("go", ["build", "./..."], obsApp);
+
+    run("make", ["db-create"], obsApp);
+    const out = run(
+      "bash",
+      [
+        "-c",
+        `go run ./cmd/api >/tmp/go-scaffold-smoke-obs-boot.log 2>&1 & sleep 3; ` +
+          "echo '===CREATE==='; " +
+          "curl -s -w 'HTTPSTATUS:%{http_code}' -X POST http://localhost:8080/v1/widgets -H 'Content-Type: application/json' -d '{}'; " +
+          "echo; echo '===METRICS==='; " +
+          "curl -s http://localhost:8080/metrics; " +
+          // OTel's default BatchSpanProcessor flushes every 5s — if Init's
+          // empty-endpoint no-op regresses (an exporter gets created
+          // anyway), this is the window for its first failed dial attempt
+          // to actually land in the log before the process is killed.
+          "sleep 6; " +
+          "lsof -ti:8080 | xargs -r kill -9",
+      ],
+      obsApp
+    );
+    const [, createOut = "", metricsOut = ""] = out.split(/===CREATE===|===METRICS===/);
+
+    if (!createOut.includes("HTTPSTATUS:201")) throw new Error(`expected 201 creating a widget through the metrics+tracing middleware chain, got:\n${createOut}`);
+    if (!metricsOut.includes('http_requests_total{method="POST",path="/v1/widgets",status="201"} 1')) {
+      throw new Error(`expected the widget create request counted in /metrics, got:\n${metricsOut}`);
+    }
+    if (!/^# (HELP|TYPE) http_request_duration_seconds/m.test(metricsOut)) {
+      throw new Error(`expected real Prometheus HELP/TYPE headers for the duration histogram, got:\n${metricsOut}`);
+    }
+
+    const bootLog = readFileSync("/tmp/go-scaffold-smoke-obs-boot.log", "utf8");
+    if (bootLog.toLowerCase().includes("panic")) throw new Error(`server panicked with tracing enabled but no OTEL endpoint configured:\n${bootLog}`);
+    if (bootLog.includes("traces export")) {
+      throw new Error(`expected no trace export attempt with OTEL_EXPORTER_OTLP_ENDPOINT unset (should no-op, not try to dial a collector), got:\n${bootLog}`);
+    }
+
+    run("make", ["db-drop"], obsApp);
+  }
+);
+
 step("create --api-prefix '' scaffolds routes with no prefix at all", () => {
   goScaffold(["create", "noprefix-app", "--defaults", "--api-prefix", ""], scratch);
   const app = path.join(scratch, "noprefix-app");

@@ -29,6 +29,10 @@ export async function runCreateWizard(): Promise<CreateWizardResult> {
     message: "Include hand-written OpenAPI docs (docs/openapi.yaml, whole docs/ tree served at /docs)?",
     default: true,
   });
+  const observability = await confirm({
+    message: "Add metrics + tracing (Prometheus /metrics, OpenTelemetry over OTLP/HTTP for Gin + GORM)?",
+    default: false,
+  });
   const apiPrefixRaw = await input({
     message: "API route prefix (e.g. v1, api/v1; leave blank for none):",
     default: "v1",
@@ -39,6 +43,7 @@ export async function runCreateWizard(): Promise<CreateWizardResult> {
   console.log("\nSummary:");
   console.log(`  Docker + PostgreSQL: ${docker ? "yes" : "no"}`);
   console.log(`  OpenAPI docs: ${openapiDocs ? "yes" : "no"}`);
+  console.log(`  Metrics + tracing: ${observability ? "yes" : "no"}`);
   console.log(`  Route prefix: ${apiPrefix ? `/${apiPrefix}` : "(none)"}`);
 
   const proceed = await confirm({ message: "\nCreate project with these settings?", default: true });
@@ -46,5 +51,5 @@ export async function runCreateWizard(): Promise<CreateWizardResult> {
     throw new Error("project creation cancelled");
   }
 
-  return { features: { docker, openapiDocs }, apiPrefix };
+  return { features: { docker, openapiDocs, observability }, apiPrefix };
 }

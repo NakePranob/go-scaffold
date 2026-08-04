@@ -20,6 +20,9 @@ type Config struct {
 	DBConnMaxLifetime time.Duration
 
 	CORSAllowedOrigins []string
+{{#if observability}}
+	OTELExporterEndpoint string
+{{/if}}
 	// go-scaffold:config-fields
 }
 
@@ -40,6 +43,9 @@ func Load() Config {
 		DBConnMaxLifetime: time.Duration(envInt("DB_CONN_MAX_LIFETIME_MIN", 5)) * time.Minute,
 
 		CORSAllowedOrigins: envList("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+{{#if observability}}
+		OTELExporterEndpoint: env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+{{/if}}
 		// go-scaffold:config-load
 	}
 

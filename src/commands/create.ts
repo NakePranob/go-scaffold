@@ -13,6 +13,7 @@ export interface CreateOptions {
   defaults?: boolean;
   docker?: boolean;
   openapiDocs?: boolean;
+  observability?: boolean;
   apiPrefix?: string;
 }
 
@@ -32,7 +33,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   let features: ProjectFeatures;
   let apiPrefix: string;
   if (opts.defaults) {
-    features = { docker: opts.docker ?? true, openapiDocs: opts.openapiDocs ?? true };
+    features = { docker: opts.docker ?? true, openapiDocs: opts.openapiDocs ?? true, observability: opts.observability ?? false };
     apiPrefix = normalizeApiPrefix(opts.apiPrefix ?? "v1");
     const check = validateApiPrefix(apiPrefix);
     if (check !== true) throw new Error(check);
