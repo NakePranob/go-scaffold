@@ -11,11 +11,17 @@ import (
 	"time"
 
 	"{{goModule}}/internal/platform/database"
+{{#if observability}}
+	"{{goModule}}/internal/platform/telemetry"
+{{/if}}
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/internal/shared/middleware"
 	// go-scaffold:imports
 
 	"github.com/gin-gonic/gin"
+{{#if observability}}
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+{{/if}}
 )
 
 func main() {
@@ -25,6 +31,15 @@ func main() {
 	slog.SetDefault(logger)
 	// go-scaffold:config-checks
 
+{{#if observability}}
+	shutdownTelemetry, err := telemetry.Init(context.Background(), "{{projectName}}", cfg.OTELExporterEndpoint)
+	if err != nil {
+		logger.Error("init telemetry", "error", err)
+		os.Exit(1)
+	}
+	defer func() { _ = shutdownTelemetry(context.Background()) }()
+
+{{/if}}
 	db, err := database.Open(cfg)
 	if err != nil {
 		logger.Error("open db", "error", err)
@@ -53,7 +68,7 @@ func main() {
 	}
 
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))
+	r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()){{#if observability}}, middleware.Metrics(), middleware.Tracing("{{projectName}}"){{/if}})
 
 	// liveness = is the process up / readiness = ready for traffic (can it reach the DB)
 	r.GET("/livez", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
@@ -65,6 +80,9 @@ func main() {
 		// go-scaffold:readyz-checks
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+{{#if observability}}
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+{{/if}}
 {{#if openapiDocs}}
 	// hand-written spec at docs/openapi.yaml, split across sibling files (common/, health/,
 	// <domain>/) via relative $ref — serve the whole tree under one prefix so a client that

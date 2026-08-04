@@ -5,6 +5,9 @@ import (
 	"regexp"
 	"strconv"
 
+{{#if observability}}
+	"{{goModule}}/internal/platform/telemetry"
+{{/if}}
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/migrations"
 
@@ -21,6 +24,12 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
+{{#if observability}}
+	if err := db.Use(telemetry.NewGormPlugin()); err != nil {
+		return nil, err
+	}
+
+{{/if}}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err

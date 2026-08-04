@@ -1,0 +1,12 @@
+get:
+  summary: Prometheus metrics
+  description: Text-format metrics for Prometheus to scrape — not part of the JSON API surface.
+  operationId: getMetrics
+  tags: [observability]
+  security: []
+  responses:
+    "200":
+      description: ok
+      content:
+        text/plain:
+          schema: { type: string }

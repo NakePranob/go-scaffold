@@ -113,4 +113,24 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "docs/health/health-readyz.yaml",
     when: (ctx) => ctx.openapiDocs,
   },
+  {
+    template: "create/features/docs/observability/metrics.yaml.hbs",
+    output: "docs/observability/metrics.yaml",
+    when: (ctx) => ctx.openapiDocs && ctx.observability,
+  },
+  {
+    template: "create/features/observability/middleware/metrics.go.hbs",
+    output: "internal/shared/middleware/metrics.go",
+    when: (ctx) => ctx.observability,
+  },
+  {
+    template: "create/features/observability/middleware/tracing.go.hbs",
+    output: "internal/shared/middleware/tracing.go",
+    when: (ctx) => ctx.observability,
+  },
+  {
+    template: "create/features/observability/platform/telemetry/tracing.go.hbs",
+    output: "internal/platform/telemetry/tracing.go",
+    when: (ctx) => ctx.observability,
+  },
 ];

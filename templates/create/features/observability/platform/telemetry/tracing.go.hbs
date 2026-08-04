@@ -1,0 +1,130 @@
+// Package telemetry wires OpenTelemetry tracing — it talks to a real
+// external system (the OTLP collector), so it lives in platform/, not
+// shared/, same split rule as internal/platform/database.
+package telemetry
+
+import (
+	"context"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	"gorm.io/gorm"
+)
+
+// Init wires a global TracerProvider that exports spans via OTLP/HTTP to
+// endpoint. An empty endpoint (the default — see OTEL_EXPORTER_OTLP_ENDPOINT
+// in .env.example) skips exporter setup entirely and returns a no-op
+// shutdown: tracing quietly does nothing instead of trying to dial a
+// collector that isn't there, same "off unless configured" shape as the
+// rest of this app's optional integrations.
+func Init(ctx context.Context, serviceName, endpoint string) (shutdown func(context.Context) error, err error) {
+	noop := func(context.Context) error { return nil }
+	if endpoint == "" {
+		return noop, nil
+	}
+
+	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint(endpoint), otlptracehttp.WithInsecure())
+	if err != nil {
+		return noop, err
+	}
+
+	res, err := resource.New(ctx, resource.WithAttributes(attribute.String("service.name", serviceName)))
+	if err != nil {
+		return noop, err
+	}
+
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	return func(shutdownCtx context.Context) error {
+		ctx, cancel := context.WithTimeout(shutdownCtx, 5*time.Second)
+		defer cancel()
+		return tp.Shutdown(ctx)
+	}, nil
+}
+
+const tracerName = "gorm"
+
+// gormPlugin wraps every GORM operation (query, create, update, delete, row,
+// raw) in a span — a hand-rolled GORM callback plugin instead of
+// gorm.io/plugin/opentelemetry: that module's go.mod pulls in every driver
+// it supports tracing for (MySQL, ClickHouse, MongoDB) plus their own
+// transitive trees (gRPC, QUIC, ...) as indirect requires, even though this
+// project only ever uses Postgres. GORM's callback API is small enough that
+// replicating just "start a span before, end it after, record the error if
+// any" isn't worth that weight.
+type gormPlugin struct{}
+
+// NewGormPlugin returns a gorm.Plugin — wire it in via db.Use(...).
+func NewGormPlugin() gorm.Plugin { return gormPlugin{} }
+
+func (gormPlugin) Name() string { return "otel-tracing" }
+
+// Initialize registers a before/after pair on each of GORM's six operation
+// callbacks (create/query/update/delete/row/raw) — spelled out individually,
+// not looped, because db.Callback().Create() etc. return GORM's unexported
+// *processor type: a package outside gorm can chain its methods but can't
+// name the type, so it can't be held in a slice/struct field to loop over.
+func (gormPlugin) Initialize(db *gorm.DB) error {
+	before := func(op string) func(*gorm.DB) {
+		return func(tx *gorm.DB) {
+			ctx, span := otel.Tracer(tracerName).Start(tx.Statement.Context, "gorm."+op)
+			span.SetAttributes(attribute.String("db.sql.table", tx.Statement.Table))
+			tx.Statement.Context = ctx
+		}
+	}
+	after := func(tx *gorm.DB) {
+		span := trace.SpanFromContext(tx.Statement.Context)
+		if tx.Error != nil {
+			span.RecordError(tx.Error)
+			span.SetStatus(codes.Error, tx.Error.Error())
+		}
+		span.End()
+	}
+
+	if err := db.Callback().Create().Before("gorm:create").Register("otel:before_create", before("create")); err != nil {
+		return err
+	}
+	if err := db.Callback().Create().After("gorm:create").Register("otel:after_create", after); err != nil {
+		return err
+	}
+	if err := db.Callback().Query().Before("gorm:query").Register("otel:before_query", before("query")); err != nil {
+		return err
+	}
+	if err := db.Callback().Query().After("gorm:query").Register("otel:after_query", after); err != nil {
+		return err
+	}
+	if err := db.Callback().Update().Before("gorm:update").Register("otel:before_update", before("update")); err != nil {
+		return err
+	}
+	if err := db.Callback().Update().After("gorm:update").Register("otel:after_update", after); err != nil {
+		return err
+	}
+	if err := db.Callback().Delete().Before("gorm:delete").Register("otel:before_delete", before("delete")); err != nil {
+		return err
+	}
+	if err := db.Callback().Delete().After("gorm:delete").Register("otel:after_delete", after); err != nil {
+		return err
+	}
+	if err := db.Callback().Row().Before("gorm:row").Register("otel:before_row", before("row")); err != nil {
+		return err
+	}
+	if err := db.Callback().Row().After("gorm:row").Register("otel:after_row", after); err != nil {
+		return err
+	}
+	if err := db.Callback().Raw().Before("gorm:raw").Register("otel:before_raw", before("raw")); err != nil {
+		return err
+	}
+	if err := db.Callback().Raw().After("gorm:raw").Register("otel:after_raw", after); err != nil {
+		return err
+	}
+	return nil
+}

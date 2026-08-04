@@ -7,6 +7,8 @@ export interface ProjectFeatures {
   auth?: boolean;
   /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */
   rbac?: boolean;
+  /** chosen at `create` time — Prometheus /metrics + OpenTelemetry tracing (Gin + GORM) */
+  observability?: boolean;
 }
 
 export interface ProjectConfig {

@@ -1,0 +1,41 @@
+package middleware
+
+import (
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	httpRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{Name: "http_requests_total", Help: "Total HTTP requests"},
+		[]string{"method", "path", "status"},
+	)
+	httpRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "http_request_duration_seconds", Help: "HTTP request duration in seconds"},
+		[]string{"method", "path", "status"},
+	)
+)
+
+// Metrics records request count and latency per route for GET /metrics to
+// expose to Prometheus. Uses c.FullPath() (the route template, e.g.
+// "/v1/invoices/:id") rather than the raw request path — a UUID or other
+// path param would otherwise create one label series per distinct value,
+// growing unbounded with traffic instead of staying one series per route.
+func Metrics() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+
+		path := c.FullPath()
+		if path == "" {
+			path = "unmatched" // no route matched (404) — one shared label, not the raw unbounded path
+		}
+		status := strconv.Itoa(c.Writer.Status())
+		httpRequestsTotal.WithLabelValues(c.Request.Method, path, status).Inc()
+		httpRequestDuration.WithLabelValues(c.Request.Method, path, status).Observe(time.Since(start).Seconds())
+	}
+}
