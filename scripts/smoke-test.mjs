@@ -621,6 +621,16 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   run("make", ["db-drop"], fullApp);
 });
 
+step(
+  hasDocker
+    ? "add auth: unit tests cover refresh rotation + reuse-detection (go test ./internal/app/user/...)"
+    : "add auth: unit tests skipped (needs Docker for add worker's Redis)",
+  () => {
+    if (!hasDocker) return;
+    run("go", ["test", "./internal/app/user/..."], fullApp);
+  }
+);
+
 step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml, bundle resolves" : "add auth: openapi wiring skipped (needs Docker)", () => {
   if (!hasDocker) return;
   const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
@@ -1044,6 +1054,16 @@ step(
     }
     assertFileContains(path.join(fullApp, "docs", "auth", "schemas.yaml"), "role: { type: string }");
     if (hasNpx) run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+  }
+);
+
+step(
+  hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
+    ? "add rbac: unit tests cover the last-role-manager lockout guard and the Authz permission cache (hit/TTL-expiry, go test)"
+    : "add rbac: unit tests skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
+    run("go", ["test", "./internal/app/role/...", "./internal/shared/middleware/..."], fullApp);
   }
 );
 

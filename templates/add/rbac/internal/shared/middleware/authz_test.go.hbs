@@ -1,0 +1,88 @@
+package middleware
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestAuthz_CachesWithinTTL(t *testing.T) {
+	var calls int32
+	a := NewAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		atomic.AddInt32(&calls, 1)
+		return map[string]struct{}{"x": {}}, nil
+	}, time.Minute)
+
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("want resolve called once for two calls within TTL (cache hit), got %d", got)
+	}
+}
+
+func TestAuthz_ReResolvesAfterTTLExpires(t *testing.T) {
+	var calls int32
+	a := NewAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		atomic.AddInt32(&calls, 1)
+		return map[string]struct{}{"x": {}}, nil
+	}, 10*time.Millisecond)
+
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("want resolve called again once the TTL expires, got %d calls", got)
+	}
+}
+
+func TestAuthz_Require_ForbidsMissingPermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	a := NewAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		return map[string]struct{}{"other:perm": {}}, nil
+	}, time.Minute)
+
+	r := gin.New()
+	// Require only records a *apperror.AppError via c.Error — Error(true) is
+	// what actually translates that into the response status code, same as
+	// the real router (see cmd/api/main.go).
+	r.Use(Error(true))
+	r.GET("/x", func(c *gin.Context) { c.Set(RoleKey, "staff") }, a.Require("role:manage"), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403 without the required permission, got %d", w.Code)
+	}
+}
+
+func TestAuthz_Require_AllowsGrantedPermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	a := NewAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		return map[string]struct{}{"role:manage": {}}, nil
+	}, time.Minute)
+
+	r := gin.New()
+	r.Use(Error(true))
+	r.GET("/x", func(c *gin.Context) { c.Set(RoleKey, "admin") }, a.Require("role:manage"), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 with the required permission granted, got %d", w.Code)
+	}
+}
