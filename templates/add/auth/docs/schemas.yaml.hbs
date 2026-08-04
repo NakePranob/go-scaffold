@@ -1,0 +1,58 @@
+RegisterInput:
+  type: object
+  required: [email, password, name]
+  properties:
+    email: { type: string, format: email }
+    password: { type: string, format: password, minLength: 8 }
+    name: { type: string }
+
+LoginInput:
+  type: object
+  required: [email, password]
+  properties:
+    email: { type: string, format: email }
+    password: { type: string, format: password }
+
+ForgotPasswordInput:
+  type: object
+  required: [email]
+  properties:
+    email: { type: string, format: email }
+
+ResetPasswordInput:
+  type: object
+  required: [token, new_password]
+  properties:
+    token: { type: string }
+    new_password: { type: string, format: password, minLength: 8 }
+
+VerifyEmailInput:
+  type: object
+  required: [token]
+  properties:
+    token: { type: string }
+
+# access_token in the body; refresh_token is set as an httpOnly cookie, never
+# echoed back — see toCookieResponse in internal/app/user/dto.go.
+AuthResponse:
+  type: object
+  properties:
+    access_token: { type: string }
+    token_type: { type: string, example: Bearer }
+    expires_in: { type: integer, description: seconds until access_token expires }
+
+MessageResponse:
+  type: object
+  properties:
+    message: { type: string }
+
+MeResponse:
+  type: object
+  properties:
+    id: { type: string, format: uuid }
+    email: { type: string, format: email }
+    name: { type: string }
+    avatar_url: { type: string }
+    email_verified: { type: boolean }
+    # go-scaffold:me-response-fields
+    created_at: { type: string, format: date-time }

@@ -1,0 +1,10 @@
+post:
+  summary: Resend the email verification link
+  operationId: resendVerification
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "204": { description: verification email sent }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }
+    "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }

@@ -1,0 +1,16 @@
+parameters:
+  - $ref: '../common/parameters.yaml#/IdParam'
+get:
+  summary: Get a user (admin)
+  operationId: adminGetUser
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "200":
+      description: ok
+      content:
+        application/json:
+          schema: { $ref: '../auth/schemas.yaml#/MeResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }

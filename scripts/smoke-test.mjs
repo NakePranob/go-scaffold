@@ -211,6 +211,13 @@ try {
   hasDocker = false;
 }
 
+let hasNpx = true;
+try {
+  run("npx", ["--version"]);
+} catch {
+  hasNpx = false;
+}
+
 // docker port prints one line per protocol family ("0.0.0.0:PORT" and
 // "[::]:PORT") for an ephemeral (-p 0:CONTAINER_PORT) mapping — both name the
 // same host port, so the last field after splitting on ":" is it regardless
@@ -614,6 +621,28 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   run("make", ["db-drop"], fullApp);
 });
 
+step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml, bundle resolves" : "add auth: openapi wiring skipped (needs Docker)", () => {
+  if (!hasDocker) return;
+  const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
+  for (const p of [
+    "/v1/auth/register:",
+    "/v1/auth/login:",
+    "/v1/auth/refresh:",
+    "/v1/auth/logout:",
+    "/v1/auth/forgot-password:",
+    "/v1/auth/reset-password:",
+    "/v1/auth/verify-email:",
+    "/v1/auth/google/login:",
+    "/v1/auth/google/callback:",
+    "/v1/users/me:",
+    "/v1/users/me/resend-verification:",
+    "/v1/users/me/logout-all:",
+  ]) {
+    if (!openapi.includes(p)) throw new Error(`expected ${p} in docs/openapi.yaml after add auth, got:\n${openapi}`);
+  }
+  if (hasNpx) run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+});
+
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app_test");
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "golangci-lint-action");
@@ -1003,6 +1032,21 @@ step(
   }
 );
 
+step(
+  hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
+    ? "add rbac: wires /roles, /permissions, /users(/{id}) into docs/openapi.yaml, patches MeResponse.role, bundle resolves"
+    : "add rbac: openapi wiring skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
+    const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
+    for (const p of ["/v1/roles:", "/v1/roles/{code}/permissions:", "/v1/roles/{code}:", "/v1/permissions:", "/v1/users:", "/v1/users/{id}:", "/v1/users/{id}/set-role:"]) {
+      if (!openapi.includes(p)) throw new Error(`expected ${p} in docs/openapi.yaml after add rbac, got:\n${openapi}`);
+    }
+    assertFileContains(path.join(fullApp, "docs", "auth", "schemas.yaml"), "role: { type: string }");
+    if (hasNpx) run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+  }
+);
+
 // generate module --auth [--permission <code>]: without this, every module
 // this suite generates from here on would be reachable with no token at all
 // even though fullApp already has auth+rbac installed — the exact gap this
@@ -1094,13 +1138,6 @@ step("full module: docs wired into openapi.yaml", () => {
 step("main.go serves the whole docs/ tree, not just the index (or $ref resolution 404s over HTTP)", () => {
   assertFileContains(path.join(fullApp, "cmd", "api", "main.go"), 'r.Static("/docs", "./docs")');
 });
-
-let hasNpx = true;
-try {
-  run("npx", ["--version"]);
-} catch {
-  hasNpx = false;
-}
 
 step(
   hasNpx

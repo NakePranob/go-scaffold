@@ -1,0 +1,24 @@
+get:
+  summary: List permissions
+  description: The catalog of every permission code roles can be granted — permissions themselves are seeded by migrations, not created via the API.
+  operationId: listPermissions
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - $ref: '../common/parameters.yaml#/Limit'
+    - $ref: '../common/parameters.yaml#/Offset'
+  responses:
+    "200":
+      description: paginated list
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../common/schemas.yaml#/PageEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: './schemas.yaml#/PermissionResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }

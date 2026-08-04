@@ -1,0 +1,17 @@
+parameters:
+  - name: code
+    in: path
+    required: true
+    schema: { type: string }
+delete:
+  summary: Delete a role
+  description: System roles (staff/admin) cannot be deleted, nor can a role still assigned to users.
+  operationId: deleteRole
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "204": { description: deleted }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }

@@ -31,3 +31,12 @@ components:
     NotFoundError: { $ref: './common/responses.yaml#/NotFoundError' }
     ConflictError: { $ref: './common/responses.yaml#/ConflictError' }
     UnprocessableEntityError: { $ref: './common/responses.yaml#/UnprocessableEntityError' }
+    UnauthorizedError: { $ref: './common/responses.yaml#/UnauthorizedError' }
+    ForbiddenError: { $ref: './common/responses.yaml#/ForbiddenError' }
+    TooManyRequestsError: { $ref: './common/responses.yaml#/TooManyRequestsError' }
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "access token from POST /auth/login or /auth/register, sent as `Authorization: Bearer <token>`"

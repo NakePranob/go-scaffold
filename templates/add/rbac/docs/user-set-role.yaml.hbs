@@ -1,0 +1,23 @@
+parameters:
+  - $ref: '../common/parameters.yaml#/IdParam'
+patch:
+  summary: Change a user's role
+  operationId: setUserRole
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/SetRoleInput' }
+  responses:
+    "200":
+      description: updated
+      content:
+        application/json:
+          schema: { $ref: '../auth/schemas.yaml#/MeResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
+    "422": { $ref: '../common/responses.yaml#/UnprocessableEntityError' }

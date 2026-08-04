@@ -18,3 +18,18 @@ UnprocessableEntityError:
   content:
     application/json:
       schema: { $ref: './schemas.yaml#/Error' }
+UnauthorizedError:
+  description: missing, invalid, or expired credentials
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }
+ForbiddenError:
+  description: authenticated but lacking the required permission
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }
+TooManyRequestsError:
+  description: rate limit exceeded, retry later
+  content:
+    application/json:
+      schema: { $ref: './schemas.yaml#/Error' }

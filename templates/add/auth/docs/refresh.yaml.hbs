@@ -1,0 +1,15 @@
+post:
+  summary: Rotate the refresh token cookie for a new access token
+  description: >-
+    Reads refresh_token from the httpOnly cookie (no request body). Reusing an
+    already-rotated-out token revokes the whole session family.
+  operationId: refreshToken
+  tags: [auth]
+  security: []
+  responses:
+    "200":
+      description: ok, a new refresh_token cookie is set
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/AuthResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

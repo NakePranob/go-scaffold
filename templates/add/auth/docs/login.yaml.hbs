@@ -1,0 +1,19 @@
+post:
+  summary: Log in with email and password
+  operationId: loginUser
+  tags: [auth]
+  security: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/LoginInput' }
+  responses:
+    "200":
+      description: ok, refresh_token set as an httpOnly cookie
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/AuthResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }

@@ -1,0 +1,8 @@
+post:
+  summary: Log out the current session
+  description: Revokes the refresh_token cookie's session and clears the cookie. Always succeeds, even with no cookie.
+  operationId: logoutUser
+  tags: [auth]
+  security: []
+  responses:
+    "204": { description: logged out }

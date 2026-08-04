@@ -1,0 +1,9 @@
+post:
+  summary: Log out every session for the current user
+  description: Revokes every refresh token for the caller, not just the current one, and clears this request's cookie too.
+  operationId: logoutAllSessions
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "204": { description: all sessions logged out }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

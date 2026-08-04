@@ -16,7 +16,21 @@ import {
   patchUserErrorsForRbac,
   patchMainGoForRbac,
   patchCmdSeedForRbac,
+  patchAuthDocsForRbac,
 } from "../utils/rbac-patcher";
+import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
+
+// URL (relative to the api prefix) -> docs file (relative to docs/) for every
+// route `add rbac` registers or adds onto the user handler.
+const RBAC_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
+  { urlPath: "/roles", file: "./rbac/roles.yaml" },
+  { urlPath: "/roles/{code}/permissions", file: "./rbac/role-permissions.yaml" },
+  { urlPath: "/roles/{code}", file: "./rbac/role.yaml" },
+  { urlPath: "/permissions", file: "./rbac/permissions.yaml" },
+  { urlPath: "/users", file: "./rbac/users.yaml" },
+  { urlPath: "/users/{id}", file: "./rbac/user.yaml" },
+  { urlPath: "/users/{id}/set-role", file: "./rbac/user-set-role.yaml" },
+];
 
 // addRbac layers role-based access control on top of `add auth`: a role
 // domain (roles/permissions/role_permissions, admin-manageable), an Authz
@@ -64,12 +78,30 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
   patchEnvExample(path.join(projectDir, ".env.example"));
 
+  let docsMessage = "";
+  const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
+  if (config.features.openapiDocs && fs.existsSync(openapiPath)) {
+    const docsEntries = [
+      { template: "add/rbac/docs/schemas.yaml.hbs", output: path.join("docs", "rbac", "schemas.yaml") },
+      ...RBAC_OPENAPI_PATHS.map(({ file }) => ({
+        template: `add/rbac/docs/${path.basename(file)}.hbs`,
+        output: path.join("docs", "rbac", path.basename(file)),
+      })),
+    ];
+    await applyTemplateEntries(projectDir, docsEntries, {});
+    patchOpenapiIndexRaw(openapiPath, config.apiPrefix, RBAC_OPENAPI_PATHS);
+    patchAuthDocsForRbac(path.join(projectDir, "docs", "auth", "schemas.yaml"));
+    docsMessage = "\ndocs: docs/rbac/*.yaml, wired into docs/openapi.yaml";
+  }
+
   gofmtTree(projectDir);
 
   writeConfig(projectDir, { ...config, features: { ...config.features, rbac: true } });
 
   console.log(pc.green("\nadded internal/app/role/ and internal/shared/middleware/authz.go"));
-  console.log("registered GET /users, GET /users/:id, PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/main.go");
+  console.log(
+    "registered GET /users, GET /users/:id, PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/main.go" + docsMessage
+  );
   console.log(
     pc.yellow(
       "\n⚠ AUTO_MIGRATE=true does NOT seed the role/permission data — it only creates the\n" +
