@@ -1,0 +1,43 @@
+get:
+  summary: List roles
+  operationId: listRoles
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - $ref: '../common/parameters.yaml#/Limit'
+    - $ref: '../common/parameters.yaml#/Offset'
+  responses:
+    "200":
+      description: paginated list
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '../common/schemas.yaml#/PageEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: './schemas.yaml#/RoleResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
+post:
+  summary: Create a role
+  operationId: createRole
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/RoleCreateInput' }
+  responses:
+    "201":
+      description: created
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/RoleResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }

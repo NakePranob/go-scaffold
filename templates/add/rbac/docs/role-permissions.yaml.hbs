@@ -1,0 +1,31 @@
+parameters:
+  - name: code
+    in: path
+    required: true
+    schema: { type: string }
+patch:
+  summary: Replace a role's permissions
+  description: >-
+    Rejects unknown permission codes (422), and rejects removing role:manage
+    from the only role that still has it, to avoid locking every admin out
+    of role management (409).
+  operationId: setRolePermissions
+  tags: [rbac]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/SetPermissionsInput' }
+  responses:
+    "200":
+      description: updated
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/RoleResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
+    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }
+    "422": { $ref: '../common/responses.yaml#/UnprocessableEntityError' }

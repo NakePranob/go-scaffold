@@ -1,0 +1,12 @@
+get:
+  summary: Get the current user
+  operationId: getMe
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "200":
+      description: ok
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MeResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

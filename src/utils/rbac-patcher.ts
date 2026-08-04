@@ -6,6 +6,17 @@ const MODEL_MARKER = "// go-scaffold:models";
 const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 
+// patchAuthDocsForRbac adds `role` to the hand-written MeResponse schema in
+// docs/auth/schemas.yaml — same marker convention as the Go dto.go patch
+// (patchUserDTOForRbac), since GET/PATCH /users(/me) all serialize the same
+// model.User whether or not RBAC is installed.
+export function patchAuthDocsForRbac(authSchemasYamlPath: string): void {
+  if (!fs.existsSync(authSchemasYamlPath)) return; // openapi docs feature disabled
+  let content = fs.readFileSync(authSchemasYamlPath, "utf8");
+  content = insertBeforeMarkerOnce(content, "# go-scaffold:me-response-fields", "role: { type: string }", "role: { type: string }");
+  fs.writeFileSync(authSchemasYamlPath, content);
+}
+
 // patchConfigForRbac adds the Authz permission-cache TTL — configurable
 // instead of the hardcoded 1 minute it started as, same marker-based
 // insertion patchConfigForAuth uses.

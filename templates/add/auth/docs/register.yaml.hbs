@@ -1,0 +1,19 @@
+post:
+  summary: Register a new account
+  operationId: registerUser
+  tags: [auth]
+  security: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/RegisterInput' }
+  responses:
+    "201":
+      description: created, refresh_token set as an httpOnly cookie
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/AuthResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }
+    "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }

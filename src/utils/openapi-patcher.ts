@@ -45,3 +45,19 @@ export function unpatchOpenapiIndex(openapiPath: string, naming: ModuleNaming, a
   const { paths, schemas } = openapiLines(naming, apiPrefix);
   fs.writeFileSync(openapiPath, removeLines(content, [...paths, ...schemas]));
 }
+
+// patchOpenapiIndexRaw wires hand-written path docs into the index — used by
+// `add auth`/`add rbac`, whose endpoints aren't a single CRUD resource so
+// there's no ModuleNaming to derive lines from. Each entry is patched with
+// its own sentinel (the path key) rather than one block for all of them, so
+// re-running `add rbac` after a partial failure doesn't skip entries that
+// never made it in.
+export function patchOpenapiIndexRaw(openapiPath: string, apiPrefix: string, entries: { urlPath: string; file: string }[]): void {
+  let content = fs.readFileSync(openapiPath, "utf8");
+  for (const { urlPath, file } of entries) {
+    const key = `${apiPrefix ? `/${apiPrefix}` : ""}${urlPath}:`;
+    const block = `${key}\n  $ref: '${file}'`;
+    content = insertBeforeMarkerOnce(content, PATHS_MARKER, block, key);
+  }
+  fs.writeFileSync(openapiPath, content);
+}

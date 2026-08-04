@@ -6,6 +6,25 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { AUTH_FILES } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
 import { newMigrationVersion } from "../utils/migrations";
+import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
+
+// URL (relative to the api prefix) -> docs file (relative to docs/) for every
+// route `add auth` registers — kept next to AUTH_FILES's route list so the
+// two are easy to eyeball together when a route changes.
+const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
+  { urlPath: "/auth/register", file: "./auth/register.yaml" },
+  { urlPath: "/auth/login", file: "./auth/login.yaml" },
+  { urlPath: "/auth/refresh", file: "./auth/refresh.yaml" },
+  { urlPath: "/auth/logout", file: "./auth/logout.yaml" },
+  { urlPath: "/auth/forgot-password", file: "./auth/forgot-password.yaml" },
+  { urlPath: "/auth/reset-password", file: "./auth/reset-password.yaml" },
+  { urlPath: "/auth/verify-email", file: "./auth/verify-email.yaml" },
+  { urlPath: "/auth/google/login", file: "./auth/google-login.yaml" },
+  { urlPath: "/auth/google/callback", file: "./auth/google-callback.yaml" },
+  { urlPath: "/users/me", file: "./auth/users-me.yaml" },
+  { urlPath: "/users/me/resend-verification", file: "./auth/users-me-resend-verification.yaml" },
+  { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
+];
 
 // addAuth scaffolds email/password authentication: a users+identities model
 // pair, JWT access tokens, a Redis-backed refresh token store with
@@ -57,6 +76,21 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   patchEnvExample(path.join(projectDir, ".env.example"));
   patchMakefile(path.join(projectDir, "Makefile"));
 
+  let docsMessage = "";
+  const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
+  if (config.features.openapiDocs && fs.existsSync(openapiPath)) {
+    const docsEntries = [
+      { template: "add/auth/docs/schemas.yaml.hbs", output: path.join("docs", "auth", "schemas.yaml") },
+      ...AUTH_OPENAPI_PATHS.map(({ file }) => ({
+        template: `add/auth/docs/${path.basename(file)}.hbs`,
+        output: path.join("docs", "auth", path.basename(file)),
+      })),
+    ];
+    await applyTemplateEntries(projectDir, docsEntries, {});
+    patchOpenapiIndexRaw(openapiPath, config.apiPrefix, AUTH_OPENAPI_PATHS);
+    docsMessage = "\ndocs: docs/auth/*.yaml, wired into docs/openapi.yaml";
+  }
+
   gofmtTree(projectDir);
 
   writeConfig(projectDir, { ...config, features: { ...config.features, auth: true } });
@@ -64,7 +98,8 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
   console.log(
     "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password}, " +
-      "GET /auth/google/{login,callback}, and GET /users/me in cmd/api/main.go"
+      "GET /auth/google/{login,callback}, and GET /users/me in cmd/api/main.go" +
+      docsMessage
   );
   console.log(
     pc.dim(
