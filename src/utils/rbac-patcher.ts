@@ -120,6 +120,27 @@ export function patchUserServiceForRbac(serviceGoPath: string): void {
   fs.writeFileSync(serviceGoPath, content);
 }
 
+// patchUserServiceTestForRbac keeps service_test.go's single NewService call
+// site (newTestService) compiling once patchUserServiceForRbac adds the
+// roleChecker param above — same drift risk the handoff notes called out for
+// middleware.NewAuthz's call sites, just for this signature instead. The fake
+// itself is added here too, not pre-declared unconditionally in the
+// template: golangci-lint's unused check flags an unreferenced type+method
+// pair in the auth-only (pre-rbac) state, since nothing there yet implements
+// or needs a roleChecker.
+export function patchUserServiceTestForRbac(serviceTestGoPath: string): void {
+  let content = fs.readFileSync(serviceTestGoPath, "utf8");
+  const fakeRoles = [
+    "// fakeRoles satisfies role's roleChecker interface structurally.",
+    "type fakeRoles struct{}",
+    "",
+    "func (fakeRoles) CodeExists(context.Context, string) (bool, error) { return true, nil }",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-test-types", fakeRoles, "type fakeRoles struct{}");
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-test-args", "fakeRoles{},", "fakeRoles{},");
+  fs.writeFileSync(serviceTestGoPath, content);
+}
+
 // patchUserDTOForRbac adds the request DTO for PATCH /users/:id/set-role and
 // surfaces Role on the /me response — both gated behind RBAC since
 // model.User has no Role field at all without it.

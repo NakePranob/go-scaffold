@@ -1,0 +1,237 @@
+package user
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"testing"
+	"time"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/config"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// fakeTokenStore = in-memory mock of tokenStore, mirroring redisTokenStore's
+// three-map shape (active / used-tombstone / per-user session set) closely
+// enough to exercise rotation + reuse-detection without a real Redis.
+type fakeTokenStore struct {
+	active   map[string]uuid.UUID
+	used     map[string]uuid.UUID
+	sessions map[uuid.UUID]map[string]struct{}
+}
+
+func newFakeTokenStore() *fakeTokenStore {
+	return &fakeTokenStore{
+		active:   map[string]uuid.UUID{},
+		used:     map[string]uuid.UUID{},
+		sessions: map[uuid.UUID]map[string]struct{}{},
+	}
+}
+
+func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+	f.active[hash] = userID
+	if f.sessions[userID] == nil {
+		f.sessions[userID] = map[string]struct{}{}
+	}
+	f.sessions[userID][hash] = struct{}{}
+	return nil
+}
+func (f *fakeTokenStore) GetRefreshToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
+	id, ok := f.active[hash]
+	return id, ok, nil
+}
+func (f *fakeTokenStore) DeleteRefreshToken(_ context.Context, hash string, userID uuid.UUID) error {
+	delete(f.active, hash)
+	delete(f.sessions[userID], hash)
+	return nil
+}
+func (f *fakeTokenStore) RevokeAllRefreshTokens(_ context.Context, userID uuid.UUID) error {
+	for h := range f.sessions[userID] {
+		delete(f.active, h)
+	}
+	delete(f.sessions, userID)
+	return nil
+}
+func (f *fakeTokenStore) MarkRefreshTokenUsed(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+	f.used[hash] = userID
+	return nil
+}
+func (f *fakeTokenStore) IsRefreshTokenUsed(_ context.Context, hash string) (uuid.UUID, bool, error) {
+	id, ok := f.used[hash]
+	return id, ok, nil
+}
+func (f *fakeTokenStore) SetPasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error {
+	return nil
+}
+func (f *fakeTokenStore) ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error) {
+	return uuid.Nil, false, nil
+}
+func (f *fakeTokenStore) SetEmailVerifyToken(context.Context, string, uuid.UUID, time.Duration) error {
+	return nil
+}
+func (f *fakeTokenStore) ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error) {
+	return uuid.Nil, false, nil
+}
+
+// fakeRepo = mock of the repository interface — only FindByID is exercised
+// by the tests below (Refresh looks the user up after validating the
+// token), the rest just satisfy the interface.
+type fakeRepo struct {
+	user *model.User
+}
+
+func (f *fakeRepo) FindByEmail(context.Context, string) (*model.User, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+func (f *fakeRepo) FindByID(_ context.Context, id uuid.UUID) (*model.User, error) {
+	if f.user != nil && f.user.ID == id {
+		return f.user, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (f *fakeRepo) UpdateUser(context.Context, *model.User) error { return nil }
+func (f *fakeRepo) FindAll(context.Context, int, int) ([]model.User, error) { return nil, nil }
+func (f *fakeRepo) FindIdentity(context.Context, uuid.UUID, model.Provider) (*model.Identity, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+func (f *fakeRepo) FindIdentityByProviderUID(context.Context, model.Provider, string) (*model.Identity, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+func (f *fakeRepo) CreateUserWithIdentity(context.Context, *model.User, *model.Identity) error { return nil }
+func (f *fakeRepo) CreateIdentity(context.Context, *model.Identity) error                      { return nil }
+func (f *fakeRepo) UpdateIdentity(context.Context, *model.Identity) error                      { return nil }
+
+type fakeMailer struct{}
+
+func (fakeMailer) Send(string, string, string) error { return nil }
+
+// go-scaffold:user-service-test-types
+
+// newTestService is the one NewService call site every test below shares —
+// keeping it singular means `add rbac`'s marker patch only has one place to
+// add the roleChecker arg it introduces (patching every call site
+// individually would need a marker-per-callsite, easy to miss one).
+func newTestService(repo repository, tokens tokenStore) *Service {
+	return NewService(
+		repo,
+		tokens,
+		fakeMailer{},
+		config.Config{JWTSecret: "test-secret", JWTAccessTTL: time.Minute, JWTRefreshTTL: time.Hour},
+		// go-scaffold:user-service-test-args
+	)
+}
+
+func status(t *testing.T, err error) int {
+	t.Helper()
+	var appErr *apperror.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *apperror.AppError, got %T: %v", err, err)
+	}
+	return appErr.HTTPStatus
+}
+
+func TestService_Refresh_RotatesTheToken(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	rawOld := "old-refresh-token"
+	if err := tokens.SetRefreshToken(ctx, hashToken(rawOld), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID, Email: "a@example.com"}}, tokens)
+
+	auth, err := svc.Refresh(ctx, rawOld)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if auth.RefreshToken == "" || auth.RefreshToken == rawOld {
+		t.Fatalf("expected a new, different refresh token, got %q", auth.RefreshToken)
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawOld)); ok {
+		t.Fatal("expected the old refresh token to be consumed (no longer active) after rotation")
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(auth.RefreshToken)); !ok {
+		t.Fatal("expected the newly rotated refresh token to be active")
+	}
+}
+
+func TestService_Refresh_ReplayingARotatedOutTokenRevokesEverySession(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	rawOld := "old-refresh-token"
+	rawOtherSession := "another-devices-refresh-token"
+	if err := tokens.SetRefreshToken(ctx, hashToken(rawOld), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := tokens.SetRefreshToken(ctx, hashToken(rawOtherSession), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID, Email: "a@example.com"}}, tokens)
+
+	// rotate rawOld once — legitimate use, consumes + tombstones it
+	if _, err := svc.Refresh(ctx, rawOld); err != nil {
+		t.Fatalf("first refresh: unexpected error: %v", err)
+	}
+
+	// replay the now-rotated-out raw value — this is what happens if it leaked
+	_, err := svc.Refresh(ctx, rawOld)
+	if got := status(t, err); got != http.StatusUnauthorized {
+		t.Fatalf("want 401 replaying a rotated-out token, got %d", got)
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawOtherSession)); ok {
+		t.Fatal("expected reuse of a rotated-out token to revoke every session for that user, but another session's token is still active")
+	}
+}
+
+func TestService_Refresh_UnknownTokenIsRejectedWithoutRevoking(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	rawLegit := "a-legit-session-token"
+	if err := tokens.SetRefreshToken(ctx, hashToken(rawLegit), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID}}, tokens)
+
+	_, err := svc.Refresh(ctx, "never-issued-token")
+	if got := status(t, err); got != http.StatusUnauthorized {
+		t.Fatalf("want 401 for an unrecognized token, got %d", got)
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawLegit)); !ok {
+		t.Fatal("a never-issued token shouldn't revoke unrelated sessions")
+	}
+}
+
+func TestService_LogoutAll_RevokesEverySessionButLeavesOthersAlone(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	otherUserID := uuid.New()
+	tokens := newFakeTokenStore()
+	rawA := "user-session-a"
+	rawB := "user-session-b"
+	rawOther := "other-users-session"
+	for raw, id := range map[string]uuid.UUID{rawA: userID, rawB: userID, rawOther: otherUserID} {
+		if err := tokens.SetRefreshToken(ctx, hashToken(raw), id, time.Hour); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID}}, tokens)
+
+	if err := svc.LogoutAll(ctx, userID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawA)); ok {
+		t.Fatal("expected session A to be revoked")
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawB)); ok {
+		t.Fatal("expected session B to be revoked")
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawOther)); !ok {
+		t.Fatal("expected a different user's session to be untouched by LogoutAll")
+	}
+}
