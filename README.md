@@ -180,6 +180,58 @@ project that was *already* broken (mid-refactor, or `go mod tidy` not run yet)
 is left alone — only a passed-before/broken-after transition is reported. No Go
 on `PATH` means the check is skipped.
 
+### `generate migration <name>` (alias `mig`) — reserve a SQL migration pair
+
+```bash
+go-scaffold generate migration add_status_to_orders
+```
+
+Creates timestamped `migrations/<version>_<name>.up.sql` and `.down.sql` TODO
+stubs. The CLI reserves the names; you own the SQL and should apply it with
+`make migrate-up` (or `migrate -path migrations -database "$DB_DSN" up`).
+
+### `add worker` — add Redis-backed background work
+
+```bash
+go-scaffold add worker
+```
+
+Adds Redis cache/queue support, async email delivery, and `cmd/worker`. It also
+makes `/readyz` report unavailable when Redis is down. Run `go mod tidy` and
+provide `REDIS_URL` before starting the API or worker.
+
+### `add auth` — add email/password authentication
+
+```bash
+go-scaffold add auth
+```
+
+Requires `add worker`. Adds JWT access tokens, Redis-backed refresh-token
+rotation, registration/login/logout, password reset, email verification, and
+Google OAuth routes. Apply the generated migrations; `AUTO_MIGRATE=true` is
+convenient in development, while production should use `migrate up`.
+
+### `add rbac` — add roles and permissions
+
+```bash
+go-scaffold add rbac
+go-scaffold generate module secrets --auth --permission secret:manage
+```
+
+Requires `add auth`. Adds role/permission administration, cached authorization
+middleware, and role assignment. Its migration seeds the default roles and
+permissions, so apply it with `migrate up`: AutoMigrate creates tables but does
+not run SQL seed statements.
+
+### Observability at project creation
+
+```bash
+go-scaffold create my-api --defaults --observability
+```
+
+Opt-in observability adds Prometheus metrics at `/metrics` and OpenTelemetry
+tracing. Tracing is disabled until `OTEL_EXPORTER_OTLP_ENDPOINT` is configured.
+
 ### `remove module <name>` (alias `rm m`) — drop a domain
 
 ```bash

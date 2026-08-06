@@ -16,6 +16,7 @@ const CLI = path.join(ROOT, "bin", "go-scaffold.js");
 
 let passed = 0;
 let scratch;
+let sharedPostgresContainerId = null;
 
 function step(name, fn) {
   process.stdout.write(`- ${name} ... `);
@@ -79,6 +80,13 @@ let sharedRedisContainerId = null;
 let sharedRedisUrl = null;
 
 function cleanup() {
+  if (sharedPostgresContainerId) {
+    try {
+      execFileSync("docker", ["rm", "-f", sharedPostgresContainerId], { stdio: "ignore" });
+    } catch {
+      // best-effort — a failed cleanup here shouldn't mask the real test result
+    }
+  }
   if (sharedRedisContainerId) {
     try {
       execFileSync("docker", ["rm", "-f", sharedRedisContainerId], { stdio: "ignore" });
@@ -209,6 +217,59 @@ try {
   run("docker", ["--version"]);
 } catch {
   hasDocker = false;
+}
+
+// The worker/auth paths boot the generated API, which needs Postgres before
+// it can exercise Redis. CI and contributors should not need a host `psql`
+// installation or a manually-started database just to run this suite: when
+// Docker is available and nothing already owns 5432, provide an isolated DB.
+// An existing container is deliberately reused, matching the Makefile's
+// documented fallback and avoiding a collision with a developer's setup.
+if (hasDocker) {
+  let postgresOn5432;
+  try {
+    postgresOn5432 = run("docker", ["ps", "-q", "--filter", "publish=5432"]).trim().split("\n")[0];
+  } catch {
+    hasDocker = false;
+    console.warn("warning: Docker CLI is installed but its daemon is unavailable; Docker-dependent checks will be skipped");
+  }
+  if (hasDocker && !postgresOn5432) {
+    try {
+      sharedPostgresContainerId = run("docker", [
+        "run",
+        "-d",
+        "-p",
+        "5432:5432",
+        "-e",
+        "POSTGRES_USER=postgres",
+        "-e",
+        "POSTGRES_PASSWORD=postgres",
+        "postgres:16-alpine",
+      ]).trim();
+      let ready = false;
+      for (let i = 0; i < 30; i++) {
+        try {
+          run("docker", ["exec", sharedPostgresContainerId, "pg_isready", "-U", "postgres"]);
+          ready = true;
+          break;
+        } catch {
+          run("sleep", ["0.3"]);
+        }
+      }
+      if (!ready) throw new Error("Postgres container never became ready");
+    } catch (err) {
+      if (sharedPostgresContainerId) {
+        try {
+          run("docker", ["rm", "-f", sharedPostgresContainerId]);
+        } catch {
+          // preserve the original startup error
+        }
+        sharedPostgresContainerId = null;
+      }
+      console.warn(`warning: could not provision smoke-test Postgres (${err.message}); DB-backed checks may be skipped`);
+      hasDocker = false;
+    }
+  }
 }
 
 let hasNpx = true;

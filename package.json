@@ -1,13 +1,13 @@
 {
   "name": "@nakedev/go-scaffold",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/NakePranob/go-scaffold.git"
   },
   "bin": {
-    "go-scaffold": "./bin/go-scaffold.js"
+    "go-scaffold": "bin/go-scaffold.js"
   },
   "files": [
     "dist",
