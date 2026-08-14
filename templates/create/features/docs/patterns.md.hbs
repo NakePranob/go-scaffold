@@ -17,8 +17,9 @@ internal/app/<domain>/
 ├── repository.go       # the only place that touches the DB for this domain, every method takes ctx
 ├── service.go          # business logic; declares the repository interface it needs (mockable in tests)
 ├── handler.go          # HTTP: routing, bind, delegate, respond
-├── service_test.go     # unit test, fake repo, no DB
-└── handler_test.go     # integration test, real Postgres, transaction rolled back per test
+├── service_test.go     # unit test, function-backed repository stub, no DB
+├── handler_test.go     # HTTP unit test, service stub, no DB
+└── repository_test.go  # Postgres integration test against migrated schema
 ```
 
 ### Model
@@ -137,10 +138,12 @@ placeholder fields.
 - Unit and integration tests live in the same directory as the code under
   test (Go convention) — never a separate `test/` folder. `test/` is only
   for e2e black-box suites or fixtures.
-- `service_test.go` uses a fake repository — no DB required, always runs.
-- `handler_test.go` runs against a real Postgres instance inside a
-  transaction that's rolled back after each test — skips automatically if
-  the DB isn't reachable.
+- `service_test.go` uses a function-backed repository stub so each dependency
+  method has independent behavior and argument assertions.
+- `handler_test.go` uses a service stub — HTTP tests never need Postgres.
+- `repository_test.go` runs against a migrated Postgres database inside a
+  transaction that's rolled back after each test. Local runs may skip when
+  `TEST_DB_DSN` is unset; CI sets `REQUIRE_TEST_DB=true` so it must run.
 
 ## Docs Maintenance
 

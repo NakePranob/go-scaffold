@@ -12,14 +12,21 @@
   "files": [
     "dist",
     "templates",
-    "bin"
+    "bin",
+    "scripts",
+    "tests"
   ],
   "type": "commonjs",
+  "packageManager": "pnpm@11.0.7",
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node scripts/smoke-test.mjs",
+    "test": "pnpm run test:unit && pnpm run test:integration && pnpm run test:smoke",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:integration": "node --test tests/integration/*.test.mjs",
+    "test:smoke": "node scripts/smoke-test.mjs",
     "verify": "pnpm run build && pnpm run test",
+    "prepack": "pnpm run build",
     "prepublishOnly": "pnpm run verify"
   },
   "keywords": [
@@ -40,14 +47,16 @@
     "commander": "^15.0.0",
     "fs-extra": "^11.3.0",
     "handlebars": "^4.7.8",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "pluralize": "^8.0.0"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.0.0",
+    "@types/pluralize": "^0.0.33",
     "typescript": "^5.7.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   }
 }

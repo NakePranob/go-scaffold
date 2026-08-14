@@ -33,8 +33,9 @@ func NewService(repo repository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) Create(ctx context.Context) (*model.{{pascalName}}, error) {
-	// TODO: accept and set real fields from createInput
+func (s *Service) Create(ctx context.Context, in createInput) (*model.{{pascalName}}, error) {
+	// TODO: set real fields from in
+	_ = in
 	m := &model.{{pascalName}}{ID: id.New()}
 	if err := s.repo.Create(ctx, m); err != nil {
 		if dberr.IsDuplicate(err) {
@@ -61,12 +62,13 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (*model.{{pascalName}},
 	return m, nil
 }
 
-func (s *Service) Update(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error) {
+func (s *Service) Update(ctx context.Context, id uuid.UUID, in updateInput) (*model.{{pascalName}}, error) {
 	m, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, wrapFindErr(err)
 	}
-	// TODO: apply real fields from updateInput before saving
+	// TODO: apply real fields from in before saving
+	_ = in
 	if err := s.repo.Update(ctx, m); err != nil {
 		if dberr.IsDuplicate(err) {
 			return nil, errConflict()

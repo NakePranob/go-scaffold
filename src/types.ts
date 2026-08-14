@@ -27,14 +27,16 @@ export interface ProjectConfig {
 }
 
 export interface ModuleNaming {
-  /** raw name as passed on the CLI, lowercased (e.g. "order") */
+  /** canonical singular kebab name (e.g. "order-item") */
   name: string;
-  /** Go package name — lowercase, no separators (e.g. "order") */
+  /** Go package name — singular, lowercase, no separators (e.g. "orderitem") */
   pkg: string;
-  /** Go exported type name (e.g. "Order") */
+  /** Singular Go exported type name (e.g. "OrderItem") */
   pascalName: string;
-  /** plural, used for REST route + table name (e.g. "orders") */
+  /** plural kebab name used for REST routes/docs (e.g. "order-items") */
   plural: string;
+  /** plural snake_case database table name (e.g. "order_items") */
+  tableName: string;
   /** SCREAMING_SNAKE prefix for error codes (e.g. "ORDER") */
   errorPrefix: string;
 }

@@ -2,11 +2,14 @@
 
 Gin + GORM backend, scaffolded by [go-scaffold](https://github.com/nakedev/go-scaffold). Organized by feature (domain), Postgres-backed, schema managed with [golang-migrate](https://github.com/golang-migrate/migrate).
 
-This is a bare skeleton — no domain modules yet. Add one with:
+This project starts as a bare skeleton. Add a safe minimal domain with:
 
 ```bash
 go-scaffold generate module orders
 ```
+
+Add endpoints one at a time with `generate method`, or pass `--full` to opt
+into a CRUD skeleton whose DTO fields and business rules remain explicit TODOs.
 
 See `docs/architect/` for the conventions every generated module follows, and `AGENTS.md`/`CLAUDE.md` if you're working with an AI coding agent in this repo.
 
@@ -129,17 +132,23 @@ make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql befo
 
 ## Tests
 
-Integration tests (handler-level) run against a **real Postgres** instance (same engine as prod), each test in a transaction that's rolled back — no leftover rows. If the DB isn't reachable those tests **skip** (unit tests using a fake repo always run).
+Handler and service tests are fast unit tests: handlers depend on a narrow
+service interface, and services use function-backed repository stubs. Neither
+suite requires a database.
 
-They use a **separate `{{dbName}}_test` database**, not the one `DB_DSN` points at. That's deliberate: the harness runs `DropTable` + `AutoMigrate` on every real run, so pointing it at your dev database would wipe whatever `make migrate-up` built there — FK constraints and seed data included. Create it once:
+Repository integration tests run against a **real Postgres** instance using
+the same versioned SQL migrations as production, each test in a transaction
+that's rolled back. Locally they skip when `TEST_DB_DSN` is unset; CI sets
+`REQUIRE_TEST_DB=true`, so a missing or unmigrated database fails instead of
+becoming a false-green skip. Use a separate `{{dbName}}_test` database:
 
 ```bash
 {{#if docker}}
 make docker-up      # local postgres first
 {{/if}}
 make db-create DB_NAME={{dbName}}_test
-make test
-# point somewhere else entirely: TEST_DB_DSN=postgres://... go test ./...
+DB_DSN=postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable make migrate-up
+TEST_DB_DSN=postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable REQUIRE_TEST_DB=true go test ./...
 ```
 
 ## Error payload
@@ -170,4 +179,7 @@ Import `docs/openapi.bundled.yaml` instead. Tools that resolve `$ref` over HTTP 
 go-scaffold generate module orders
 ```
 
-Scaffolds `internal/app/orders/` (model/dto/errors/repository/service/handler + tests), wires it into `cmd/api/main.go` (AutoMigrate, route registration), and appends a migration file. See `docs/architect/patterns.md` for the module shape and the rules for domains with foreign keys.
+Scaffolds the safe minimal `internal/app/order/` module, wires its empty route
+group/model into `cmd/api/main.go`, and appends a migration file. Add endpoints
+with `generate method`; use `--full` only when a CRUD skeleton is intentional.
+See `docs/architect/patterns.md` for the module shape and foreign-key rules.

@@ -29,9 +29,9 @@ put:
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "404": { $ref: '../common/responses.yaml#/NotFoundError' }
 delete:
-  summary: Delete {{pkg}}
+  summary: Delete {{name}}
+  description: Idempotent — deleting an already-missing resource also returns 204.
   operationId: delete{{pascalName}}
   tags: [{{plural}}]
   responses:
-    "204": { description: deleted }
-    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
+    "204": { description: deleted or already absent }

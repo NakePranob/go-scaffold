@@ -1,13 +1,11 @@
 import { MethodNaming, ModuleNaming } from "../types";
+import inflect from "pluralize";
 
-// ponytail: heuristic pluralizer, not a dependency — covers common English
-// nouns (order/user/category/address); irregular plurals still need a manual
-// rename in the generated file, add a dictionary if that becomes frequent.
+// Pluralization must be idempotent because module names may come from the
+// interactive prompt (singular) or a documented/scripted command (often
+// plural). Keep this wrapper exported for callers that only need inflection.
 export function pluralize(word: string): string {
-  if (/[sxz]$/.test(word) || /[^aeiou](ch|sh)$/.test(word)) return word + "es";
-  if (/[^aeiou]y$/.test(word)) return word.slice(0, -1) + "ies";
-  if (word.endsWith("s")) return word;
-  return word + "s";
+  return inflect.plural(word);
 }
 
 export function toPascalCase(value: string): string {
@@ -92,7 +90,7 @@ export function assertNotGoKeyword(ident: string, role: string): void {
 // shadowing the builtin in main.go). Returns true|message for inquirer, and
 // backs the assert in resolveModuleNaming — one source of truth for both.
 export function validateModuleName(rawName: string): string | true {
-  const pkg = toPackageName(rawName);
+  const pkg = toPackageName(inflect.singular(toKebabCase(rawName)));
   if (!pkg) return `invalid module name: "${rawName}" (must contain letters/numbers)`;
   if (/^[0-9]/.test(pkg)) {
     return `"${pkg}" starts with a digit — a Go package name can't, so it won't compile; pick another module name`;
@@ -128,13 +126,16 @@ export function validateApiPrefix(raw: string): string | true {
 export function resolveModuleNaming(rawName: string): ModuleNaming {
   const check = validateModuleName(rawName);
   if (check !== true) throw new Error(check);
-  const pkg = toPackageName(rawName);
+  const singular = inflect.singular(toKebabCase(rawName));
+  const pkg = toPackageName(singular);
+  const plural = inflect.plural(singular);
   return {
-    name: pkg,
+    name: singular,
     pkg,
-    pascalName: toPascalCase(pkg),
-    plural: pluralize(pkg),
-    errorPrefix: pkg.toUpperCase(),
+    pascalName: toPascalCase(singular),
+    plural,
+    tableName: toDbName(plural),
+    errorPrefix: toDbName(singular).toUpperCase(),
   };
 }
 

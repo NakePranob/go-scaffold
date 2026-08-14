@@ -54,13 +54,13 @@ const generate = program
       const target = await select({
         message: "What do you want to generate?",
         choices: [
-          { name: "Module (full CRUD domain)", value: "module" },
+          { name: "Module (safe minimal domain; add methods explicitly)", value: "module" },
           { name: "Method (add one endpoint to an existing module)", value: "method" },
           { name: "Migration (reserve a timestamped up/down SQL file pair)", value: "migration" },
         ],
       });
       if (target === "module") {
-        await generateModule(undefined, { full: true });
+        await generateModule(undefined, { full: false });
       } else if (target === "method") {
         await generateMethod(undefined, undefined, {});
       } else {
@@ -75,11 +75,12 @@ const generate = program
 generate
   .command("module [name]")
   .alias("m")
-  .description("scaffold a domain module — full CRUD by default, or a bare skeleton with --no-full")
+  .description("scaffold a safe minimal domain module; opt into a CRUD skeleton with --full")
   .option(
-    "--no-full",
-    "minimal skeleton (model/errors/repository, no default CRUD) — add endpoints one at a time with `generate method`"
+    "--full",
+    "generate a CRUD skeleton (DTO fields/business rules remain TODO); minimal is the safe default"
   )
+  .option("--no-full", "deprecated compatibility alias; minimal is already the default")
   .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
   .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; implies --auth)")
   .action(async (name, opts) => {

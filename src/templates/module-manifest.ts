@@ -9,6 +9,7 @@ export const MODULE_FILES: { template: string; output: string }[] = [
   { template: "generate/module/handler.go.hbs", output: "handler.go" },
   { template: "generate/module/service_test.go.hbs", output: "service_test.go" },
   { template: "generate/module/handler_test.go.hbs", output: "handler_test.go" },
+  { template: "generate/module/repository_test.go.hbs", output: "repository_test.go" },
 ];
 
 // minimal: same model/errors/repository (generate method's patches assume the
@@ -23,4 +24,5 @@ export const MODULE_FILES_MINIMAL: { template: string; output: string }[] = [
   { template: "generate/module/minimal/handler.go.hbs", output: "handler.go" },
   { template: "generate/module/minimal/service_test.go.hbs", output: "service_test.go" },
   { template: "generate/module/minimal/handler_test.go.hbs", output: "handler_test.go" },
+  { template: "generate/module/repository_test.go.hbs", output: "repository_test.go" },
 ];

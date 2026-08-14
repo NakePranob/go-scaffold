@@ -14,8 +14,8 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          # the test database, not the app's — CI only runs tests, and the
-          # integration harness drops/recreates its tables on every run
+          # repository integration tests run against this isolated database after
+          # applying the same versioned SQL migrations used in production
           POSTGRES_DB: {{dbName}}_test
         ports:
           - 5432:5432
@@ -43,6 +43,19 @@ jobs:
         with:
           version: latest
 
-      # TEST_DB_DSN not set: the default in handler_test.go already points at
-      # localhost:5432/{{dbName}}_test with postgres/postgres, matching the service above
-      - run: go test ./...
+      - name: Install migration runner
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.3
+
+      - name: Apply production migrations to the test database
+        env:
+          DB_DSN: postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable
+        run: |
+          if compgen -G "migrations/*.up.sql" > /dev/null; then
+            migrate -path migrations -database "$DB_DSN" up
+          fi
+
+      - name: Test (required PostgreSQL integration tests cannot skip)
+        env:
+          TEST_DB_DSN: postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable
+          REQUIRE_TEST_DB: "true"
+        run: go test ./...

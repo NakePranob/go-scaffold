@@ -23,6 +23,9 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+      pluralize:
+        specifier: ^8.0.0
+        version: 8.0.0
     devDependencies:
       '@types/fs-extra':
         specifier: ^11.0.4
@@ -30,6 +33,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      '@types/pluralize':
+        specifier: ^0.0.33
+        version: 0.0.33
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -179,6 +185,9 @@ packages:
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
+  '@types/pluralize@0.0.33':
+    resolution: {integrity: sha512-JOqsl+ZoCpP4e8TDke9W79FDcSgPAR0l6pixx2JHkhnRjvShyYiAYw2LVsnA7K08Y6DeOnaU6ujmENO4os/cYg==}
+
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
     engines: {node: '>=8'}
@@ -243,6 +252,10 @@ packages:
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
+
+  pluralize@8.0.0:
+    resolution: {integrity: sha512-Nc3IT5yHzflTfbjgqWcCPpo7DaKy4FnpB0l/zCAW0Tc7jxAiuqSxHasntB3D7887LSrA93kDJ9IXovxJYxyLCA==}
+    engines: {node: '>=4'}
 
   safer-buffer@2.1.2:
     resolution: {integrity: sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==}
@@ -431,6 +444,8 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
+  '@types/pluralize@0.0.33': {}
+
   ansi-regex@5.0.1: {}
 
   ansi-styles@4.3.0:
@@ -487,6 +502,8 @@ snapshots:
   neo-async@2.6.2: {}
 
   picocolors@1.1.1: {}
+
+  pluralize@8.0.0: {}
 
   safer-buffer@2.1.2: {}
 

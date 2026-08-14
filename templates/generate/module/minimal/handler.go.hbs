@@ -8,9 +8,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// service is intentionally empty until `generate method` adds the exact
+// application operations required by this HTTP adapter.
+type service interface {
+	// go-scaffold:service-interface
+}
+
 // Handler = delivery for {{pkg}} (parses HTTP, calls the service, attaches errors for the middleware to render)
 type Handler struct {
-	svc *Service
+	svc service
 {{#if auth}}
 	jwtSecret string
 {{/if}}
@@ -19,7 +25,7 @@ type Handler struct {
 {{/if}}
 }
 
-func NewHandler(svc *Service{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+func NewHandler(svc service{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
 	return &Handler{
 		svc: svc,
 {{#if auth}}

@@ -13,10 +13,9 @@ export interface RemoveModuleOptions {
   yes?: boolean;
 }
 
-// removeModule is the inverse of generateModule: deletes the domain package and
-// pulls its wiring back out of main.go / openapi.yaml / migrations, so dropping
-// a domain is one command instead of hand-editing 3+ files (the error-prone
-// path that produced the duplicate-registration bug in the first place).
+// removeModule deletes application code and reverses generated wiring while
+// preserving immutable migration history and table data. Destructive schema
+// removal must be an explicit new migration, never a deletion of an applied one.
 export async function removeModule(
   rawName: string | undefined,
   opts: RemoveModuleOptions,
@@ -71,23 +70,20 @@ export async function removeModule(
     fs.removeSync(path.join(projectDir, "docs", naming.plural));
   }
 
-  // 4. migration files (up + down) — including the --permission seed
-  // migration, if this module was generated with one.
+  // 4. Migration history is immutable. A migration may already be recorded in
+  // schema_migrations on production databases, so deleting its file would make
+  // existing and fresh environments disagree and can prevent the app booting.
+  // Re-generating the same module reuses this create migration.
   const migrationsDir = path.join(projectDir, "migrations");
-  const removedMigrations: string[] = [];
-  if (fs.existsSync(migrationsDir)) {
-    for (const f of fs.readdirSync(migrationsDir)) {
-      if (
-        f.endsWith(`_create_${naming.plural}.up.sql`) ||
-        f.endsWith(`_create_${naming.plural}.down.sql`) ||
-        f.endsWith(`_add_${naming.plural}_permission.up.sql`) ||
-        f.endsWith(`_add_${naming.plural}_permission.down.sql`)
-      ) {
-        fs.removeSync(path.join(migrationsDir, f));
-        removedMigrations.push(f);
-      }
-    }
-  }
+  const preservedMigrations = fs.existsSync(migrationsDir)
+    ? fs.readdirSync(migrationsDir).filter(
+        (f) =>
+          f.endsWith(`_create_${naming.plural}.up.sql`) ||
+          f.endsWith(`_create_${naming.plural}.down.sql`) ||
+          f.endsWith(`_add_${naming.plural}_permission.up.sql`) ||
+          f.endsWith(`_add_${naming.plural}_permission.down.sql`)
+      )
+    : [];
 
   gofmtTree(projectDir);
 
@@ -95,10 +91,14 @@ export async function removeModule(
   console.log(`  deleted internal/app/${modulePath}/`);
   console.log(`  un-wired cmd/api/main.go`);
   if (fs.existsSync(openapiPath)) console.log(`  un-wired docs/openapi.yaml + deleted docs/${naming.plural}/`);
-  if (removedMigrations.length) console.log(`  deleted ${removedMigrations.join(", ")}`);
+  if (preservedMigrations.length) {
+    console.log(`  preserved migration history: ${preservedMigrations.join(", ")}`);
+  }
   console.log(
     pc.yellow(
-      `\nnote: the ${naming.plural} table (if migrated) is untouched — drop it yourself, or add a down migration`
+      `\nnote: the ${naming.tableName} table and its data are untouched. ` +
+        `To remove them safely, run \`go-scaffold generate migration drop_${naming.tableName}\` ` +
+        `and write an explicit up/down migration.`
     )
   );
 }

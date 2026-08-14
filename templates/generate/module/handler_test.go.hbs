@@ -2,14 +2,9 @@ package {{pkg}}
 
 import (
 	"bytes"
-{{#if permission}}
 	"context"
-{{/if}}
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sync"
 	"testing"
 {{#if auth}}
 	"time"
@@ -23,67 +18,77 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 {{/if}}
 	"github.com/google/uuid"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
-// integration test backed by real Postgres (same engine as prod, no sqlite) — skips if the DB isn't reachable.
-// Runs against its own {{dbName}}_test database, never the one DB_DSN points at: the
-// harness does DropTable+AutoMigrate on every run, which would otherwise wipe the
-// schema `make migrate-up` built in your dev DB (FK constraints, seed data and all).
-// Create it once with `make db-create DB_NAME={{dbName}}_test`, or point TEST_DB_DSN
-// somewhere else.
-var (
-	testDBOnce sync.Once
-	testDB     *gorm.DB
-	testDBErr  error
-)
-
-func dbForTest(t *testing.T) *gorm.DB {
-	t.Helper()
-	testDBOnce.Do(func() {
-		dsn := os.Getenv("TEST_DB_DSN")
-		if dsn == "" {
-			dsn = "postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable"
-		}
-		if testDB, testDBErr = gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true}); testDBErr == nil {
-			// drop first — AutoMigrate can't change an existing column's type, always start from a fresh schema
-			_ = testDB.Migrator().DropTable(&model.{{pascalName}}{})
-			testDBErr = testDB.AutoMigrate(&model.{{pascalName}}{})
-		}
-	})
-	if testDBErr != nil {
-		t.Skipf("postgres not ready (make db-create DB_NAME={{dbName}}_test, or set TEST_DB_DSN): %v", testDBErr)
-	}
-	return testDB
+// serviceStub keeps handler tests at the HTTP boundary. It exercises binding,
+// routing, middleware, status codes, and serialization without a database.
+type serviceStub struct {
+	// Embedding keeps this stub source-compatible when `generate method` adds a
+	// new operation to the handler's service interface. Base CRUD methods below
+	// still override the promoted concrete methods for focused unit tests.
+	*Service
+	createFn func(context.Context, createInput) (*model.{{pascalName}}, error)
+	listFn   func(context.Context, int, int) ([]model.{{pascalName}}, error)
+	getFn    func(context.Context, uuid.UUID) (*model.{{pascalName}}, error)
+	updateFn func(context.Context, uuid.UUID, updateInput) (*model.{{pascalName}}, error)
+	deleteFn func(context.Context, uuid.UUID) error
 }
 
-// setup builds the full stack on a transaction that's rolled back at the end → each test is isolated, no leftover rows
-func setup(t *testing.T) *gin.Engine {
+func (s *serviceStub) Create(ctx context.Context, in createInput) (*model.{{pascalName}}, error) {
+	if s.createFn == nil {
+		panic("unexpected service.Create call")
+	}
+	return s.createFn(ctx, in)
+}
+
+func (s *serviceStub) List(ctx context.Context, limit, offset int) ([]model.{{pascalName}}, error) {
+	if s.listFn == nil {
+		panic("unexpected service.List call")
+	}
+	return s.listFn(ctx, limit, offset)
+}
+
+func (s *serviceStub) Get(ctx context.Context, id uuid.UUID) (*model.{{pascalName}}, error) {
+	if s.getFn == nil {
+		panic("unexpected service.Get call")
+	}
+	return s.getFn(ctx, id)
+}
+
+func (s *serviceStub) Update(ctx context.Context, id uuid.UUID, in updateInput) (*model.{{pascalName}}, error) {
+	if s.updateFn == nil {
+		panic("unexpected service.Update call")
+	}
+	return s.updateFn(ctx, id, in)
+}
+
+func (s *serviceStub) Delete(ctx context.Context, id uuid.UUID) error {
+	if s.deleteFn == nil {
+		panic("unexpected service.Delete call")
+	}
+	return s.deleteFn(ctx, id)
+}
+
+// go-scaffold:service-stub-methods
+
+func setupHandlerTest(t *testing.T, svc service) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	tx := dbForTest(t).Begin()
-	t.Cleanup(func() { tx.Rollback() })
 	r := gin.New()
 	r.Use(middleware.RequestID(), middleware.Error(true))
 {{#if permission}}
-	// stub authz: always grants "{{permission}}" — this test is about the
-	// CRUD handler, not re-proving RBAC (that's covered by the role
-	// package's own tests), so the resolver doesn't need a real DB lookup.
+	// The handler unit test verifies route composition, not the role repository.
 	authz := middleware.NewAuthz(func(_ context.Context, _ string) (map[string]struct{}, error) {
 		return map[string]struct{}{"{{permission}}": {}}, nil
 	}, time.Minute)
 {{/if}}
-	NewHandler(NewService(NewRepository(tx)){{#if auth}}, testJWTSecret{{/if}}{{#if permission}}, authz{{/if}}).Register(r)
+	NewHandler(svc{{#if auth}}, testJWTSecret{{/if}}{{#if permission}}, authz{{/if}}).Register(r)
 	return r
 }
 
 {{#if auth}}
 const testJWTSecret = "test-secret"
 
-// authHeader mints a valid access token signed with testJWTSecret — the
-// route's own RequireAuth(testJWTSecret) (wired in via NewHandler above)
-// verifies against the same secret, so this round-trips for real.
 func authHeader() string {
 	claims := jwt.MapClaims{
 		"typ":  "access",
@@ -97,8 +102,8 @@ func authHeader() string {
 }
 
 {{/if}}
-func do(r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+func doHandlerRequest(r *gin.Engine, method, requestPath, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, requestPath, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 {{#if auth}}
 	req.Header.Set("Authorization", authHeader())
@@ -109,39 +114,53 @@ func do(r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
 }
 
 func TestHandler_Create_OK(t *testing.T) {
-	r := setup(t)
-	w := do(r, http.MethodPost, "/{{plural}}", `{}`)
+	svc := &serviceStub{
+		createFn: func(context.Context, createInput) (*model.{{pascalName}}, error) {
+			return &model.{{pascalName}}{ID: uuid.New()}, nil
+		},
+	}
+	r := setupHandlerTest(t, svc)
+
+	w := doHandlerRequest(r, http.MethodPost, "/{{plural}}", `{}`)
+
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d body=%s", w.Code, w.Body)
 	}
 }
 
 func TestHandler_Get_NotFound(t *testing.T) {
-	r := setup(t)
-	w := do(r, http.MethodGet, "/{{plural}}/"+uuid.NewString(), "")
+	svc := &serviceStub{
+		getFn: func(context.Context, uuid.UUID) (*model.{{pascalName}}, error) {
+			return nil, errNotFound()
+		},
+	}
+	r := setupHandlerTest(t, svc)
+
+	w := doHandlerRequest(r, http.MethodGet, "/{{plural}}/"+uuid.NewString(), "")
+
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d body=%s", w.Code, w.Body)
 	}
 }
 
-func TestHandler_Get_InvalidID(t *testing.T) {
-	r := setup(t)
-	w := do(r, http.MethodGet, "/{{plural}}/not-a-uuid", "")
+func TestHandler_Get_InvalidID_DoesNotCallService(t *testing.T) {
+	r := setupHandlerTest(t, &serviceStub{})
+
+	w := doHandlerRequest(r, http.MethodGet, "/{{plural}}/not-a-uuid", "")
+
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d body=%s", w.Code, w.Body)
 	}
 }
 
 func TestHandler_Delete_OK(t *testing.T) {
-	r := setup(t)
-	created := do(r, http.MethodPost, "/{{plural}}", `{}`)
-	var body struct {
-		ID string `json:"id"`
+	svc := &serviceStub{
+		deleteFn: func(context.Context, uuid.UUID) error { return nil },
 	}
-	if err := json.Unmarshal(created.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
-	w := do(r, http.MethodDelete, "/{{plural}}/"+body.ID, "")
+	r := setupHandlerTest(t, svc)
+
+	w := doHandlerRequest(r, http.MethodDelete, "/{{plural}}/"+uuid.NewString(), "")
+
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("want 204, got %d body=%s", w.Code, w.Body)
 	}

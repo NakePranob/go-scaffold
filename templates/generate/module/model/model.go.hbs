@@ -18,3 +18,10 @@ type {{pascalName}} struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// TableName pins the persistence contract to the versioned SQL migrations.
+// Do not rely on GORM's English inflector: irregular/plural module names must
+// resolve to exactly the same table in development and production.
+func ({{pascalName}}) TableName() string {
+	return "{{tableName}}"
+}

@@ -12,6 +12,7 @@ import {
 import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { gofmtTree } from "../utils/template-renderer";
+import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import {
   promptGetMode,
   promptLookupField,
@@ -21,10 +22,22 @@ import {
 } from "../prompts/generate-wizard";
 import { GetMethodMode, MethodType, ModuleNaming, MethodNaming } from "../types";
 
-// the actual URL the new route answers on — printed so the user can add the
-// matching openapi.yaml entry by hand (methods are deliberately not wired into
-// the spec; see the note in docs/openapi.yaml). Mirrors the paths registered
-// in method-patcher.ts.
+// URL path registered in method-patcher.ts, excluding the project-wide API
+// prefix so it can be passed directly to patchOpenapiIndexRaw.
+function methodRoutePath(
+  naming: ModuleNaming,
+  method: MethodNaming,
+  type: MethodType,
+  getMode?: GetMethodMode,
+  field?: string
+): string {
+  const base = `/${naming.plural}`;
+  if (type === "get" && getMode === "all") return `${base}/${method.pathSegment}`;
+  if (type === "get") return `${base}/${toDbName(field ?? "")}/{${toCamelCase(field ?? "")}}`;
+  if (type === "post") return `${base}/${method.pathSegment}`;
+  return `${base}/{id}/${method.pathSegment}`;
+}
+
 function routeHint(
   naming: ModuleNaming,
   method: MethodNaming,
@@ -33,12 +46,66 @@ function routeHint(
   getMode?: GetMethodMode,
   field?: string
 ): string {
-  const base = apiPrefix ? `/${apiPrefix}/${naming.plural}` : `/${naming.plural}`;
-  if (type === "get" && getMode === "all") return `GET ${base}/${method.pathSegment}`;
-  if (type === "get") return `GET ${base}/${toDbName(field ?? "")}/{${toCamelCase(field ?? "")}}`;
-  if (type === "post") return `POST ${base}/${method.pathSegment}`;
-  if (type === "delete") return `DELETE ${base}/{id}/${method.pathSegment}`;
-  return `${type.toUpperCase()} ${base}/{id}/${method.pathSegment}`;
+  const path = methodRoutePath(naming, method, type, getMode, field);
+  const prefixed = apiPrefix ? `/${apiPrefix}${path}` : path;
+  return `${type.toUpperCase()} ${prefixed}`;
+}
+
+function methodOpenapiDocument(
+  naming: ModuleNaming,
+  method: MethodNaming,
+  type: MethodType,
+  getMode?: GetMethodMode,
+  field?: string
+): string {
+  const pathParameters: string[] = [];
+  if (type !== "get" || getMode !== "all") {
+    const parameter = type === "get" ? toCamelCase(field ?? "") : "id";
+    pathParameters.push(
+      "parameters:",
+      `  - name: ${parameter}`,
+      "    in: path",
+      "    required: true",
+      "    schema:",
+      type === "get" ? "      type: string" : "      type: string\n      format: uuid"
+    );
+  }
+
+  const operation = [
+    `${type}:`,
+    `  summary: TODO document ${method.name}`,
+    `  operationId: ${method.handlerName}${naming.pascalName}`,
+    `  tags: [${naming.plural}]`,
+  ];
+  if (type === "post") {
+    operation.push(
+      "  requestBody:",
+      "    required: true",
+      "    content:",
+      "      application/json:",
+      "        schema:",
+      "          type: object",
+      "          description: TODO define request fields"
+    );
+  }
+
+  const status = type === "delete" ? "204" : type === "post" ? "201" : "200";
+  operation.push("  responses:", `    \"${status}\":`, `      description: ${type === "delete" ? "completed or already absent" : "TODO define response"}`);
+  if (type !== "delete") {
+    operation.push(
+      "      content:",
+      "        application/json:",
+      "          schema:",
+      "            type: object",
+      "            description: TODO replace with the method response schema"
+    );
+  }
+  operation.push("    \"400\": { $ref: '../../common/responses.yaml#/ValidationError' }");
+  if (type === "get" || type === "put" || type === "patch") {
+    operation.push("    \"404\": { $ref: '../../common/responses.yaml#/NotFoundError' }");
+  }
+
+  return [...pathParameters, ...operation, ""].join("\n");
 }
 
 export interface GenerateMethodOptions {
@@ -88,20 +155,33 @@ export async function generateMethod(
   if (field) assertNotGoKeyword(toCamelCase(field), "lookup field");
 
   const method = resolveMethodNaming(methodNameArg ?? (await promptMethodName()));
+  const docsRelativePath = config.features.openapiDocs
+    ? `${naming.plural}/methods/${method.pathSegment}.yaml`
+    : undefined;
+  if (docsRelativePath && fs.existsSync(path.join(projectDir, "docs", docsRelativePath))) {
+    throw new Error(`OpenAPI method document already exists: docs/${docsRelativePath}`);
+  }
 
   const checkBefore = typeChecks(projectDir);
   patchMethod(paths, naming, method, { type, getMode, field }, config.goModule);
   gofmtTree(projectDir);
   assertNoDrift(projectDir, checkBefore, config);
 
+  if (docsRelativePath) {
+    const docsPath = path.join(projectDir, "docs", docsRelativePath);
+    fs.outputFileSync(docsPath, methodOpenapiDocument(naming, method, type, getMode, field));
+    patchOpenapiIndexRaw(path.join(projectDir, "docs", "openapi.yaml"), config.apiPrefix, [
+      {
+        urlPath: methodRoutePath(naming, method, type, getMode, field),
+        file: `./${docsRelativePath}`,
+      },
+    ]);
+  }
+
   console.log(pc.green(`\nadded "${method.name}" to internal/app/${modulePath}/`));
   console.log(`route: ${routeHint(naming, method, type, config.apiPrefix, getMode, field)}`);
-  if (config.features.openapiDocs) {
-    console.log(
-      pc.yellow(
-        `docs: add this route to docs/openapi.yaml by hand — \`generate method\` doesn't touch the spec`
-      )
-    );
+  if (docsRelativePath) {
+    console.log(pc.green(`docs: docs/${docsRelativePath} (wired into docs/openapi.yaml)`));
   }
   console.log(pc.dim(`\nnext: fill in the TODO in service.go, then \`go build ./...\` / \`go test ./...\``));
 }

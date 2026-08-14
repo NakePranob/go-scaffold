@@ -7,9 +7,12 @@ const DTO_MARKER = "// go-scaffold:dto";
 const REPO_INTERFACE_MARKER = "// go-scaffold:repository-interface";
 const REPO_IMPL_MARKER = "// go-scaffold:repository-methods";
 const SERVICE_MARKER = "// go-scaffold:service-methods";
+const SERVICE_INTERFACE_MARKER = "// go-scaffold:service-interface";
 const HANDLER_ROUTES_MARKER = "// go-scaffold:handler-routes";
 const HANDLER_FUNCS_MARKER = "// go-scaffold:handler-funcs";
-const FAKE_REPO_MARKER = "// go-scaffold:fake-repo-methods";
+const REPOSITORY_STUB_FIELDS_MARKER = "// go-scaffold:repository-stub-fields";
+const REPOSITORY_STUB_METHODS_MARKER = "// go-scaffold:repository-stub-methods";
+const LEGACY_FAKE_REPO_METHODS_MARKER = "// go-scaffold:fake-repo-methods";
 const UNUSED_G_LINE = "\t_ = g\n";
 
 // writeHandler ensures whatever packages the new handler code references are
@@ -78,6 +81,54 @@ export function patchMethod(
   } else {
     patchDelete(paths, method, goModule);
   }
+  patchHandlerServiceInterface(paths.handlerPath, naming, method, opts, goModule);
+}
+
+function patchHandlerServiceInterface(
+  handlerPath: string,
+  naming: ModuleNaming,
+  method: MethodNaming,
+  opts: MethodPatchOptions,
+  goModule: string
+): void {
+  let signature: string;
+  let needsModel = true;
+  let needsUUID = false;
+
+  if (opts.type === "get" && opts.getMode === "all") {
+    signature = `${method.pascalName}(context.Context, int, int) ([]model.${naming.pascalName}, error)`;
+  } else if (opts.type === "get") {
+    signature = `${method.pascalName}(context.Context, string) (*model.${naming.pascalName}, error)`;
+  } else if (opts.type === "post") {
+    signature = `${method.pascalName}(context.Context, ${method.pascalName}Input) (*model.${naming.pascalName}, error)`;
+  } else if (opts.type === "put" || opts.type === "patch") {
+    signature = `${method.pascalName}(context.Context, uuid.UUID) (*model.${naming.pascalName}, error)`;
+    needsUUID = true;
+  } else {
+    signature = `${method.pascalName}(context.Context, uuid.UUID) error`;
+    needsModel = false;
+    needsUUID = true;
+  }
+
+  let handler = fs.readFileSync(handlerPath, "utf8");
+  if (!hasMarker(handler, SERVICE_INTERFACE_MARKER)) {
+    // Projects scaffolded before the narrow service interface stored *Service
+    // directly. The concrete type already exposes generated methods, so there
+    // is no interface declaration to patch and no migration is required.
+    if (handler.includes("svc *Service")) return;
+    throw new Error(
+      `marker "${SERVICE_INTERFACE_MARKER}" not found and Handler does not use legacy *Service wiring`
+    );
+  }
+  handler = insertBeforeMarker(handler, SERVICE_INTERFACE_MARKER, signature);
+  handler = ensureImport(handler, "context");
+  if (needsModel) {
+    handler = ensureImport(handler, `${goModule}/internal/app/${naming.pkg}/model`);
+  }
+  if (needsUUID) {
+    handler = ensureImport(handler, "github.com/google/uuid");
+  }
+  fs.writeFileSync(handlerPath, handler);
 }
 
 function patchGetAll(paths: MethodPatchPaths, naming: ModuleNaming, method: MethodNaming, goModule: string): void {
@@ -161,26 +212,50 @@ function patchGetOne(
     `FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error)`
   );
 
-  // the interface just grew, so the hand-written fakeRepo mock in
-  // service_test.go needs a matching stub or the test file stops compiling
+  // The repository interface just grew, so the test double needs a matching
+  // method or focused service tests stop compiling. New projects use a
+  // function-backed stub; projects scaffolded before that refactor retain the
+  // old fakeRepo marker and error behavior.
   let serviceTest = fs.readFileSync(paths.serviceTestPath, "utf8");
-  serviceTest = insertBeforeMarker(
-    serviceTest,
-    FAKE_REPO_MARKER,
-    [
-      // nolint: only matters for a minimal module (fakeRepo never instantiated
-      // yet, so unused flags every one of its methods individually); harmless
-      // no-op on a full module where fakeRepo is already in use.
-      `//nolint:unused`,
-      `func (f *fakeRepo) FindBy${fieldPascal}(context.Context, string) (*model.${naming.pascalName}, error) {`,
-      `\tif f.err != nil {`,
-      `\t\treturn nil, f.err`,
-      `\t}`,
-      `\treturn f.m, nil`,
-      `}`,
-      ``,
-    ].join("\n")
-  );
+  if (
+    hasMarker(serviceTest, REPOSITORY_STUB_FIELDS_MARKER) &&
+    hasMarker(serviceTest, REPOSITORY_STUB_METHODS_MARKER)
+  ) {
+    serviceTest = insertBeforeMarker(
+      serviceTest,
+      REPOSITORY_STUB_FIELDS_MARKER,
+      `findBy${fieldPascal}Fn func(context.Context, string) (*model.${naming.pascalName}, error)`
+    );
+    serviceTest = insertBeforeMarker(
+      serviceTest,
+      REPOSITORY_STUB_METHODS_MARKER,
+      [
+        `//nolint:unused`,
+        `func (s *repositoryStub) FindBy${fieldPascal}(ctx context.Context, value string) (*model.${naming.pascalName}, error) {`,
+        `\tif s.findBy${fieldPascal}Fn == nil {`,
+        `\t\tpanic("unexpected repository.FindBy${fieldPascal} call")`,
+        `\t}`,
+        `\treturn s.findBy${fieldPascal}Fn(ctx, value)`,
+        `}`,
+        ``,
+      ].join("\n")
+    );
+  } else if (hasMarker(serviceTest, LEGACY_FAKE_REPO_METHODS_MARKER)) {
+    serviceTest = insertBeforeMarker(
+      serviceTest,
+      LEGACY_FAKE_REPO_METHODS_MARKER,
+      [
+        `func (f *fakeRepo) FindBy${fieldPascal}(context.Context, string) (*model.${naming.pascalName}, error) {`,
+        `\treturn nil, f.err`,
+        `}`,
+        ``,
+      ].join("\n")
+    );
+  } else {
+    throw new Error(
+      `neither current repository stub markers nor legacy "${LEGACY_FAKE_REPO_METHODS_MARKER}" found in ${paths.serviceTestPath}`
+    );
+  }
   fs.writeFileSync(paths.serviceTestPath, serviceTest);
 
   service = insertBeforeMarker(
@@ -376,6 +451,7 @@ export function markersPresent(handlerPath: string, servicePath: string): boolea
   return (
     hasMarker(handler, HANDLER_ROUTES_MARKER) &&
     hasMarker(handler, HANDLER_FUNCS_MARKER) &&
+    (hasMarker(handler, SERVICE_INTERFACE_MARKER) || handler.includes("svc *Service")) &&
     hasMarker(service, SERVICE_MARKER) &&
     hasMarker(service, REPO_INTERFACE_MARKER)
   );

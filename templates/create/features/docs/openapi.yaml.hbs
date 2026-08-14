@@ -1,11 +1,10 @@
 # ponytail: hand-written, not generated from annotations — cheap while the
-# endpoint count is low. Ceiling: must be updated by hand whenever an
-# endpoint/DTO changes beyond what `generate module` scaffolds.
+# endpoint count is low. Generated module/method stubs keep the index wired,
+# but request/response schemas still need to be completed with the code.
 # Switch to swaggo (comment-generated) if drift becomes a recurring problem.
 # multi-file: split by domain module (health/<domain>) + common/ for shared
-# pieces — this file is just the index. `generate module <name>`
-# adds its paths/schemas here automatically; `generate method` does not
-# (endpoint-specific docs stay hand-written).
+# pieces — this file is just the index. `generate module` and `generate method`
+# add path entries automatically.
 openapi: 3.0.3
 info:
   title: {{projectName}} API

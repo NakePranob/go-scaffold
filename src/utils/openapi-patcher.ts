@@ -43,7 +43,27 @@ export function patchOpenapiIndex(openapiPath: string, naming: ModuleNaming, api
 export function unpatchOpenapiIndex(openapiPath: string, naming: ModuleNaming, apiPrefix: string): void {
   const content = fs.readFileSync(openapiPath, "utf8");
   const { paths, schemas } = openapiLines(naming, apiPrefix);
-  fs.writeFileSync(openapiPath, removeLines(content, [...paths, ...schemas]));
+  const withoutKnownEntries = removeLines(content, [...paths, ...schemas]);
+
+  // `generate method` can add any number of module-specific path documents.
+  // Remove every two-line path/$ref block owned by this module, otherwise the
+  // index keeps dangling references after the docs folder is deleted.
+  const lines = withoutKnownEntries.split("\n");
+  const moduleRefPrefix = `./${naming.plural}/`;
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const current = lines[i];
+    const next = lines[i + 1];
+    const isPathKey = /^\s*\/[^:]+:\s*$/.test(current);
+    const refMatch = next?.match(/^\s*\$ref:\s*['"]([^'"]+)['"]\s*$/);
+    if (isPathKey && refMatch?.[1].startsWith(moduleRefPrefix)) {
+      i += 1;
+      continue;
+    }
+    kept.push(current);
+  }
+
+  fs.writeFileSync(openapiPath, kept.join("\n"));
 }
 
 // patchOpenapiIndexRaw wires hand-written path docs into the index — used by

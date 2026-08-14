@@ -87,25 +87,26 @@ directory layout if missing).
 ### `generate module <name>` (alias `m`) — add a domain module
 
 ```bash
-go-scaffold generate module orders                  # full CRUD (default)
-go-scaffold generate module orders --no-full         # minimal skeleton — add endpoints with `generate method`
+go-scaffold generate module orders                  # safe minimal module (default)
+go-scaffold generate module orders --full           # opt-in CRUD skeleton
 ```
 
-Full CRUD (default) scaffolds:
+`--full` scaffolds:
 
 ```text
-internal/app/orders/
+internal/app/order/
 ├── model/model.go      # domain model + GORM table (id/created_at/updated_at — add real fields yourself; a folder so multi-table domains can add more files)
 ├── dto.go               # request/response structs (empty stubs — add real fields yourself)
-├── errors.go             # ORDERS_NOT_FOUND / ORDERS_CONFLICT / ORDERS_HAS_REFERENCES
+├── errors.go             # ORDER_NOT_FOUND / ORDER_CONFLICT / ORDER_HAS_REFERENCES
 ├── repository.go         # GORM data access
 ├── service.go            # business logic + repository interface (mockable)
 ├── handler.go            # Gin routes, registered under the project's API prefix
-├── service_test.go       # unit test, fake repo
-└── handler_test.go       # integration test, real Postgres, tx rollback
+├── service_test.go       # unit test, function-backed repository stub
+├── handler_test.go       # HTTP unit test, service stub, no DB
+└── repository_test.go    # Postgres integration test against migrated schema
 ```
 
-`--no-full` scaffolds the same `model`/`errors`/`repository` (so `generate
+The default minimal mode scaffolds the same `model`/`errors`/`repository` (so `generate
 method` always has a full data-access surface to call), but `dto`/`service`/
 `handler` start empty — no default CRUD, no routes, just the plumbing
 (`Register()`, the `repository` interface, `wrapFindErr`) that `generate
@@ -145,7 +146,7 @@ overwrites a method with the same name; picks a different one or errors.
 | `--type` | Route | What's generated |
 |---|---|---|
 | `get --get-mode all` | `GET /<plural>/<kebab-name>` | reuses `FindAll` — TODO to add real filtering |
-| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | a real `FindBy<F>` query added to the repository (+ its interface + `fakeRepo` test stub) |
+| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | a real `FindBy<F>` query added to the repository (+ its interface + function-backed repository test stub) |
 | `post` | `POST /<plural>/<kebab-name>` | adds a body DTO; service is a TODO stub |
 | `put` / `patch` | `<VERB> /<plural>/:id/<kebab-name>` | finds by id, TODO before saving (safe no-op until implemented) |
 | `delete` | `DELETE /<plural>/:id/<kebab-name>` | TODO stub |
@@ -154,8 +155,9 @@ Business logic is always left as a `TODO`-marked stub that compiles and
 returns a clean `500` rather than inventing behavior — see
 `docs/architect/patterns.md` in the generated project.
 
-`generate method` prints the route it added but does **not** touch
-`docs/openapi.yaml` — endpoint-specific spec entries stay hand-written.
+When OpenAPI docs are enabled, `generate method` also creates a valid TODO stub
+under `docs/<plural>/methods/` and wires the route into `docs/openapi.yaml`.
+Replace its placeholder request/response schemas while implementing the TODO.
 
 **Drift check** — `generate` type-checks the project (`go vet ./...`) before and
 after it writes. If the project was fine beforehand and the generated code
@@ -240,9 +242,11 @@ go-scaffold rm m orders --yes             # skip the confirm
 ```
 
 The inverse of `generate module`: deletes `internal/app/<name>/` and reverses
-everything that was wired up — the import/AutoMigrate/route in `main.go`, the
-paths/schemas in `docs/openapi.yaml`, the per-module docs folder, and the
-`create_<plural>` migration. Restores the `_ = api` placeholder if it was the
+the import/AutoMigrate/route in `main.go`, paths/schemas in `docs/openapi.yaml`,
+and the per-module docs folder. **Existing migrations are preserved** because
+production may already have recorded those immutable versions. The table/data
+are also untouched; create a new `generate migration drop_<table>` migration
+when removal is intentional. Restores the `_ = api` placeholder if it was the
 last module, so the project still builds. Use this instead of hand-deleting
 the folder — a partial hand-delete leaves stale wiring that duplicates on the
 next `generate module` (which would panic gin at startup).

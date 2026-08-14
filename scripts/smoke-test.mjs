@@ -323,9 +323,20 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
   // first in main()) — needs a real DB up before it'll boot far enough to
   // reach the readyz check this step is actually testing. Let the Makefile
   // target handle its own local-psql-vs-docker fallback, same as every other
-  // step that needs a DB.
+  // step that needs a DB. Verify the selected container sees the database so
+  // this test cannot silently depend on state left by an earlier smoke run.
   run("make", ["db-drop"], fullApp);
-  run("make", ["db-create"], fullApp);
+  const dbCreateOutput = run("make", ["db-create"], fullApp);
+  const postgresContainer = run("docker", ["ps", "-q", "--filter", "publish=5432"])
+    .trim()
+    .split("\n")[0];
+  const createdDatabase = run(
+    "docker",
+    ["exec", postgresContainer, "psql", "-U", "postgres", "-d", "postgres", "-Atc", "SELECT datname FROM pg_database WHERE datname = 'full_app'"],
+  ).trim();
+  if (createdDatabase !== "full_app") {
+    throw new Error(`db-create reported success but full_app is absent:\n${dbCreateOutput}`);
+  }
 
   // no --rm: this step stops the container mid-test (to prove readyz notices
   // Redis going down) then starts it again. It also stays alive past the end
@@ -350,9 +361,9 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
       "bash",
       [
         "-c",
-        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & sleep 3; ` +
+        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & API_PID=$!; sleep 3; ` +
           "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
-          "lsof -ti:8080 | xargs -r kill -9; " +
+          "pkill -TERM -P $API_PID 2>/dev/null || true; kill -TERM $API_PID 2>/dev/null || true; wait $API_PID 2>/dev/null || true; " +
           "echo \"READYZ=$CODE\"",
       ],
       fullApp
@@ -364,9 +375,9 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
       "bash",
       [
         "-c",
-        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & sleep 3; ` +
+        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & API_PID=$!; sleep 3; ` +
           "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
-          "lsof -ti:8080 | xargs -r kill -9; " +
+          "pkill -TERM -P $API_PID 2>/dev/null || true; kill -TERM $API_PID 2>/dev/null || true; wait $API_PID 2>/dev/null || true; " +
           "echo \"READYZ=$CODE\"",
       ],
       fullApp
@@ -1148,9 +1159,9 @@ step(
     // invalid permission code shape.
     expectThrows(() => goScaffold(["generate", "module", "shouldfail2", "--auth", "--permission", "Not Valid"], fullApp), "invalid permission code");
 
-    goScaffold(["generate", "module", "cart", "--auth"], fullApp);
-    goScaffold(["generate", "module", "secret", "--auth", "--permission", "secret:manage"], fullApp);
-    const noteOut = goScaffold(["generate", "module", "note"], fullApp);
+    goScaffold(["generate", "module", "cart", "--full", "--auth"], fullApp);
+    goScaffold(["generate", "module", "secret", "--full", "--auth", "--permission", "secret:manage"], fullApp);
+    const noteOut = goScaffold(["generate", "module", "note", "--full"], fullApp);
     if (!noteOut.includes("PUBLIC")) throw new Error(`expected a PUBLIC-route reminder since fullApp already has auth installed, got:\n${noteOut}`);
 
     assertFileContains(path.join(fullApp, "internal", "app", "cart", "handler.go"), "middleware.RequireAuth(h.jwtSecret)");
@@ -1208,7 +1219,7 @@ step(
 );
 
 step("generate module order (full CRUD)", () => {
-  goScaffold(["generate", "module", "order"], fullApp);
+  goScaffold(["generate", "module", "order", "--full"], fullApp);
 });
 
 step("full module: docs wired into openapi.yaml", () => {
@@ -1240,7 +1251,7 @@ step("re-generating after deleting only the folder doesn't duplicate wiring (wou
   // simulate: user rm -rf's the module dir but main.go/openapi.yaml still
   // reference it, then re-runs generate module. Must stay a single Register.
   rmSync(path.join(fullApp, "internal", "app", "order"), { recursive: true, force: true });
-  goScaffold(["generate", "module", "order"], fullApp);
+  goScaffold(["generate", "module", "order", "--full"], fullApp);
   const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8");
   const registers = (mainGo.match(/order\.NewHandler\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected exactly 1 order route registration, got ${registers}`);
@@ -1345,7 +1356,14 @@ step(
       throw new Error(`expected a "migration version check" error in the boot log, got:\n${beforeLog}`);
     }
 
-    run("migrate", ["-path", "migrations", "-database", "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable", "up"], fullApp);
+    const migratedDSN = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    run("migrate", ["-path", "migrations", "-database", migratedDSN, "up"], fullApp);
+    // Repository integration tests use the production migration schema and are
+    // required here — no AutoMigrate and no false-green skip.
+    run("go", ["test", "-count=1", "./..."], fullApp, {
+      TEST_DB_DSN: migratedDSN,
+      REQUIRE_TEST_DB: "true",
+    });
 
     const after = run(
       "bash",
@@ -1355,13 +1373,14 @@ step(
         // has run earlier in this suite) — `make run` loads it from there.
         "make run >/tmp/go-scaffold-smoke-boot.log 2>&1 & sleep 3; " +
           "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
+          "CREATE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/v1/orders -H 'Content-Type: application/json' -d '{}' 2>/dev/null); CREATE=${CREATE:-000}; " +
           "lsof -ti:8080 | xargs -r kill -9; " +
-          "echo \"READYZ=$CODE\"",
+          "echo \"READYZ=$CODE CREATE=$CREATE\"",
       ],
       fullApp
     );
-    if (!/READYZ=200/.test(after)) {
-      throw new Error(`expected the server to boot once migrated (READYZ=200), got: ${after}`);
+    if (!/READYZ=200 CREATE=201/.test(after)) {
+      throw new Error(`expected migrated schema to boot and serve CRUD (READYZ=200 CREATE=201), got: ${after}`);
     }
 
     // give Postgres a moment to notice the killed connection before db-drop
@@ -1382,12 +1401,15 @@ for (const [name, args] of Object.entries({
   });
 }
 
-step("after 5 generate method calls: build + vet + gofmt + test", () => {
+step("after 5 generate method calls: build + vet + gofmt + test + OpenAPI bundle", () => {
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
   const dirty = run("gofmt", ["-l", "."], fullApp).trim();
   if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
   run("go", ["test", "./..."], fullApp);
+  if (hasNpx) {
+    run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+  }
 });
 
 step(
@@ -1455,7 +1477,9 @@ step("custom prefix: generate module + method, routes land under /beta", () => {
   const mainGo = readFileSync(path.join(betaApp, "cmd", "api", "main.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/beta")')) throw new Error('expected api := r.Group("/beta") in main.go');
   const openapi = readFileSync(path.join(betaApp, "docs", "openapi.yaml"), "utf8");
-  if (!openapi.includes("/beta/products:")) throw new Error("expected /beta/products in openapi.yaml");
+  if (!openapi.includes("/beta/products/status/{status}:")) {
+    throw new Error("expected generated method path under /beta/products in openapi.yaml");
+  }
   run("go", ["build", "./..."], betaApp);
   run("go", ["vet", "./..."], betaApp);
 });
@@ -1487,7 +1511,7 @@ step(
       if (lintOut.trim() && !lintOut.includes("0 issues")) throw new Error(`expected 0 lint issues, got:\n${lintOut}`);
     }
 
-    goScaffold(["generate", "module", "widget"], obsApp);
+    goScaffold(["generate", "module", "widget", "--full"], obsApp);
     run("go", ["build", "./..."], obsApp);
 
     run("make", ["db-create"], obsApp);
@@ -1533,7 +1557,7 @@ step("create --api-prefix '' scaffolds routes with no prefix at all", () => {
   goScaffold(["create", "noprefix-app", "--defaults", "--api-prefix", ""], scratch);
   const app = path.join(scratch, "noprefix-app");
   run("go", ["mod", "tidy"], app);
-  goScaffold(["generate", "module", "widget"], app);
+  goScaffold(["generate", "module", "widget", "--full"], app);
   const mainGo = readFileSync(path.join(app, "cmd", "api", "main.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/")')) throw new Error('expected api := r.Group("/") in main.go');
   const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
@@ -1549,7 +1573,7 @@ step("create --api-prefix api/v1 supports multi-segment prefixes (gin joins them
   const cfg = JSON.parse(readFileSync(path.join(app, "go-scaffold.config.json"), "utf8"));
   if (cfg.apiPrefix !== "api/v1") throw new Error(`expected leading/trailing slashes stripped, got "${cfg.apiPrefix}"`);
   run("go", ["mod", "tidy"], app);
-  goScaffold(["generate", "module", "order"], app);
+  goScaffold(["generate", "module", "order", "--full"], app);
   const mainGo = readFileSync(path.join(app, "cmd", "api", "main.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/api/v1")')) throw new Error('expected api := r.Group("/api/v1") in main.go');
   const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
@@ -1558,15 +1582,15 @@ step("create --api-prefix api/v1 supports multi-segment prefixes (gin joins them
   run("go", ["vet", "./..."], app);
 });
 
-step("create --no-full minimal module layers up to full build", () => {
+step("default minimal module layers up to full build", () => {
   goScaffold(["create", "min-app", "--defaults"], scratch);
   const minApp = path.join(scratch, "min-app");
   run("go", ["mod", "tidy"], minApp);
-  goScaffold(["generate", "module", "widget", "--no-full"], minApp);
+  goScaffold(["generate", "module", "widget"], minApp);
   run("go", ["build", "./..."], minApp);
   if (hasGolangciLint) {
     // bare minimal module, zero methods yet: the ahead-of-use plumbing
-    // (fakeRepo, test harness, wrapFindErr, response/toResponse) must not
+    // (repository stub, test harness, wrapFindErr, response/toResponse) must not
     // trip `unused` before anything has wired it in.
     const out = run("golangci-lint", ["run"], minApp);
     if (out.trim() && !out.includes("0 issues")) throw new Error(`bare minimal module: expected 0 issues, got:\n${out}`);
@@ -1621,7 +1645,10 @@ step("generate fails loudly when the project's shared/ layer has drifted", () =>
   // the generated handler_test.go builds the middleware chain by hand using
   // generate module's frozen template, which doesn't know about the mutation
   // above — `go build` wouldn't see it (test file), `go vet` does.
-  expectThrows(() => goScaffold(["generate", "module", "order"], app), "drift");
+  expectThrows(
+    () => goScaffold(["generate", "module", "order", "--full"], app),
+    "drift"
+  );
 });
 
 step("generate doesn't blame itself for a project that was already broken", () => {
