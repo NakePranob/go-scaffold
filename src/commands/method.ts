@@ -5,10 +5,10 @@ import { readConfig } from "../utils/config";
 import {
   assertNotGoKeyword,
   resolveMethodNaming,
-  resolveModuleNaming,
   toCamelCase,
   toDbName,
 } from "../utils/naming";
+import { resolveProjectModuleNaming } from "../utils/module-location";
 import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { gofmtTree } from "../utils/template-renderer";
@@ -59,15 +59,25 @@ function methodOpenapiDocument(
   field?: string
 ): string {
   const pathParameters: string[] = [];
-  if (type !== "get" || getMode !== "all") {
-    const parameter = type === "get" ? toCamelCase(field ?? "") : "id";
+  if (type === "get" && getMode === "one") {
+    const parameter = toCamelCase(field ?? "");
     pathParameters.push(
       "parameters:",
       `  - name: ${parameter}`,
       "    in: path",
       "    required: true",
       "    schema:",
-      type === "get" ? "      type: string" : "      type: string\n      format: uuid"
+      "      type: string"
+    );
+  } else if (type === "put" || type === "patch" || type === "delete") {
+    pathParameters.push(
+      "parameters:",
+      "  - name: id",
+      "    in: path",
+      "    required: true",
+      "    schema:",
+      "      type: string",
+      "      format: uuid"
     );
   }
 
@@ -121,7 +131,7 @@ export async function generateMethod(
   projectDir: string = process.cwd()
 ): Promise<void> {
   const config = readConfig(projectDir);
-  const naming = resolveModuleNaming(moduleNameArg ?? (await promptModuleName()));
+  const naming = resolveProjectModuleNaming(projectDir, moduleNameArg ?? (await promptModuleName()));
   const modulePath = naming.pkg;
 
   const moduleDir = path.join(projectDir, "internal", "app", modulePath);

@@ -139,6 +139,65 @@ export function resolveModuleNaming(rawName: string): ModuleNaming {
   };
 }
 
+function legacyPluralize(word: string): string {
+  if (/[sxz]$/.test(word) || /[^aeiou](ch|sh)$/.test(word)) return word + "es";
+  if (/[^aeiou]y$/.test(word)) return word.slice(0, -1) + "ies";
+  if (word.endsWith("s")) return word;
+  return word + "s";
+}
+
+function resolveLegacyModuleNaming(rawName: string): ModuleNaming {
+  const pkg = toPackageName(rawName);
+  const plural = legacyPluralize(pkg);
+  return {
+    name: pkg,
+    pkg,
+    pascalName: toPascalCase(pkg),
+    plural,
+    tableName: toDbName(plural),
+    errorPrefix: pkg.toUpperCase(),
+  };
+}
+
+// Projects generated before canonical inflection used the raw input as the Go
+// package name. Prefer the canonical package when present, but keep locating
+// legacy plural packages so upgrade does not make method/remove commands lose
+// sight of existing code. Two matches are unsafe: silently choosing one can
+// patch or delete the wrong module.
+export function resolveExistingModuleNaming(rawName: string, existingPackages: string[]): ModuleNaming {
+  const requestedLegacy = resolveLegacyModuleNaming(rawName);
+  const existing = new Set(existingPackages);
+  let canonical: ModuleNaming;
+  try {
+    canonical = resolveModuleNaming(rawName);
+  } catch (error) {
+    if (existing.has(requestedLegacy.pkg)) return requestedLegacy;
+    throw error;
+  }
+
+  const aliases = existingPackages.filter((pkg) => {
+    if (pkg === canonical.pkg) return false;
+    try {
+      return resolveModuleNaming(pkg).pkg === canonical.pkg;
+    } catch {
+      return false;
+    }
+  });
+  const matches = [
+    ...(existing.has(canonical.pkg) ? [canonical.pkg] : []),
+    ...aliases,
+  ];
+
+  if (matches.length > 1) {
+    throw new Error(
+      `ambiguous module "${rawName}": ${matches.map((pkg) => `internal/app/${pkg}`).join(" and ")} exist`
+    );
+  }
+  if (matches[0] === canonical.pkg) return canonical;
+  if (matches[0]) return resolveLegacyModuleNaming(matches[0]);
+  return canonical;
+}
+
 export function resolveMethodNaming(rawName: string): MethodNaming {
   const cleaned = rawName.trim();
   const pascalName = toPascalCase(cleaned);

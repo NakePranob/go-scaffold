@@ -76,6 +76,13 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.match(approveDocs, /operationId: approveOrder/);
     assert.doesNotMatch(approveDocs, /requestBody:/);
 
+    run("node", [CLI, "generate", "method", "orders", "submit", "--type", "post"], project);
+    const submitDocs = read(project, "docs/orders/methods/submit.yaml");
+    assert.doesNotMatch(submitDocs, /^parameters:/);
+    assert.doesNotMatch(submitDocs, /in: path/);
+    assert.match(submitDocs, /^post:/m);
+    assert.match(submitDocs, /requestBody:/);
+
     run("go", ["mod", "tidy"], project);
     run("go", ["test", "./..."], project);
   } finally {

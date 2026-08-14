@@ -3,7 +3,7 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { confirm } from "@inquirer/prompts";
 import { readConfig } from "../utils/config";
-import { resolveModuleNaming } from "../utils/naming";
+import { resolveProjectModuleNaming } from "../utils/module-location";
 import { unpatchMainGo } from "../utils/main-patcher";
 import { unpatchOpenapiIndex } from "../utils/openapi-patcher";
 import { gofmtTree } from "../utils/template-renderer";
@@ -22,7 +22,7 @@ export async function removeModule(
   projectDir: string = process.cwd()
 ): Promise<void> {
   const config = readConfig(projectDir);
-  const naming = resolveModuleNaming(rawName ?? (await promptModuleName()));
+  const naming = resolveProjectModuleNaming(projectDir, rawName ?? (await promptModuleName()));
   const modulePath = naming.pkg;
 
   const moduleDir = path.join(projectDir, "internal", "app", modulePath);
@@ -32,7 +32,9 @@ export async function removeModule(
 
   if (!opts.yes) {
     const ok = await confirm({
-      message: `Remove module "${naming.pkg}"? Deletes internal/app/${modulePath}/, its migration, and un-wires main.go/openapi.yaml`,
+      message:
+        `Remove module "${naming.pkg}"? Deletes internal/app/${modulePath}/ and its docs, ` +
+        `then un-wires main.go/openapi.yaml. Existing migrations, table, and data are preserved.`,
       default: false,
     });
     if (!ok) throw new Error("removal cancelled");

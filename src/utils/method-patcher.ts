@@ -245,8 +245,12 @@ function patchGetOne(
       serviceTest,
       LEGACY_FAKE_REPO_METHODS_MARKER,
       [
+        `//nolint:unused`,
         `func (f *fakeRepo) FindBy${fieldPascal}(context.Context, string) (*model.${naming.pascalName}, error) {`,
-        `\treturn nil, f.err`,
+        `\tif f.err != nil {`,
+        `\t\treturn nil, f.err`,
+        `\t}`,
+        `\treturn f.m, nil`,
         `}`,
         ``,
       ].join("\n")

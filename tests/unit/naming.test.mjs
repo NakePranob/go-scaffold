@@ -3,7 +3,7 @@ import test from "node:test";
 
 import naming from "../../dist/utils/naming.js";
 
-const { resolveModuleNaming } = naming;
+const { resolveExistingModuleNaming, resolveModuleNaming } = naming;
 
 const cases = [
   {
@@ -59,3 +59,36 @@ for (const { inputs, expected } of cases) {
     });
   }
 }
+
+test("resolveExistingModuleNaming finds a pre-canonical plural package", () => {
+  const expected = {
+    name: "orders",
+    pkg: "orders",
+    pascalName: "Orders",
+    plural: "orderses",
+    tableName: "orderses",
+    errorPrefix: "ORDERS",
+  };
+  assert.deepEqual(resolveExistingModuleNaming("orders", ["orders"]), expected);
+  assert.deepEqual(resolveExistingModuleNaming("order", ["orders"]), expected);
+});
+
+test("resolveExistingModuleNaming can locate a legacy package whose singular is now reserved", () => {
+  assert.deepEqual(resolveExistingModuleNaming("types", ["types"]), {
+    name: "types",
+    pkg: "types",
+    pascalName: "Types",
+    plural: "typeses",
+    tableName: "typeses",
+    errorPrefix: "TYPES",
+  });
+});
+
+test("resolveExistingModuleNaming rejects canonical and legacy packages together", () => {
+  for (const input of ["order", "orders"]) {
+    assert.throws(
+      () => resolveExistingModuleNaming(input, ["order", "orders"]),
+      /ambiguous module.*internal\/app\/order.*internal\/app\/orders/
+    );
+  }
+});

@@ -2,7 +2,8 @@ import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig } from "../utils/config";
-import { resolveModuleNaming, toDbName } from "../utils/naming";
+import { toDbName } from "../utils/naming";
+import { resolveProjectModuleNaming } from "../utils/module-location";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
 import { patchMainGo } from "../utils/main-patcher";
@@ -44,7 +45,7 @@ export async function generateModule(
     }
   }
 
-  const naming = resolveModuleNaming(rawName ?? (await promptModuleName()));
+  const naming = resolveProjectModuleNaming(projectDir, rawName ?? (await promptModuleName()));
   const modulePath = naming.pkg;
 
   const moduleDir = path.join(projectDir, "internal", "app", modulePath);
