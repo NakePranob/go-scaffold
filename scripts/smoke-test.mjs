@@ -5,17 +5,24 @@
 // forbidden flags) actually reject. No Postgres required — integration
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync, writeSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSmokeRunConfig } from "../dist/utils/smoke-run.js";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CLI = path.join(ROOT, "bin", "go-scaffold.js");
 
 let passed = 0;
 let scratch;
+let fullApp = null;
+let smokeEnv = null;
+const activeProcesses = new Set();
+let hasPsql = false;
+let cleanupStarted = false;
 let sharedPostgresContainerId = null;
 
 function step(name, fn) {
@@ -39,12 +46,37 @@ function step(name, fn) {
 }
 
 function run(cmd, args, cwd, env) {
+  const inheritedSmokeEnv = cwd && cwd === fullApp && smokeEnv ? smokeEnv : {};
   return execFileSync(cmd, args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: env ? { ...process.env, ...env } : process.env,
+    env: { ...process.env, ...inheritedSmokeEnv, ...env },
   });
+}
+
+function findFreePort() {
+  const output = execFileSync(
+    process.execPath,
+    [
+      "-e",
+      "const net=require('node:net');const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const address=server.address();server.close(()=>process.stdout.write(String(address.port)))});",
+    ],
+    { encoding: "utf8" }
+  ).trim();
+  const port = Number(output);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`could not allocate a TCP port for the smoke test: ${output}`);
+  }
+  return port;
+}
+
+function httpStatus(args, cwd) {
+  try {
+    return run("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", ...args], cwd).trim();
+  } catch {
+    return "000";
+  }
 }
 
 function goScaffold(args, cwd) {
@@ -79,17 +111,40 @@ function assertFileContains(filePath, needle) {
 let sharedRedisContainerId = null;
 let sharedRedisUrl = null;
 
+function ownedDockerContainerIds() {
+  try {
+    return execFileSync("docker", ["ps", "-aq", "--filter", `label=${smoke.dockerLabel}`], { encoding: "utf8" })
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function cleanup() {
-  if (sharedPostgresContainerId) {
+  if (cleanupStarted) return;
+  cleanupStarted = true;
+  // Every resource gets an independent best-effort cleanup attempt. A stubborn
+  // child must not prevent its siblings, run databases, or run-labelled Docker
+  // containers from being cleaned up.
+  stopAllApis();
+  for (const db of [fullTestDb, obsDb, fullDb]) {
     try {
-      execFileSync("docker", ["rm", "-f", sharedPostgresContainerId], { stdio: "ignore" });
+      if (db) dropDatabase(db.dbName);
     } catch {
       // best-effort — a failed cleanup here shouldn't mask the real test result
     }
   }
-  if (sharedRedisContainerId) {
+  const containers = new Set([
+    ...ownedDockerContainerIds(),
+    sharedPostgresContainerId,
+    sharedRedisContainerId,
+  ]);
+  for (const containerId of containers) {
+    if (!containerId) continue;
     try {
-      execFileSync("docker", ["rm", "-f", sharedRedisContainerId], { stdio: "ignore" });
+      execFileSync("docker", ["rm", "-f", containerId], { stdio: "ignore" });
     } catch {
       // best-effort — a failed cleanup here shouldn't mask the real test result
     }
@@ -109,7 +164,375 @@ try {
 }
 
 scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-smoke-"));
-console.log(`scratch dir: ${scratch}\n`);
+let smoke = createSmokeRunConfig(`${process.pid}-${randomUUID().slice(0, 8)}`, findFreePort());
+let fullDb = smoke;
+let obsDb = createSmokeRunConfig(`${smoke.runID}-observability`, smoke.port, smoke.dbPort);
+let fullTestDb = createSmokeRunConfig(`${smoke.runID}-test`, smoke.port, smoke.dbPort);
+
+function configureSmokeResources({ port = smoke.port, dbPort = smoke.dbPort } = {}) {
+  smoke = createSmokeRunConfig(smoke.runID, port, dbPort);
+  fullDb = smoke;
+  obsDb = createSmokeRunConfig(`${smoke.runID}-observability`, smoke.port, smoke.dbPort);
+  fullTestDb = createSmokeRunConfig(`${smoke.runID}-test`, smoke.port, smoke.dbPort);
+  smokeEnv = { ...runtimeEnv(fullDb), TEST_DB_DSN: fullTestDb.dbDsn };
+}
+
+function allocateReplacementAppPort() {
+  if (activeProcesses.size > 0) {
+    throw new Error("cannot replace the smoke-test port while an owned process is running");
+  }
+  configureSmokeResources({ port: findFreePort() });
+}
+
+function runtimeEnv(db, overrides = {}) {
+  return {
+    BASE_URL: smoke.baseURL,
+    DB_DSN: db.dbDsn,
+    PORT: String(smoke.port),
+    SMOKE_LOG_DIR: scratch,
+    GO_SCAFFOLD_SMOKE_OWNER: smoke.ownerToken,
+    ...overrides,
+  };
+}
+
+configureSmokeResources();
+
+function dropDatabase(dbName) {
+  const sql = `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}' AND pid <> pg_backend_pid(); DROP DATABASE IF EXISTS ${dbName};`;
+  if (sharedPostgresContainerId) {
+    execFileSync("docker", ["exec", "-e", "PGPASSWORD=postgres", sharedPostgresContainerId, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql], { stdio: "ignore" });
+    return;
+  }
+  if (hasPsql) {
+    execFileSync("psql", ["-h", fullDb.dbHost, "-p", String(fullDb.dbPort), "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql], {
+      stdio: "ignore",
+      env: { ...process.env, PGPASSWORD: "postgres" },
+    });
+  }
+}
+
+function exitAfterCleanup(exitCode) {
+  cleanup();
+  process.exit(exitCode);
+}
+
+process.once("SIGINT", () => exitAfterCleanup(130));
+process.once("SIGTERM", () => exitAfterCleanup(143));
+
+function runMake(args, cwd, db = fullDb) {
+  return run("make", args, cwd, {
+    DB_HOST: db.dbHost,
+    DB_NAME: db.dbName,
+    DB_PORT: String(db.dbPort),
+    POSTGRES_CONTAINER: sharedPostgresContainerId ?? "",
+  });
+}
+
+function logPath(name) {
+  return path.join(scratch, `${smoke.logPrefix}-${name}.log`);
+}
+
+function isPortCollisionLog(logFile) {
+  return existsSync(logFile) && /address already in use|bind: address already in use/i.test(readFileSync(logFile, "utf8"));
+}
+
+function listenerPids(port) {
+  try {
+    return execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"], { encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.startsWith("p"))
+      .map((line) => Number(line.slice(1)))
+      .filter(Number.isInteger);
+  } catch {
+    return [];
+  }
+}
+
+function portOwnership(server, port) {
+  const listeners = listenerPids(port);
+  if (listeners.length === 0) return "none";
+  const owned = new Set((server.trackDescendants ? ownedProcessDescriptors(server.rootProcess) : [server.rootProcess]).map(({ pid }) => pid));
+  return listeners.every((pid) => owned.has(pid)) ? "owned" : "foreign";
+}
+
+function waitForPortOwnership(server, port, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const ownership = portOwnership(server, port);
+    if (ownership !== "none") return ownership;
+    if (!isSameProcess(server.rootProcess)) return "exited";
+    execFileSync("sleep", ["0.1"]);
+  }
+  return "timeout";
+}
+
+function startApi(cwd, name, db = fullDb, overrides = {}) {
+  const binaryPath = path.join(cwd, `.smoke-api-${smoke.runID}-${name}`);
+  run("go", ["build", "-o", binaryPath, "./cmd/api"], cwd);
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    // Close the free-port TOCTOU window before launching: never even spawn an
+    // API against a listener we did not create.
+    if (listenerPids(smoke.port).length > 0) {
+      if (attempt < 3) {
+        allocateReplacementAppPort();
+        continue;
+      }
+      throw new Error(`could not allocate an unoccupied API port for ${name}`);
+    }
+    const outputPath = logPath(name);
+    const output = openSync(outputPath, "w");
+    const child = spawn(binaryPath, [], {
+      cwd,
+      env: { ...process.env, ...runtimeEnv(db, overrides) },
+      stdio: ["ignore", output, output],
+    });
+    closeSync(output);
+    if (!child.pid) {
+      // A launch can fail before Node gives us a child PID (for example while
+      // a competing listener owns the selected port). Give the competing
+      // listener a scheduling turn before classifying the allocation race.
+      execFileSync("sleep", ["0.1"]);
+      if (attempt < 3 && listenerPids(smoke.port).length > 0) {
+        allocateReplacementAppPort();
+        continue;
+      }
+      throw new Error(`could not start API process for ${name}`);
+    }
+    const rootProcess = waitForOwnedProcess(child.pid);
+    if (!rootProcess) {
+      const portIsOccupied = listenerPids(smoke.port).length > 0;
+      if (attempt < 3 && (portIsOccupied || isPortCollisionLog(outputPath))) {
+        allocateReplacementAppPort();
+        continue;
+      }
+      if (portIsOccupied && attempt >= 3) {
+        throw new Error(`could not allocate a run-owned API port for ${name} after ${attempt} attempts`);
+      }
+      throw new Error(`could not inspect API process for ${name}; see ${outputPath}`);
+    }
+    const server = { binaryPath, rootProcess };
+    const ownership = waitForPortOwnership(server, smoke.port);
+    if (ownership === "owned") {
+      activeProcesses.add(server);
+      return server;
+    }
+    stopApi(server);
+    if (attempt < 3 && ownership === "foreign") {
+      allocateReplacementAppPort();
+      continue;
+    }
+    throw new Error(`API process for ${name} did not bind its run-owned port (${ownership}); see ${logPath(name)}`);
+  }
+
+  throw new Error(`could not allocate an API port for ${name} after 3 attempts`);
+}
+
+function startWorker(cwd, name, overrides = {}) {
+  const binaryPath = path.join(cwd, `.smoke-worker-${smoke.runID}-${name}`);
+  run("go", ["build", "-o", binaryPath, "./cmd/worker"], cwd);
+
+  const output = openSync(logPath(name), "w");
+  const child = spawn(binaryPath, [], {
+    cwd,
+    env: { ...process.env, ...runtimeEnv(fullDb, overrides) },
+    stdio: ["ignore", output, output],
+  });
+  closeSync(output);
+  if (!child.pid) throw new Error(`could not start worker process for ${name}`);
+  const rootProcess = waitForOwnedProcess(child.pid);
+  if (!rootProcess) throw new Error(`could not inspect worker process for ${name}`);
+
+  const worker = { binaryPath, rootProcess };
+  activeProcesses.add(worker);
+  return worker;
+}
+
+function syncMakeRunPort(cwd) {
+  const envFile = path.join(cwd, ".env");
+  if (!existsSync(envFile)) return;
+  const envContent = readFileSync(envFile, "utf8");
+  writeFileSync(envFile, envContent.replace(/^PORT=.*/m, `PORT=${smoke.port}`));
+}
+
+function startMakeRun(cwd, name, expectListener) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (listenerPids(smoke.port).length > 0) {
+      if (attempt < 3) {
+        allocateReplacementAppPort();
+        continue;
+      }
+      throw new Error(`could not allocate an unoccupied make run port for ${name}`);
+    }
+    syncMakeRunPort(cwd);
+    const output = openSync(logPath(name), "w");
+    const child = spawn("make", ["run"], {
+      cwd,
+      detached: true,
+      env: { ...process.env, ...smokeEnv },
+      stdio: ["ignore", output, output],
+    });
+    closeSync(output);
+    if (!child.pid) throw new Error(`could not start make run for ${name}`);
+
+    const rootProcess = waitForOwnedProcess(child.pid, expectListener ? 300 : 20);
+    if (!rootProcess) {
+      // The intentionally blocked migration case can make `make run` exit
+      // before ps observes it. It owns no listener; reject and retry only if
+      // another process occupied this run's port.
+      if (!expectListener && listenerPids(smoke.port).length === 0) return null;
+      if (attempt < 3 && listenerPids(smoke.port).length > 0) {
+        allocateReplacementAppPort();
+        continue;
+      }
+      throw new Error(`could not inspect make run process for ${name}`);
+    }
+    const server = { rootProcess, trackDescendants: true };
+    const ownership = waitForPortOwnership(server, smoke.port, expectListener ? 150 : 50);
+    if ((expectListener && ownership === "owned") || (!expectListener && ownership !== "foreign")) {
+      activeProcesses.add(server);
+      return server;
+    }
+    stopApi(server);
+    if (attempt < 3 && ownership === "foreign") {
+      allocateReplacementAppPort();
+      continue;
+    }
+    throw new Error(`make run for ${name} did not bind its run-owned port (${ownership}); see ${logPath(name)}`);
+  }
+
+  throw new Error(`could not allocate a make run port for ${name} after 3 attempts`);
+}
+
+function processDescriptor(pid) {
+  try {
+    const output = execFileSync("ps", ["-p", String(pid), "-o", "lstart=,stat="], { encoding: "utf8" }).trim();
+    const match = output.match(/^(.+)\s+(\S+)$/);
+    if (!match) return null;
+    const environment = execFileSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    if (!environment.includes(`GO_SCAFFOLD_SMOKE_OWNER=${smoke.ownerToken}`)) return null;
+    return { pid, startedAt: match[1], state: match[2], ownerToken: smoke.ownerToken };
+  } catch {
+    return null;
+  }
+}
+
+function ownerProcessDescriptors() {
+  try {
+    const output = execFileSync("ps", ["eww", "-axo", "pid=,command="], { encoding: "utf8" });
+    const pids = output
+      .split("\n")
+      .filter((line) => line.includes(`GO_SCAFFOLD_SMOKE_OWNER=${smoke.ownerToken}`))
+      .map((line) => Number(line.trim().split(/\s+/, 1)[0]))
+      .filter(Number.isInteger);
+    return pids.map(processDescriptor).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function waitForOwnedProcess(pid, attempts = 20) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const direct = processDescriptor(pid);
+    if (direct) return direct;
+    const inherited = ownerProcessDescriptors()[0];
+    if (inherited) return inherited;
+    execFileSync("sleep", ["0.05"]);
+  }
+  return null;
+}
+
+function isSameProcess(ownedProcess) {
+  const current = processDescriptor(ownedProcess.pid);
+  return current?.startedAt === ownedProcess.startedAt && current.ownerToken === ownedProcess.ownerToken && !current.state.startsWith("Z");
+}
+
+function ownedProcessDescriptors(root) {
+  if (!isSameProcess(root)) return [];
+  const rows = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+      return match ? { pid: Number(match[1]), parentPid: Number(match[2]) } : null;
+    })
+    .filter(Boolean);
+  const childrenByParent = new Map();
+  for (const child of rows) {
+    const children = childrenByParent.get(child.parentPid) ?? [];
+    children.push(child.pid);
+    childrenByParent.set(child.parentPid, children);
+  }
+
+  const candidatePids = [root.pid];
+  const pending = [root.pid];
+  while (pending.length > 0) {
+    const pid = pending.pop();
+    for (const childPid of childrenByParent.get(pid) ?? []) {
+      candidatePids.push(childPid);
+      pending.push(childPid);
+    }
+  }
+  return candidatePids.map(processDescriptor).filter(Boolean);
+}
+
+function signalOwnedProcesses(processes, signal) {
+  for (const ownedProcess of [...processes].reverse()) {
+    if (!isSameProcess(ownedProcess)) continue;
+    try {
+      globalThis.process.kill(ownedProcess.pid, signal);
+    } catch (err) {
+      if (err.code !== "ESRCH") throw err;
+    }
+  }
+}
+
+function stopOwnedProcesses(processes) {
+  signalOwnedProcesses(processes, "SIGTERM");
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const stillRunning = processes.filter(isSameProcess);
+    if (stillRunning.length === 0) return;
+    execFileSync("sleep", ["0.2"]);
+  }
+  let stillRunning = processes.filter(isSameProcess);
+  if (stillRunning.length > 0) {
+    // SIGTERM is preferred, but workers may not drain promptly. Re-check each
+    // process identity immediately before SIGKILL so a recycled PID can never
+    // target an unrelated host process.
+    signalOwnedProcesses(stillRunning, "SIGKILL");
+    execFileSync("sleep", ["0.1"]);
+    stillRunning = stillRunning.filter(isSameProcess);
+  }
+  if (stillRunning.length > 0) {
+    throw new Error(`owned smoke process did not exit: ${stillRunning.map(({ pid }) => pid).join(", ")}`);
+  }
+}
+
+function stopApi(server) {
+  if (!server) return;
+  const processes = server.trackDescendants ? ownedProcessDescriptors(server.rootProcess) : [server.rootProcess];
+  stopOwnedProcesses(processes);
+  activeProcesses.delete(server);
+  if (server.binaryPath) rmSync(server.binaryPath, { force: true });
+}
+
+function stopAllApis() {
+  for (const server of [...activeProcesses]) {
+    try {
+      stopApi(server);
+    } catch {
+      // Continue with every remaining owned child; cleanup must be exhaustive.
+    }
+  }
+  try {
+    // Catch descendants that appeared after a failed/fast `make run` launch,
+    // before its process handle could be recorded in activeProcesses.
+    stopOwnedProcesses(ownerProcessDescriptors());
+  } catch {
+    // Container/DB cleanup below must still run.
+  }
+}
+
+console.log(`scratch dir: ${scratch}\nrun: ${smoke.runID}, db: ${smoke.dbName}, port: ${smoke.port}\n`);
 
 step("rejects an invalid project name before writing anything", () => {
   expectThrows(() => goScaffold(["create", "My Cool App", "--defaults"], scratch), "invalid project name");
@@ -128,7 +551,7 @@ step("create stamps the CLI version into go-scaffold.config.json", () => {
   }
 });
 
-const fullApp = path.join(scratch, "full-app");
+fullApp = path.join(scratch, "full-app");
 step("bare project: go mod tidy + build + vet", () => {
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
@@ -219,56 +642,50 @@ try {
   hasDocker = false;
 }
 
-// The worker/auth paths boot the generated API, which needs Postgres before
-// it can exercise Redis. CI and contributors should not need a host `psql`
-// installation or a manually-started database just to run this suite: when
-// Docker is available and nothing already owns 5432, provide an isolated DB.
-// An existing container is deliberately reused, matching the Makefile's
-// documented fallback and avoiding a collision with a developer's setup.
+// DB-backed smoke checks always get a run-owned PostgreSQL container. The host
+// port is Docker-assigned, so simultaneous suites never borrow or remove a
+// developer's database or another smoke run's container.
 if (hasDocker) {
-  let postgresOn5432;
   try {
-    postgresOn5432 = run("docker", ["ps", "-q", "--filter", "publish=5432"]).trim().split("\n")[0];
-  } catch {
-    hasDocker = false;
-    console.warn("warning: Docker CLI is installed but its daemon is unavailable; Docker-dependent checks will be skipped");
-  }
-  if (hasDocker && !postgresOn5432) {
-    try {
-      sharedPostgresContainerId = run("docker", [
-        "run",
-        "-d",
-        "-p",
-        "5432:5432",
-        "-e",
-        "POSTGRES_USER=postgres",
-        "-e",
-        "POSTGRES_PASSWORD=postgres",
-        "postgres:16-alpine",
-      ]).trim();
-      let ready = false;
-      for (let i = 0; i < 30; i++) {
-        try {
-          run("docker", ["exec", sharedPostgresContainerId, "pg_isready", "-U", "postgres"]);
-          ready = true;
-          break;
-        } catch {
-          run("sleep", ["0.3"]);
-        }
+    sharedPostgresContainerId = run("docker", [
+      "run",
+      "-d",
+      "--name",
+      `${smoke.containerNamePrefix}-postgres`,
+      "--label",
+      smoke.dockerLabel,
+      "-p",
+      "127.0.0.1::5432",
+      "-e",
+      "POSTGRES_USER=postgres",
+      "-e",
+      "POSTGRES_PASSWORD=postgres",
+      "postgres:16-alpine",
+    ]).trim();
+    const dbPort = Number(readMappedPort(sharedPostgresContainerId, "5432/tcp"));
+    configureSmokeResources({ dbPort });
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      try {
+        run("docker", ["exec", sharedPostgresContainerId, "pg_isready", "-U", "postgres"]);
+        ready = true;
+        break;
+      } catch {
+        run("sleep", ["0.3"]);
       }
-      if (!ready) throw new Error("Postgres container never became ready");
-    } catch (err) {
-      if (sharedPostgresContainerId) {
-        try {
-          run("docker", ["rm", "-f", sharedPostgresContainerId]);
-        } catch {
-          // preserve the original startup error
-        }
-        sharedPostgresContainerId = null;
-      }
-      console.warn(`warning: could not provision smoke-test Postgres (${err.message}); DB-backed checks may be skipped`);
-      hasDocker = false;
     }
+    if (!ready) throw new Error("Postgres container never became ready");
+  } catch (err) {
+    if (sharedPostgresContainerId) {
+      try {
+        run("docker", ["rm", "-f", sharedPostgresContainerId]);
+      } catch {
+        // preserve the original startup error
+      }
+      sharedPostgresContainerId = null;
+    }
+    console.warn(`warning: could not provision a run-owned smoke-test Postgres (${err.message}); DB-backed checks will be skipped`);
+    hasDocker = false;
   }
 }
 
@@ -283,8 +700,8 @@ try {
 // "[::]:PORT") for an ephemeral (-p 0:CONTAINER_PORT) mapping — both name the
 // same host port, so the last field after splitting on ":" is it regardless
 // of which line answers first.
-function readMappedPort(containerId) {
-  const portMap = run("docker", ["port", containerId, "6379/tcp"]).trim();
+function readMappedPort(containerId, containerPort = "6379/tcp") {
+  const portMap = run("docker", ["port", containerId, containerPort]).trim();
   return portMap.split(":").pop();
 }
 
@@ -325,17 +742,15 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
   // target handle its own local-psql-vs-docker fallback, same as every other
   // step that needs a DB. Verify the selected container sees the database so
   // this test cannot silently depend on state left by an earlier smoke run.
-  run("make", ["db-drop"], fullApp);
-  const dbCreateOutput = run("make", ["db-create"], fullApp);
-  const postgresContainer = run("docker", ["ps", "-q", "--filter", "publish=5432"])
-    .trim()
-    .split("\n")[0];
+  runMake(["db-drop"], fullApp);
+  const dbCreateOutput = runMake(["db-create"], fullApp);
+  const postgresContainer = sharedPostgresContainerId;
   const createdDatabase = run(
     "docker",
-    ["exec", postgresContainer, "psql", "-U", "postgres", "-d", "postgres", "-Atc", "SELECT datname FROM pg_database WHERE datname = 'full_app'"],
+    ["exec", postgresContainer, "psql", "-U", "postgres", "-d", "postgres", "-Atc", `SELECT datname FROM pg_database WHERE datname = '${fullDb.dbName}'`],
   ).trim();
-  if (createdDatabase !== "full_app") {
-    throw new Error(`db-create reported success but full_app is absent:\n${dbCreateOutput}`);
+  if (createdDatabase !== fullDb.dbName) {
+    throw new Error(`db-create reported success but ${fullDb.dbName} is absent:\n${dbCreateOutput}`);
   }
 
   // no --rm: this step stops the container mid-test (to prove readyz notices
@@ -344,7 +759,17 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
   // patched, every later step that boots fullApp's cmd/api needs Redis
   // reachable too, since they all share this one scratch project — not just
   // this step's own concern.
-  const containerId = run("docker", ["run", "-d", "-p", "0:6379", "redis:7-alpine"]).trim();
+  const containerId = run("docker", [
+    "run",
+    "-d",
+    "--name",
+    `${smoke.containerNamePrefix}-redis`,
+    "--label",
+    smoke.dockerLabel,
+    "-p",
+    "127.0.0.1::6379",
+    "redis:7-alpine",
+  ]).trim();
   sharedRedisContainerId = containerId;
   {
     let redisPort = readMappedPort(containerId);
@@ -357,32 +782,18 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
     // (no extra tool dependency).
     waitForPort(redisPort);
 
-    const up = run(
-      "bash",
-      [
-        "-c",
-        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & API_PID=$!; sleep 3; ` +
-          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
-          "pkill -TERM -P $API_PID 2>/dev/null || true; kill -TERM $API_PID 2>/dev/null || true; wait $API_PID 2>/dev/null || true; " +
-          "echo \"READYZ=$CODE\"",
-      ],
-      fullApp
-    );
-    if (!/READYZ=200/.test(up)) throw new Error(`expected readyz 200 with Redis reachable, got: ${up}`);
+    const readyApi = startApi(fullApp, "worker-api-ready", fullDb, { REDIS_URL: redisUrl });
+    execFileSync("sleep", ["3"]);
+    const upCode = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
+    stopApi(readyApi);
+    if (upCode !== "200") throw new Error(`expected readyz 200 with Redis reachable, got: ${upCode}`);
 
     run("docker", ["stop", containerId]);
-    const down = run(
-      "bash",
-      [
-        "-c",
-        `REDIS_URL='${redisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-worker-api.log 2>&1 & API_PID=$!; sleep 3; ` +
-          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
-          "pkill -TERM -P $API_PID 2>/dev/null || true; kill -TERM $API_PID 2>/dev/null || true; wait $API_PID 2>/dev/null || true; " +
-          "echo \"READYZ=$CODE\"",
-      ],
-      fullApp
-    );
-    if (!/READYZ=503/.test(down)) throw new Error(`expected readyz 503 with Redis down, got: ${down}`);
+    const unavailableApi = startApi(fullApp, "worker-api-unavailable", fullDb, { REDIS_URL: redisUrl });
+    execFileSync("sleep", ["3"]);
+    const downCode = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
+    stopApi(unavailableApi);
+    if (downCode !== "503") throw new Error(`expected readyz 503 with Redis down, got: ${downCode}`);
     run("docker", ["start", containerId]);
     // Docker Desktop can hand out a *different* random host port on restart
     // when the container was published with an ephemeral mapping (-p 0:6379)
@@ -420,26 +831,12 @@ func main() {
 `
     );
 
-    // `go run ./cmd/worker & WPID=$!` doesn't work: `go run` compiles then
-    // execs the binary as its OWN child, so $! is the `go` wrapper's PID, not
-    // the actual worker process — `kill -9 $WPID` kills the wrapper and
-    // leaves the real worker running forever, retrying against a container
-    // that's long gone. Confirmed the hard way: seven of these accumulated
-    // over the course of testing this step, one alive for hours, still
-    // burning CPU on retry loops. Build the binary and run *that* directly so
-    // the PID this test captures is the PID that actually needs to die.
-    const workerLogPath = path.join(fullApp, "worker.log");
-    run("go", ["build", "-o", "worker-bin", "./cmd/worker"], fullApp);
-    run(
-      "bash",
-      [
-        "-c",
-        `REDIS_URL='${redisUrl}' ./worker-bin >'${workerLogPath}' 2>&1 & WPID=$!; sleep 2; ` +
-          "go run ./cmd/_smoke_probe_enqueue; sleep 2; kill -9 $WPID 2>/dev/null",
-      ],
-      fullApp
-    );
-    rmSync(path.join(fullApp, "worker-bin"), { force: true });
+    const workerLogPath = logPath("worker");
+    const worker = startWorker(fullApp, "worker", { REDIS_URL: redisUrl });
+    execFileSync("sleep", ["2"]);
+    run("go", ["run", "./cmd/_smoke_probe_enqueue"], fullApp);
+    execFileSync("sleep", ["2"]);
+    stopApi(worker);
     const workerLog = readFileSync(workerLogPath, "utf8");
     if (!workerLog.includes("email not sent (SMTP not configured)") || !workerLog.includes("processed by cmd/worker")) {
       throw new Error(`expected cmd/worker to process the enqueued task (dev SMTP fallback), got:\n${workerLog}`);
@@ -449,7 +846,7 @@ func main() {
     }
 
     rmSync(probeDir, { recursive: true, force: true });
-    run("make", ["db-drop"], fullApp);
+    runMake(["db-drop"], fullApp);
     sharedRedisUrl = redisUrl; // later steps that boot fullApp's cmd/api reuse this
   }
 });
@@ -467,16 +864,16 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
 
-  run("make", ["db-drop"], fullApp);
-  run("make", ["db-create"], fullApp);
+  runMake(["db-drop"], fullApp);
+  runMake(["db-create"], fullApp);
 
-  run(
-    "bash",
-    ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=true go run ./cmd/api >/tmp/go-scaffold-smoke-auth-boot.log 2>&1 & sleep 3`],
-    fullApp
-  );
+  const authApi = startApi(fullApp, "auth-api", fullDb, {
+    REDIS_URL: sharedRedisUrl,
+    AUTO_MIGRATE: "true",
+  });
+  execFileSync("sleep", ["3"]);
 
-  const B = "http://localhost:8080/v1";
+  const B = `${smoke.baseURL}/v1`;
   const jsonHeader = ["-H", "Content-Type: application/json"];
   const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
   const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
@@ -521,16 +918,11 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const reuseRotated = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${rotatedCookie}`]);
   if (status(reuseRotated) !== "401") throw new Error(`expected replaying a rotated-out token to revoke the whole session family (rotated token should now 401 too), got:\n${reuseRotated}`);
 
-  // forgot-password/reset-password go through the real async queue (same
-  // worker binary + PID-kill lesson as the "add worker" step above: build
-  // and run the binary directly, not `go run`, so $! is the real PID).
-  run("go", ["build", "-o", "auth-worker-bin", "./cmd/worker"], fullApp);
-  const workerLogPath = path.join(fullApp, "auth-worker.log");
-  const workerPid = run(
-    "bash",
-    ["-c", `REDIS_URL='${sharedRedisUrl}' ./auth-worker-bin >'${workerLogPath}' 2>&1 & echo $!`],
-    fullApp
-  ).trim();
+  // forgot-password/reset-password go through the real async queue. Track the
+  // direct worker binary so top-level cleanup can stop it even if an assertion
+  // below fails before this step reaches its normal shutdown.
+  const workerLogPath = logPath("auth-worker");
+  const authWorker = startWorker(fullApp, "auth-worker", { REDIS_URL: sharedRedisUrl });
   execFileSync("sleep", ["2"]);
 
   const forgotExisting = run("curl", ["-s", "-X", "POST", `${B}/auth/forgot-password`, ...jsonHeader, "-d", '{"email":"alice@example.com"}']);
@@ -545,7 +937,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   if (!verifymeAccess) throw new Error(`expected an access token registering verifyme@example.com, got:\n${verifymeRegister}`);
 
   execFileSync("sleep", ["2"]); // let the worker process the enqueued emails
-  run("bash", ["-c", `kill -9 ${workerPid} 2>/dev/null || true`]);
+  stopApi(authWorker);
   const workerLog = readFileSync(workerLogPath, "utf8");
   const resetToken = (workerLog.match(/reset-password\?token=([0-9a-f]+)/) ?? [])[1];
   if (!resetToken) throw new Error(`expected a password reset link in the worker log, got:\n${workerLog}`);
@@ -597,8 +989,6 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const loginNewPassword = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
   if (status(loginNewPassword) !== "200") throw new Error(`expected 200 logging in with the post-reset password, got:\n${loginNewPassword}`);
 
-  rmSync(path.join(fullApp, "auth-worker-bin"), { force: true });
-  rmSync(workerLogPath, { force: true });
 
   // Google OAuth: only what's testable without a live Google app — the login
   // redirect targets Google with a signed state param, and the callback
@@ -650,8 +1040,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
 
   resetRateLimits();
 
-  run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
-  execFileSync("sleep", ["1"]);
+  stopApi(authApi);
 
   // cmd/seed talks to Postgres directly (config.Load() + database.Open, same
   // as cmd/api) — no server, no Redis, run it as a plain one-shot process.
@@ -690,7 +1079,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     throw new Error(`expected --fixtures to seed both dev sample users, got:\n${fixturesOut}`);
   }
 
-  run("make", ["db-drop"], fullApp);
+  runMake(["db-drop"], fullApp);
 });
 
 step(
@@ -753,31 +1142,26 @@ step(
   }
 );
 
-let hasPsql = true;
-try {
-  run("psql", ["--version"]);
-} catch {
-  hasPsql = false;
-}
-
-let dockerPgContainer = null;
-if (!hasPsql) {
+hasPsql = Boolean(sharedPostgresContainerId);
+if (hasPsql) {
   try {
-    dockerPgContainer = run("docker", ["ps", "-q", "--filter", "publish=5432"]).trim().split("\n")[0] || null;
+    run("psql", ["--version"]);
   } catch {
-    dockerPgContainer = null;
+    hasPsql = false;
   }
 }
 
+const dockerPgContainer = sharedPostgresContainerId;
+
 function listDatabases() {
   return hasPsql
-    ? run("psql", ["-h", "localhost", "-U", "postgres", "-lqt"], undefined, { PGPASSWORD: "postgres" })
+    ? run("psql", ["-h", fullDb.dbHost, "-p", String(fullDb.dbPort), "-U", "postgres", "-lqt"], undefined, { PGPASSWORD: "postgres" })
     : run("docker", ["exec", "-e", "PGPASSWORD=postgres", dockerPgContainer, "psql", "-U", "postgres", "-lqt"]);
 }
 
 function psqlExec(db, sql) {
   return hasPsql
-    ? run("psql", ["-h", "localhost", "-U", "postgres", "-d", db, "-tAc", sql], undefined, { PGPASSWORD: "postgres" })
+    ? run("psql", ["-h", fullDb.dbHost, "-p", String(fullDb.dbPort), "-U", "postgres", "-d", db, "-tAc", sql], undefined, { PGPASSWORD: "postgres" })
     : run("docker", [
         "exec",
         "-e",
@@ -804,12 +1188,12 @@ step(
       run("make", ["-n", "db-create"], fullApp); // dry run: catches Makefile/shell syntax errors
       return;
     }
-    run("make", ["db-drop"], fullApp); // start from a clean slate in case a prior run left it
-    run("make", ["db-create"], fullApp);
-    run("make", ["db-create"], fullApp); // must not error the second time
+    runMake(["db-drop"], fullApp); // start from a clean slate in case a prior run left it
+    runMake(["db-create"], fullApp);
+    runMake(["db-create"], fullApp); // must not error the second time
     const list = listDatabases();
-    if (!list.includes("full_app")) throw new Error(`expected database "full_app" to exist, got:\n${list}`);
-    run("make", ["db-drop"], fullApp);
+    if (!list.includes(fullDb.dbName)) throw new Error(`expected database "${fullDb.dbName}" to exist, got:\n${list}`);
+    runMake(["db-drop"], fullApp);
   }
 );
 
@@ -823,27 +1207,34 @@ step(
     : "CORS: skipped (needs psql/a Postgres container)",
   () => {
     if (!hasPsql && !dockerPgContainer) return;
-    run("make", ["db-drop"], fullApp); // clean slate
-    run("make", ["db-create"], fullApp);
+    runMake(["db-drop"], fullApp); // clean slate
+    runMake(["db-create"], fullApp);
 
-    const out = run(
-      "bash",
-      [
-        "-c",
-        // fullApp already has cache/redis wired into readyz once "add worker"
-        // has run earlier in this suite (same shared scratch project) —
-        // needs REDIS_URL too, or the server never becomes ready to answer
-        // anything, CORS included.
-        `REDIS_URL='${sharedRedisUrl}' go run ./cmd/api >/tmp/go-scaffold-smoke-cors.log 2>&1 & sleep 3; ` +
-          "echo '===ALLOWED==='; " +
-          "curl -s -i -X OPTIONS http://localhost:8080/livez -H 'Origin: http://localhost:3000' -H 'Access-Control-Request-Method: GET'; " +
-          "echo '===DISALLOWED==='; " +
-          "curl -s -i -X OPTIONS http://localhost:8080/livez -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: GET'; " +
-          "lsof -ti:8080 | xargs -r kill -9",
-      ],
-      fullApp
-    );
-    const [, allowed = "", disallowed = ""] = out.split(/===ALLOWED===|===DISALLOWED===/);
+    const corsApi = startApi(fullApp, "cors-api", fullDb, { REDIS_URL: sharedRedisUrl });
+    execFileSync("sleep", ["3"]);
+
+    const allowed = run("curl", [
+      "-s",
+      "-i",
+      "-X",
+      "OPTIONS",
+      `${smoke.baseURL}/livez`,
+      "-H",
+      "Origin: http://localhost:3000",
+      "-H",
+      "Access-Control-Request-Method: GET",
+    ]);
+    const disallowed = run("curl", [
+      "-s",
+      "-i",
+      "-X",
+      "OPTIONS",
+      `${smoke.baseURL}/livez`,
+      "-H",
+      "Origin: http://evil.example",
+      "-H",
+      "Access-Control-Request-Method: GET",
+    ]);
 
     if (!/HTTP\/1\.1 204/.test(allowed)) throw new Error(`expected 204 on the allowed-origin preflight, got:\n${allowed}`);
     if (!allowed.includes("Access-Control-Allow-Origin: http://localhost:3000")) {
@@ -858,7 +1249,8 @@ step(
       throw new Error(`expected no Allow-Origin at all for a disallowed origin, got:\n${disallowed}`);
     }
 
-    run("make", ["db-drop"], fullApp);
+    stopApi(corsApi);
+    runMake(["db-drop"], fullApp);
   }
 );
 
@@ -898,9 +1290,9 @@ step(
     writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.up.sql"), "CREATE TABLE legacy (id uuid PRIMARY KEY);\n");
     writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.down.sql"), "DROP TABLE legacy;\n");
 
-    run("make", ["db-drop"], fullApp);
-    run("make", ["db-create"], fullApp);
-    const dsn = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    runMake(["db-drop"], fullApp);
+    runMake(["db-create"], fullApp);
+    const dsn = fullDb.dbDsn;
 
     // migrate logs each applied step to stderr, not stdout — merge via bash so
     // `run`'s stdout-only capture actually sees it.
@@ -909,7 +1301,7 @@ step(
       throw new Error(`expected both the legacy migration and the new one to apply, in order, got:\n${upOut}`);
     }
 
-    const version = psqlExec("full_app", "SELECT version FROM schema_migrations;").trim();
+    const version = psqlExec(fullDb.dbName, "SELECT version FROM schema_migrations;").trim();
     if (!/^\d{14}$/.test(version)) {
       throw new Error(`expected schema_migrations to land on the 14-digit timestamped migration, got: "${version}"`);
     }
@@ -931,7 +1323,7 @@ step(
     }
     if (!verifyCaughtTheBreak) throw new Error("expected migrate-verify to fail against a broken down.sql, it succeeded");
 
-    run("make", ["db-drop"], fullApp);
+    runMake(["db-drop"], fullApp);
   }
 );
 
@@ -959,9 +1351,9 @@ step(
     run("go", ["build", "./..."], fullApp);
     run("go", ["vet", "./..."], fullApp);
 
-    run("make", ["db-drop"], fullApp);
-    run("make", ["db-create"], fullApp);
-    const dsn = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    runMake(["db-drop"], fullApp);
+    runMake(["db-create"], fullApp);
+    const dsn = fullDb.dbDsn;
     run("migrate", ["-path", "migrations", "-database", dsn, "up"], fullApp);
 
     // also proves SetRole works standalone (not just reachable via HTTP)
@@ -975,9 +1367,14 @@ step(
     // value is actually threaded through config -> main.go -> NewAuthz, not
     // just accepted and ignored — a permission grant takes effect on the
     // very next request instead of needing to wait out any cache window.
-    run("bash", ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=false AUTHZ_CACHE_TTL_MIN=0 go run ./cmd/api >/tmp/go-scaffold-smoke-rbac-boot.log 2>&1 & sleep 3`], fullApp);
+    const rbacApi = startApi(fullApp, "rbac-api", fullDb, {
+      REDIS_URL: sharedRedisUrl,
+      AUTO_MIGRATE: "false",
+      AUTHZ_CACHE_TTL_MIN: "0",
+    });
+    execFileSync("sleep", ["3"]);
 
-    const B = "http://localhost:8080/v1";
+    const B = `${smoke.baseURL}/v1`;
     const jsonHeader = ["-H", "Content-Type: application/json"];
     const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
     const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
@@ -1108,9 +1505,8 @@ step(
       throw new Error(`expected logout-all (called from session 1, no cookie needed) to also kill session 2's refresh token, got:\n${refreshOtherSessionAfterLogoutAll}`);
     }
 
-    run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
-    execFileSync("sleep", ["1"]);
-    run("make", ["db-drop"], fullApp);
+    stopApi(rbacApi);
+    runMake(["db-drop"], fullApp);
   }
 );
 
@@ -1174,9 +1570,9 @@ step(
     run("go", ["build", "./..."], fullApp);
     run("go", ["vet", "./..."], fullApp);
 
-    run("make", ["db-drop"], fullApp);
-    run("make", ["db-create"], fullApp);
-    const dsn = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    runMake(["db-drop"], fullApp);
+    runMake(["db-create"], fullApp);
+    const dsn = fullDb.dbDsn;
     run("migrate", ["-path", "migrations", "-database", dsn, "up"], fullApp);
 
     run("go", ["run", "./cmd/seed"], fullApp, {
@@ -1185,9 +1581,13 @@ step(
       SEED_ADMIN_NAME: "Genmod Admin",
     });
 
-    run("bash", ["-c", `REDIS_URL='${sharedRedisUrl}' AUTO_MIGRATE=false go run ./cmd/api >/tmp/go-scaffold-smoke-genmod-boot.log 2>&1 & sleep 3`], fullApp);
+    const genmodApi = startApi(fullApp, "genmod-api", fullDb, {
+      REDIS_URL: sharedRedisUrl,
+      AUTO_MIGRATE: "false",
+    });
+    execFileSync("sleep", ["3"]);
 
-    const B = "http://localhost:8080/v1";
+    const B = `${smoke.baseURL}/v1`;
     const jsonHeader = ["-H", "Content-Type: application/json"];
     const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
     const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
@@ -1212,9 +1612,8 @@ step(
       throw new Error(`expected 403 even for the seeded admin — the permission exists but isn't auto-granted to any role, got:\n${adminSecretBeforeGrant}`);
     }
 
-    run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"]);
-    execFileSync("sleep", ["1"]);
-    run("make", ["db-drop"], fullApp);
+    stopApi(genmodApi);
+    runMake(["db-drop"], fullApp);
   }
 );
 
@@ -1285,22 +1684,25 @@ step(
     if (!hasPsql && !dockerPgContainer) return;
     // stand up a "dev database" that looks like one `make migrate-up` produced,
     // holding a row the test run must not be allowed to destroy
-    run("make", ["db-create"], fullApp);
-    psqlExec("full_app", "CREATE TABLE orders (id uuid PRIMARY KEY); INSERT INTO orders VALUES (gen_random_uuid());");
-    run("make", ["db-create", "DB_NAME=full_app_test"], fullApp);
+    runMake(["db-create"], fullApp);
+    psqlExec(fullDb.dbName, "CREATE TABLE orders (id uuid PRIMARY KEY); INSERT INTO orders VALUES (gen_random_uuid());");
+    runMake(["db-create"], fullApp, fullTestDb);
+    // Repository integration tests use generated modules too (cart, secret,
+    // order, ...), so the dedicated test DB must receive the complete
+    // migration schema before packages exercise their repositories.
+    run("migrate", ["-path", "migrations", "-database", fullTestDb.dbDsn, "up"], fullApp);
 
     // -count=1 defeats the test cache: the step above already ran `go test ./...`
-    // with the same inputs (and TEST_DB_DSN unset both times), so a plain re-run
-    // is served from cache and never touches Postgres at all — which would make
-    // this whole check pass without proving anything.
-    run("go", ["test", "-count=1", "./..."], fullApp); // TEST_DB_DSN unset — the default is what's under test
+    // TEST_DB_DSN comes from this run's environment, so the harness must use
+    // its dedicated test database rather than the app database above.
+    run("go", ["test", "-count=1", "./..."], fullApp);
 
-    const rows = psqlExec("full_app", "SELECT count(*) FROM orders;").trim();
+    const rows = psqlExec(fullDb.dbName, "SELECT count(*) FROM orders;").trim();
     if (rows !== "1") {
       throw new Error(`the app's database lost data to the test run (expected 1 row, got "${rows}")`);
     }
-    run("make", ["db-drop"], fullApp);
-    run("make", ["db-drop", "DB_NAME=full_app_test"], fullApp);
+    runMake(["db-drop"], fullApp);
+    runMake(["db-drop"], fullApp, fullTestDb);
   }
 );
 
@@ -1316,9 +1718,9 @@ step(
   () => {
     if (!((hasPsql || dockerPgContainer) && hasMigrate)) return;
 
-    run("bash", ["-c", "lsof -ti:8080 | xargs -r kill -9"], fullApp); // in case a prior run left one behind
-    run("make", ["db-drop"], fullApp);
-    run("make", ["db-create"], fullApp);
+    stopAllApis(); // in case a prior assertion left one of this run's APIs behind
+    runMake(["db-drop"], fullApp);
+    runMake(["db-create"], fullApp);
 
     // fullApp already has Redis wired into readyz once "add worker" has run
     // earlier in this suite (same shared scratch project) — .env.example's
@@ -1327,36 +1729,26 @@ step(
     // doesn't survive this: the Makefile's own `export $(... .env ...)` step
     // re-exports .env's REDIS_URL line and clobbers it. Bake the real URL
     // into .env itself instead.
-    let envContent = readFileSync(path.join(fullApp, ".env.example"), "utf8").replace("AUTO_MIGRATE=true", "AUTO_MIGRATE=false");
+    let envContent = readFileSync(path.join(fullApp, ".env.example"), "utf8")
+      .replace("AUTO_MIGRATE=true", "AUTO_MIGRATE=false")
+      .replace(/^DB_DSN=.*/m, `DB_DSN=${fullDb.dbDsn}`)
+      .replace(/^PORT=.*/m, `PORT=${smoke.port}`);
     if (sharedRedisUrl) envContent = envContent.replace(/REDIS_URL=.*/, `REDIS_URL=${sharedRedisUrl}`);
     writeFileSync(path.join(fullApp, ".env"), envContent);
 
-    // `kill -9 $PID` isn't enough to stop the server: `make run`'s PID is `make`
-    // itself, and the actual listening binary is a grandchild via `go run` —
-    // killing just the parent orphans it, still bound to the port and still
-    // holding a Postgres connection, which then makes the final `db-drop` fail
-    // with "database is being accessed by other users". Kill by port instead.
-    const before = run(
-      "bash",
-      [
-        "-c",
-        "make run >/tmp/go-scaffold-smoke-boot.log 2>&1 & sleep 3; " +
-          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
-          "LISTENING=$(lsof -ti:8080 | wc -l | tr -d ' '); " +
-          "lsof -ti:8080 | xargs -r kill -9; " +
-          "echo \"READYZ=$CODE LISTENING=$LISTENING\"",
-      ],
-      fullApp
-    );
-    if (!/READYZ=000 LISTENING=0/.test(before)) {
-      throw new Error(`expected the server to refuse to boot (READYZ=000 LISTENING=0), got: ${before}`);
+    const beforeApi = startMakeRun(fullApp, "migration-before", false);
+    execFileSync("sleep", ["3"]);
+    const beforeReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
+    stopApi(beforeApi);
+    if (beforeReady !== "000") {
+      throw new Error(`expected the server to refuse to boot (READYZ=000), got: ${beforeReady}`);
     }
-    const beforeLog = readFileSync("/tmp/go-scaffold-smoke-boot.log", "utf8");
+    const beforeLog = readFileSync(logPath("migration-before"), "utf8");
     if (!beforeLog.includes("migration version check")) {
       throw new Error(`expected a "migration version check" error in the boot log, got:\n${beforeLog}`);
     }
 
-    const migratedDSN = "postgres://postgres:postgres@localhost:5432/full_app?sslmode=disable";
+    const migratedDSN = fullDb.dbDsn;
     run("migrate", ["-path", "migrations", "-database", migratedDSN, "up"], fullApp);
     // Repository integration tests use the production migration schema and are
     // required here — no AutoMigrate and no false-green skip.
@@ -1365,27 +1757,24 @@ step(
       REQUIRE_TEST_DB: "true",
     });
 
-    const after = run(
-      "bash",
-      [
-        "-c",
-        // REDIS_URL is already baked into .env above (needed once "add worker"
-        // has run earlier in this suite) — `make run` loads it from there.
-        "make run >/tmp/go-scaffold-smoke-boot.log 2>&1 & sleep 3; " +
-          "CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/readyz 2>/dev/null); CODE=${CODE:-000}; " +
-          "CREATE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/v1/orders -H 'Content-Type: application/json' -d '{}' 2>/dev/null); CREATE=${CREATE:-000}; " +
-          "lsof -ti:8080 | xargs -r kill -9; " +
-          "echo \"READYZ=$CODE CREATE=$CREATE\"",
-      ],
-      fullApp
-    );
-    if (!/READYZ=200 CREATE=201/.test(after)) {
-      throw new Error(`expected migrated schema to boot and serve CRUD (READYZ=200 CREATE=201), got: ${after}`);
+    const afterApi = startMakeRun(fullApp, "migration-after", true);
+    execFileSync("sleep", ["3"]);
+    const afterReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
+    const afterCreate = httpStatus([
+      "-X",
+      "POST",
+      `${smoke.baseURL}/v1/orders`,
+      "-H",
+      "Content-Type: application/json",
+      "-d",
+      "{}",
+    ], fullApp);
+    stopApi(afterApi);
+    if (afterReady !== "200" || afterCreate !== "201") {
+      throw new Error(`expected migrated schema to boot and serve CRUD (READYZ=200 CREATE=201), got: READYZ=${afterReady} CREATE=${afterCreate}`);
     }
 
-    // give Postgres a moment to notice the killed connection before db-drop
-    execFileSync("sleep", ["1"]);
-    run("make", ["db-drop"], fullApp);
+    runMake(["db-drop"], fullApp);
   }
 );
 
@@ -1514,26 +1903,28 @@ step(
     goScaffold(["generate", "module", "widget", "--full"], obsApp);
     run("go", ["build", "./..."], obsApp);
 
-    run("make", ["db-create"], obsApp);
-    const out = run(
-      "bash",
-      [
-        "-c",
-        `go run ./cmd/api >/tmp/go-scaffold-smoke-obs-boot.log 2>&1 & sleep 3; ` +
-          "echo '===CREATE==='; " +
-          "curl -s -w 'HTTPSTATUS:%{http_code}' -X POST http://localhost:8080/v1/widgets -H 'Content-Type: application/json' -d '{}'; " +
-          "echo; echo '===METRICS==='; " +
-          "curl -s http://localhost:8080/metrics; " +
-          // OTel's default BatchSpanProcessor flushes every 5s — if Init's
-          // empty-endpoint no-op regresses (an exporter gets created
-          // anyway), this is the window for its first failed dial attempt
-          // to actually land in the log before the process is killed.
-          "sleep 6; " +
-          "lsof -ti:8080 | xargs -r kill -9",
-      ],
-      obsApp
-    );
-    const [, createOut = "", metricsOut = ""] = out.split(/===CREATE===|===METRICS===/);
+    runMake(["db-create"], obsApp, obsDb);
+    const obsApi = startApi(obsApp, "obs-api", obsDb);
+    execFileSync("sleep", ["3"]);
+
+    const createOut = run("curl", [
+      "-s",
+      "-w",
+      "HTTPSTATUS:%{http_code}",
+      "-X",
+      "POST",
+      `${smoke.baseURL}/v1/widgets`,
+      "-H",
+      "Content-Type: application/json",
+      "-d",
+      "{}",
+    ]);
+    const metricsOut = run("curl", ["-s", `${smoke.baseURL}/metrics`]);
+    // OTel's default BatchSpanProcessor flushes every 5s — if Init's
+    // empty-endpoint no-op regresses (an exporter gets created anyway), this
+    // is the window for its first failed dial attempt to reach the log.
+    execFileSync("sleep", ["6"]);
+    stopApi(obsApi);
 
     if (!createOut.includes("HTTPSTATUS:201")) throw new Error(`expected 201 creating a widget through the metrics+tracing middleware chain, got:\n${createOut}`);
     if (!metricsOut.includes('http_requests_total{method="POST",path="/v1/widgets",status="201"} 1')) {
@@ -1543,13 +1934,13 @@ step(
       throw new Error(`expected real Prometheus HELP/TYPE headers for the duration histogram, got:\n${metricsOut}`);
     }
 
-    const bootLog = readFileSync("/tmp/go-scaffold-smoke-obs-boot.log", "utf8");
+    const bootLog = readFileSync(logPath("obs-api"), "utf8");
     if (bootLog.toLowerCase().includes("panic")) throw new Error(`server panicked with tracing enabled but no OTEL endpoint configured:\n${bootLog}`);
     if (bootLog.includes("traces export")) {
       throw new Error(`expected no trace export attempt with OTEL_EXPORTER_OTLP_ENDPOINT unset (should no-op, not try to dial a collector), got:\n${bootLog}`);
     }
 
-    run("make", ["db-drop"], obsApp);
+    runMake(["db-drop"], obsApp, obsDb);
   }
 );
 

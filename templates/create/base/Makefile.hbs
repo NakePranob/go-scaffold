@@ -3,6 +3,7 @@ DB_PORT ?= 5432
 DB_USER ?= postgres
 DB_NAME ?= {{dbName}}
 PGPASSWORD ?= postgres
+POSTGRES_CONTAINER ?=
 
 # which env file to load — defaults to .env (your local override, gitignored).
 # override to run against another file, e.g. copy .env.example to .env.production,
@@ -47,14 +48,17 @@ tidy:
 # connects to the always-present "postgres" maintenance DB to run CREATE DATABASE,
 # since the target DB may not exist yet. Safe to re-run — skips if it already exists.
 # \gexec only works read from stdin, not through -c, hence the pipe.
-# no local psql? falls back to `docker exec` into whatever container is publishing
-# DB_PORT — the project's own `docker compose up`'d postgres, or an unrelated
-# shared Postgres container you already have running, either works the same way.
+# `POSTGRES_CONTAINER` selects an exact Docker container when no host psql is
+# installed; otherwise the fallback discovers a container publishing DB_PORT.
 # override DB_HOST/DB_PORT/DB_USER/DB_NAME/PGPASSWORD to point at a different server.
 db-create:
 	@if command -v psql >/dev/null 2>&1; then \
 		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
 			PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres && echo "SUCCESS! database $(DB_NAME) is ready"; \
+	elif [ -n "$(POSTGRES_CONTAINER)" ]; then \
+		echo "no local psql — using docker exec into $(POSTGRES_CONTAINER)"; \
+		echo "SELECT 'CREATE DATABASE $(DB_NAME)' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$(DB_NAME)')\gexec" | \
+			docker exec -i -e PGPASSWORD=$(PGPASSWORD) $(POSTGRES_CONTAINER) psql -U $(DB_USER) -d postgres && echo "SUCCESS! database $(DB_NAME) is ready"; \
 	elif [ "$(DB_HOST)" = "localhost" ] || [ "$(DB_HOST)" = "127.0.0.1" ]; then \
 		container=$$(docker ps -q --filter "publish=$(DB_PORT)" | head -1); \
 		if [ -z "$$container" ]; then \
@@ -72,6 +76,8 @@ db-create:
 db-drop:
 	@if command -v psql >/dev/null 2>&1; then \
 		PGPASSWORD=$(PGPASSWORD) psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);" && echo "SUCCESS! database $(DB_NAME) dropped"; \
+	elif [ -n "$(POSTGRES_CONTAINER)" ]; then \
+		docker exec -i -e PGPASSWORD=$(PGPASSWORD) $(POSTGRES_CONTAINER) psql -U $(DB_USER) -d postgres -c "DROP DATABASE IF EXISTS $(DB_NAME);" && echo "SUCCESS! database $(DB_NAME) dropped"; \
 	elif [ "$(DB_HOST)" = "localhost" ] || [ "$(DB_HOST)" = "127.0.0.1" ]; then \
 		container=$$(docker ps -q --filter "publish=$(DB_PORT)" | head -1); \
 		if [ -z "$$container" ]; then \
