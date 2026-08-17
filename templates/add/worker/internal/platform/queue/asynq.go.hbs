@@ -1,0 +1,137 @@
+package queue
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/hibiken/asynq"
+)
+
+// Asynq keeps jobs in Redis.
+//
+// ⚠️ It cannot honour the Enqueue contract in queue.go. Redis knows nothing
+// about your Postgres transaction, so a job enqueued inside tx.Do is still
+// delivered when that transaction rolls back — the classic "welcome email
+// sent to a user whose signup failed". The standard fix is an outbox: write
+// the job as a row in the same transaction, then relay those rows to Redis
+// from a separate loop. Add that before using this adapter for work that
+// must not fire against data that never existed.
+//
+// Pick this backend when throughput genuinely needs Redis (tens of thousands
+// of jobs per second), when several languages share one queue, or when the
+// primary database is already near capacity.
+type Asynq struct {
+	client *asynq.Client
+	server *asynq.Server
+	mux    *asynq.ServeMux
+	m      *mux
+}
+
+// NewAsynqEnqueuer builds an insert-only client, for cmd/api.
+func NewAsynqEnqueuer(redisURL string) (*Asynq, error) {
+	opt, err := asynq.ParseRedisURI(redisURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Asynq{client: asynq.NewClient(opt), m: newMux()}, nil
+}
+
+// NewAsynqWorker builds a client that also works jobs, for cmd/worker.
+// Register every handler with Handle before calling Start.
+func NewAsynqWorker(redisURL string, concurrency int) (*Asynq, error) {
+	opt, err := asynq.ParseRedisURI(redisURL)
+	if err != nil {
+		return nil, err
+	}
+	srv := asynq.NewServer(opt, asynq.Config{
+		Concurrency: concurrency,
+		Logger:      &slogAdapter{inner: slog.Default()},
+	})
+	m := asynq.NewServeMux()
+	// One place to log every failed job, whatever it was.
+	m.Use(func(next asynq.Handler) asynq.Handler {
+		return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
+			err := next.ProcessTask(ctx, task)
+			if err != nil {
+				slog.Error("job failed", "kind", task.Type(), "error", err)
+			}
+			return err
+		})
+	})
+	return &Asynq{server: srv, mux: m, m: newMux()}, nil
+}
+
+// Handle registers a handler. Asynq dispatches on its own task type string,
+// which maps one-to-one onto our kind — no envelope needed on this backend.
+func (a *Asynq) Handle(kind string, h Handler) {
+	a.m.Handle(kind, h) // reuse the duplicate-kind guard
+	a.mux.Handle(kind, asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
+		return h(ctx, task.Payload())
+	}))
+}
+
+func (a *Asynq) Enqueue(ctx context.Context, j Job, opts *Options) error {
+	raw, err := encode(j)
+	if err != nil {
+		return err
+	}
+	var asynqOpts []asynq.Option
+	if opts != nil {
+		if opts.MaxRetry > 0 {
+			asynqOpts = append(asynqOpts, asynq.MaxRetry(opts.MaxRetry))
+		}
+		if !opts.RunAt.IsZero() {
+			asynqOpts = append(asynqOpts, asynq.ProcessAt(opts.RunAt))
+		}
+	}
+	_, err = a.client.EnqueueContext(ctx, asynq.NewTask(j.Kind(), raw), asynqOpts...)
+	return err
+}
+
+func (a *Asynq) Start(ctx context.Context) error {
+	if a.server == nil {
+		return fmt.Errorf("queue: this Asynq client was built for enqueueing only")
+	}
+	return a.server.Start(a.mux)
+}
+
+// Stop drains in-flight jobs. Asynq's Shutdown blocks with no timeout of its
+// own, so race it against ctx rather than letting a stuck job hang the
+// process forever.
+func (a *Asynq) Stop(ctx context.Context) error {
+	if a.server == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		a.server.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *Asynq) Close() error {
+	if a.client == nil {
+		return nil
+	}
+	return a.client.Close()
+}
+
+// slogAdapter lets asynq log through slog. Asynq calls these like the stdlib
+// `log` package (a plain message, sometimes several args meant to be
+// concatenated), so fmt.Sprint joins them into one message rather than
+// passing them as slog key-value pairs, which would read a lone message
+// argument as a key with no value.
+type slogAdapter struct{ inner *slog.Logger }
+
+func (a *slogAdapter) Debug(args ...interface{}) { a.inner.Debug(fmt.Sprint(args...)) }
+func (a *slogAdapter) Info(args ...interface{})  { a.inner.Info(fmt.Sprint(args...)) }
+func (a *slogAdapter) Warn(args ...interface{})  { a.inner.Warn(fmt.Sprint(args...)) }
+func (a *slogAdapter) Error(args ...interface{}) { a.inner.Error(fmt.Sprint(args...)) }
+func (a *slogAdapter) Fatal(args ...interface{}) { a.inner.Error(fmt.Sprint(args...)) }

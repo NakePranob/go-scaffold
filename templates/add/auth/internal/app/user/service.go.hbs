@@ -39,9 +39,10 @@ type repository interface {
 
 // mailer = what the service needs to send an email — satisfied by
 // platform/mail's AsyncClient (enqueues onto cmd/worker instead of blocking
-// the request on SMTP).
+// the request on SMTP). Takes ctx so the enqueue can join the caller's
+// transaction where the queue backend supports it.
 type mailer interface {
-	Send(to, subject, body string) error
+	Send(ctx context.Context, to, subject, body string) error
 }
 
 // go-scaffold:user-interfaces
@@ -224,7 +225,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	}
 
 	link := s.resetURL + "?token=" + raw
-	if err := s.mailer.Send(u.Email, "Reset your password", "Reset your password: "+link); err != nil {
+	if err := s.mailer.Send(ctx, u.Email, "Reset your password", "Reset your password: "+link); err != nil {
 		// token's already stored — a mail failure shouldn't fail the request,
 		// just get logged so it's visible operationally.
 		slog.Error("send password reset email", "error", err)
@@ -278,7 +279,7 @@ func (s *Service) sendVerificationEmail(ctx context.Context, u *model.User) {
 		return
 	}
 	link := s.verifyURL + "?token=" + raw
-	if err := s.mailer.Send(u.Email, "Verify your email", "Verify your email: "+link); err != nil {
+	if err := s.mailer.Send(ctx, u.Email, "Verify your email", "Verify your email: "+link); err != nil {
 		slog.Error("send email verification email", "error", err)
 	}
 }

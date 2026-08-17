@@ -4,49 +4,46 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/hibiken/asynq"
+	"{{goModule}}/internal/platform/queue"
 )
 
-const TypeSendEmail = "email:send"
-
-type sendEmailPayload struct {
-	To      string
-	Subject string
-	Body    string
+// SendEmail is the job cmd/api enqueues and cmd/worker runs. It is a plain
+// JSON struct on purpose — no queue backend's types appear here, so moving
+// between backends never touches this file.
+type SendEmail struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
 }
 
-func NewSendEmailTask(p sendEmailPayload) *asynq.Task {
-	payload, _ := json.Marshal(p)
-	return asynq.NewTask(TypeSendEmail, payload)
-}
+// KindSendEmail is registered by cmd/worker and used when enqueueing.
+const KindSendEmail = "email:send"
 
-func HandleSendEmail(client *Client) asynq.Handler {
-	return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
-		var p sendEmailPayload
-		if err := json.Unmarshal(task.Payload(), &p); err != nil {
+func (SendEmail) Kind() string { return KindSendEmail }
+
+// Handle returns the worker-side handler for SendEmail.
+func Handle(c *Client) queue.Handler {
+	return func(ctx context.Context, raw []byte) error {
+		var p SendEmail
+		if err := json.Unmarshal(raw, &p); err != nil {
+			// Malformed payload will never parse — returning it lets the
+			// backend park the job for inspection instead of retrying it
+			// into a wall.
 			return err
 		}
-		return client.Send(p.To, p.Subject, p.Body)
-	})
-}
-
-type AsyncClient struct {
-	q interface {
-		Enqueue(task *asynq.Task, opts ...asynq.Option) (string, error)
+		return c.Send(p.To, p.Subject, p.Body)
 	}
 }
 
-func NewAsyncClient(q interface {
-	Enqueue(task *asynq.Task, opts ...asynq.Option) (string, error)
-}) *AsyncClient {
-	return &AsyncClient{q: q}
-}
+// AsyncClient enqueues mail instead of sending it inline, so an HTTP handler
+// returns in microseconds rather than blocking on SMTP.
+type AsyncClient struct{ q queue.Enqueuer }
 
-// Send enqueues the email instead of sending it inline, so the caller (an
-// HTTP handler) returns in ~µs instead of blocking on SMTP. cmd/worker picks
-// it up and calls Client.Send.
-func (c *AsyncClient) Send(to, subject, body string) error {
-	task := NewSendEmailTask(sendEmailPayload{To: to, Subject: subject, Body: body})
-	_, err := c.q.Enqueue(task, asynq.MaxRetry(5))
-	return err
+func NewAsyncClient(q queue.Enqueuer) *AsyncClient { return &AsyncClient{q: q} }
+
+// Send takes a ctx so the enqueue can join the caller's transaction: with a
+// Postgres-backed queue the mail is only ever sent if the write that asked
+// for it committed.
+func (c *AsyncClient) Send(ctx context.Context, to, subject, body string) error {
+	return c.q.Enqueue(ctx, SendEmail{To: to, Subject: subject, Body: body}, &queue.Options{MaxRetry: 5})
 }

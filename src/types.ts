@@ -1,8 +1,20 @@
+/**
+ * Where background jobs are stored.
+ * - "river": rows in the project's own Postgres. A job is only delivered if
+ *   the transaction that enqueued it commits, and there is no second service
+ *   to run. The default.
+ * - "asynq": Redis. Higher throughput and shareable across languages, but the
+ *   enqueue cannot join a database transaction (see the adapter's warning).
+ */
+export type QueueBackend = "river" | "asynq";
+
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;
-  /** set by `go-scaffold add worker` — cache/queue/mail + cmd/worker exist */
+  /** set by `go-scaffold add worker` — queue/mail + cmd/worker exist */
   worker?: boolean;
+  /** which backing store `add worker` chose for the queue */
+  queue?: QueueBackend;
   /** set by `go-scaffold add auth` — internal/app/user + auth middleware exist */
   auth?: boolean;
   /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */

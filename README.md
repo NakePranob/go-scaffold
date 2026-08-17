@@ -192,15 +192,45 @@ Creates timestamped `migrations/<version>_<name>.up.sql` and `.down.sql` TODO
 stubs. The CLI reserves the names; you own the SQL and should apply it with
 `make migrate-up` (or `migrate -path migrations -database "$DB_DSN" up`).
 
-### `add worker` — add Redis-backed background work
+### `add worker` — add background job processing
 
 ```bash
-go-scaffold add worker
+go-scaffold add worker                      # asks where jobs should live
+go-scaffold add worker --queue postgres     # River (default)
+go-scaffold add worker --queue redis        # Asynq
+go-scaffold add worker --defaults           # no prompt, Postgres
 ```
 
-Adds Redis cache/queue support, async email delivery, and `cmd/worker`. It also
-makes `/readyz` report unavailable when Redis is down. Run `go mod tidy` and
-provide `REDIS_URL` before starting the API or worker.
+Adds `internal/platform/queue` (a backend-neutral contract plus one adapter),
+async email delivery, and `cmd/worker`.
+
+| | `--queue postgres` (River) | `--queue redis` (Asynq) |
+|---|---|---|
+| Extra service to run | none | Redis |
+| Enqueue joins your DB transaction | yes | **no** — needs an outbox |
+| Throughput | thousands/sec | tens of thousands/sec |
+| Inspect pending jobs | plain SQL | asynqmon |
+
+The default is Postgres because a job enqueued inside `tx.Do` is then only
+delivered if that transaction commits — no more welcome emails for signups
+that rolled back. Run `make river-migrate` once per database to create
+River's tables, then `make worker`.
+
+Application code only ever sees `queue.Job`, `queue.Enqueuer` and
+`queue.Handler` — no backend package appears outside its own adapter file, so
+switching later means writing one adapter, not touching every module that
+enqueues something.
+
+```go
+type WelcomeEmail struct{ To string `json:"to"` }
+func (WelcomeEmail) Kind() string { return "email:welcome" }
+
+// cmd/api — the job is discarded with the transaction if this fails
+tx.Do(ctx, db, func(ctx context.Context) error {
+    if err := repo.Create(ctx, u); err != nil { return err }
+    return jobs.Enqueue(ctx, WelcomeEmail{To: u.Email}, nil)
+})
+```
 
 ### `add auth` — add email/password authentication
 
@@ -208,7 +238,10 @@ provide `REDIS_URL` before starting the API or worker.
 go-scaffold add auth
 ```
 
-Requires `add worker`. Adds JWT access tokens, Redis-backed refresh-token
+Requires `add worker` (verification and password-reset emails go through the
+queue). The refresh-token store needs Redis regardless of the queue backend,
+so `add auth` adds `internal/platform/cache` itself when the project doesn't
+have it yet. Adds JWT access tokens, Redis-backed refresh-token
 rotation, registration/login/logout, password reset, email verification, and
 Google OAuth routes. Apply the generated migrations; `AUTO_MIGRATE=true` is
 convenient in development, while production should use `migrate up`.

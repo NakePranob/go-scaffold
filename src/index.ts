@@ -11,7 +11,8 @@ import { cliVersion } from "./utils/version";
 import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
-import { MethodType, GetMethodMode } from "./types";
+import { MethodType, GetMethodMode, QueueBackend } from "./types";
+import { promptQueueBackend } from "./prompts/worker-wizard";
 
 const program = new Command();
 program
@@ -137,15 +138,40 @@ const add = program.command("add").description("add opt-in infrastructure to an 
 
 add
   .command("worker")
-  .description("add Redis, an Asynq task queue, SMTP mail, and cmd/worker (opt-in — most projects don't need this on day one)")
-  .action(async () => {
+  .description("add a background job queue, SMTP mail, and cmd/worker (opt-in — most projects don't need this on day one)")
+  .option("--queue <backend>", "where jobs are stored: postgres (River, default) or redis (Asynq)")
+  .option("--defaults", "skip the prompt, use the Postgres-backed queue")
+  .action(async (opts: { queue?: string; defaults?: boolean }) => {
     try {
-      await addWorker();
+      await addWorker(await resolveQueueBackend(opts));
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;
     }
   });
+
+// resolveQueueBackend maps the friendly flag values people actually type
+// ("postgres", "redis") onto the adapter names, and falls back to the prompt
+// when neither --queue nor --defaults was given.
+async function resolveQueueBackend(opts: { queue?: string; defaults?: boolean }): Promise<QueueBackend> {
+  if (opts.queue) {
+    const normalized = opts.queue.trim().toLowerCase();
+    const byName: Record<string, QueueBackend> = {
+      postgres: "river",
+      river: "river",
+      pg: "river",
+      redis: "asynq",
+      asynq: "asynq",
+    };
+    const backend = byName[normalized];
+    if (!backend) {
+      throw new Error(`unknown --queue ${opts.queue} — use "postgres" (River) or "redis" (Asynq)`);
+    }
+    return backend;
+  }
+  if (opts.defaults) return "river";
+  return promptQueueBackend();
+}
 
 add
   .command("auth")

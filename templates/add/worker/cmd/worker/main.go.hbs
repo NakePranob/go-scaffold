@@ -2,18 +2,24 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+{{#if riverQueue}}
+	"{{goModule}}/internal/platform/database"
+{{/if}}
 	"{{goModule}}/internal/platform/mail"
 	"{{goModule}}/internal/platform/queue"
 	"{{goModule}}/internal/shared/config"
 	// go-scaffold:imports
 )
+
+// workerConcurrency is how many jobs run at once in this process. Scale out
+// by running more worker processes before raising this.
+const workerConcurrency = 10
 
 func main() {
 	cfg := config.Load()
@@ -21,44 +27,44 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
 
-	srv, err := queue.NewServer(cfg.RedisURL)
+{{#if riverQueue}}
+	// The queue lives in the same database as your data — the worker needs a
+	// connection to it, not to a separate broker.
+	db, err := database.Open(cfg)
 	if err != nil {
-		logger.Error("new queue server", "error", err)
+		logger.Error("open db", "error", err)
 		os.Exit(1)
 	}
 
-	srv.Handle(mail.TypeSendEmail, mail.HandleSendEmail(mail.Open(cfg)))
+	q, err := queue.NewRiverWorker(db, workerConcurrency)
+{{else}}
+	q, err := queue.NewAsynqWorker(cfg.RedisURL, workerConcurrency)
+{{/if}}
+	if err != nil {
+		logger.Error("start queue", "error", err)
+		os.Exit(1)
+	}
+
+	q.Handle(mail.KindSendEmail, mail.Handle(mail.Open(cfg)))
 	// go-scaffold:queue-handlers
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go func() {
-		logger.Info("worker started")
-		if err := srv.Start(); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("worker server", "error", err)
-			os.Exit(1)
-		}
-	}()
+	if err := q.Start(ctx); err != nil {
+		logger.Error("worker start", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("worker started", "concurrency", workerConcurrency)
 
 	<-ctx.Done()
 	logger.Info("shutting down worker")
 
+	// Give in-flight jobs a bounded window to finish before exiting.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// asynq's Shutdown() blocks until in-flight tasks finish (or the process
-	// is killed) with no context/timeout parameter of its own — run it in a
-	// goroutine and race it against shutdownCtx so a stuck task can't hang
-	// the process forever.
-	done := make(chan struct{}, 1)
-	go func() {
-		srv.Shutdown()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-shutdownCtx.Done():
-		logger.Warn("worker shutdown timed out")
+	if err := q.Stop(shutdownCtx); err != nil {
+		logger.Warn("worker shutdown timed out", "error", err)
 	}
 	logger.Info("worker stopped")
 }

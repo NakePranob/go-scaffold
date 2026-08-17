@@ -8,29 +8,43 @@ const PLATFORM_INIT_MARKER = "// go-scaffold:platform-init";
 const READYZ_MARKER = "// go-scaffold:readyz-checks";
 const SHUTDOWN_MARKER = "// go-scaffold:shutdown";
 
-// patchConfigForWorker adds RedisURL + SMTP_* fields to Config and their
-// env() loads to Load() — via marker comments, the same text-insertion
-// approach as patchMainGo, since config.go.hbs is only rendered once (at
-// `create`) and everything after that is a real file a human may have
-// already edited.
-export function patchConfigForWorker(configGoPath: string): void {
+// patchConfigForRedis adds RedisURL to Config and its env() load to Load().
+// Split out from the worker patch because Redis is no longer the worker's
+// concern by default — `add auth` needs it for the refresh-token store even
+// when the queue lives in Postgres.
+export function patchConfigForRedis(configGoPath: string): void {
+  let content = fs.readFileSync(configGoPath, "utf8");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, "RedisURL string", "RedisURL string");
+  content = insertBeforeMarkerOnce(
+    content,
+    CONFIG_LOAD_MARKER,
+    'RedisURL: env("REDIS_URL", "redis://localhost:6379/0"),',
+    'RedisURL: env("REDIS_URL"'
+  );
+  fs.writeFileSync(configGoPath, content);
+}
+
+// patchConfigForWorker adds the SMTP_* fields (and RedisURL, when Redis is
+// the queue's backing store) to Config and their env() loads to Load() — via
+// marker comments, the same text-insertion approach as patchMainGo, since
+// config.go.hbs is only rendered once (at `create`) and everything after
+// that is a real file a human may have already edited.
+export function patchConfigForWorker(configGoPath: string, opts: { redis: boolean }): void {
+  if (opts.redis) patchConfigForRedis(configGoPath);
+
   let content = fs.readFileSync(configGoPath, "utf8");
 
-  const fieldsBlock = ["RedisURL string", "", "SMTPHost string", "SMTPPort string", "SMTPUsername string", "SMTPPassword string", "SMTPFrom string"].join(
-    "\n"
-  );
-  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "RedisURL string");
+  const fieldsBlock = ["SMTPHost string", "SMTPPort string", "SMTPUsername string", "SMTPPassword string", "SMTPFrom string"].join("\n");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "SMTPHost string");
 
   const loadBlock = [
-    'RedisURL: env("REDIS_URL", "redis://localhost:6379/0"),',
-    "",
     'SMTPHost:     env("SMTP_HOST", ""),',
     'SMTPPort:     env("SMTP_PORT", "587"),',
     'SMTPUsername: env("SMTP_USERNAME", ""),',
     'SMTPPassword: env("SMTP_PASSWORD", ""),',
     'SMTPFrom:     env("SMTP_FROM", "no-reply@example.local"),',
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'RedisURL: env("REDIS_URL"');
+  content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'SMTPHost:     env("SMTP_HOST"');
 
   fs.writeFileSync(configGoPath, content);
 }

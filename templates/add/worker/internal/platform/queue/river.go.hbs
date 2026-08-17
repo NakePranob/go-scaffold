@@ -1,0 +1,130 @@
+package queue
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"log/slog"
+
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
+	"gorm.io/gorm"
+)
+
+// envelope carries any queue.Job through River as a single River job kind.
+// River binds a worker to one concrete args type, so one envelope plus our
+// own kind dispatch keeps handlers byte-identical across backends.
+//
+// ponytail: the real kind travels as a River tag rather than a River kind —
+// enough to filter on in River's UI. Promote a job to its own River type the
+// day it needs per-kind queue or retry configuration.
+type envelope struct {
+	K   string          `json:"kind"`
+	Raw json.RawMessage `json:"payload"`
+}
+
+func (envelope) Kind() string { return "queue.envelope" }
+
+type envelopeWorker struct {
+	river.WorkerDefaults[envelope]
+	m *mux
+}
+
+func (w *envelopeWorker) Work(ctx context.Context, job *river.Job[envelope]) error {
+	return w.m.dispatch(ctx, job.Args.K, job.Args.Raw)
+}
+
+// River keeps jobs as rows in the same Postgres database as your data. That
+// is the entire point: Enqueue joins the caller's transaction, so a job is
+// delivered if and only if the write that scheduled it commits.
+//
+// It runs on River's database/sql driver so it can share GORM's existing
+// connection pool. ponytail: that driver cannot use Postgres LISTEN/NOTIFY,
+// so cmd/worker polls (sub-second pickup instead of instant). If a job ever
+// needs instant pickup, give cmd/worker its own pgxpool + riverpgxv5 client
+// and keep this one for inserting.
+type River struct {
+	client *river.Client[*sql.Tx]
+	db     *gorm.DB
+	m      *mux
+}
+
+// NewRiverEnqueuer builds an insert-only client, for cmd/api.
+func NewRiverEnqueuer(db *gorm.DB) (*River, error) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	client, err := river.NewClient(riverdatabasesql.New(sqlDB), &river.Config{
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &River{client: client, db: db, m: newMux()}, nil
+}
+
+// NewRiverWorker builds a client that also works jobs, for cmd/worker.
+// Register every handler with Handle before calling Start.
+func NewRiverWorker(db *gorm.DB, concurrency int) (*River, error) {
+	m := newMux()
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &envelopeWorker{m: m})
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	client, err := river.NewClient(riverdatabasesql.New(sqlDB), &river.Config{
+		Logger:  slog.Default(),
+		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrency}},
+		Workers: workers,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &River{client: client, db: db, m: m}, nil
+}
+
+func (r *River) Handle(kind string, h Handler) { r.m.Handle(kind, h) }
+
+func (r *River) Enqueue(ctx context.Context, j Job, opts *Options) error {
+	raw, err := encode(j)
+	if err != nil {
+		return err
+	}
+	env := envelope{K: j.Kind(), Raw: raw}
+
+	insertOpts := &river.InsertOpts{Tags: []string{j.Kind()}}
+	if opts != nil {
+		if opts.MaxRetry > 0 {
+			insertOpts.MaxAttempts = opts.MaxRetry + 1 // River counts the first run as an attempt
+		}
+		if !opts.RunAt.IsZero() {
+			insertOpts.ScheduledAt = opts.RunAt
+		}
+	}
+
+	// Join the caller's transaction when there is one. This is the contract
+	// in queue.go, and the only reason the queue lives in Postgres at all.
+	if gdb := tx.From(ctx, r.db); gdb.Statement != nil {
+		if sqlTx, ok := gdb.Statement.ConnPool.(*sql.Tx); ok {
+			_, err = r.client.InsertTx(ctx, sqlTx, env, insertOpts)
+			return err
+		}
+	}
+	_, err = r.client.Insert(ctx, env, insertOpts)
+	return err
+}
+
+// Start begins working jobs. Only meaningful on a client from NewRiverWorker.
+func (r *River) Start(ctx context.Context) error { return r.client.Start(ctx) }
+
+// Stop drains in-flight jobs, giving up when ctx expires.
+func (r *River) Stop(ctx context.Context) error { return r.client.Stop(ctx) }
+
+// Close exists so cmd/api can shut the enqueuer down the same way whatever
+// backend it uses — River holds nothing of its own beyond GORM's pool.
+func (r *River) Close() error { return nil }

@@ -5,6 +5,7 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { AUTH_FILES } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
+import { patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 
@@ -36,13 +37,18 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   const config = readConfig(projectDir);
 
   if (!config.features.worker) {
-    throw new Error("`go-scaffold add auth` requires `go-scaffold add worker` first — the refresh token store needs Redis");
+    throw new Error("`go-scaffold add auth` requires `go-scaffold add worker` first — verification and password-reset emails are sent through the queue");
   }
 
   const userDir = path.join(projectDir, "internal", "app", "user");
   if (fs.existsSync(userDir)) {
     throw new Error(`${userDir} already exists — auth looks like it's already been added`);
   }
+
+  // The refresh-token store needs Redis regardless of where jobs live. With
+  // the Postgres-backed queue the project has no Redis yet, so add it here
+  // rather than forcing a queue backend nobody asked for.
+  await ensureRedis(projectDir, config.goModule);
 
   await applyTemplateEntries(projectDir, AUTH_FILES, { goModule: config.goModule });
 
@@ -72,7 +78,7 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   );
 
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
-  patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
+  patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.queue ?? "asynq");
   patchEnvExample(path.join(projectDir, ".env.example"));
   patchMakefile(path.join(projectDir, "Makefile"));
 
@@ -148,4 +154,29 @@ function patchEnvExample(envExamplePath: string): void {
     "GOOGLE_CLIENT_SECRET=\n" +
     "GOOGLE_REDIRECT_URL=\n";
   fs.writeFileSync(envExamplePath, content);
+}
+
+// ensureRedis adds internal/platform/cache + its config/env/main.go wiring
+// when the project doesn't have Redis yet — which is the normal case once
+// the queue lives in Postgres. Idempotent: a project whose queue is Redis
+// already has all of this and nothing happens.
+async function ensureRedis(projectDir: string, goModule: string): Promise<void> {
+  const cacheGo = path.join(projectDir, "internal", "platform", "cache", "redis.go");
+  if (fs.existsSync(cacheGo)) return;
+
+  await applyTemplateEntries(
+    projectDir,
+    [{ template: "add/worker/internal/platform/cache/redis.go.hbs", output: "internal/platform/cache/redis.go" }],
+    { goModule }
+  );
+  patchConfigForRedis(path.join(projectDir, "internal", "shared", "config", "config.go"));
+  patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), goModule);
+
+  const envExamplePath = path.join(projectDir, ".env.example");
+  if (fs.existsSync(envExamplePath)) {
+    const content = fs.readFileSync(envExamplePath, "utf8");
+    if (!content.includes("REDIS_URL")) {
+      fs.writeFileSync(envExamplePath, content.replace(/\n?$/, "\n") + "\n# refresh-token store\nREDIS_URL=redis://localhost:6379/0\n");
+    }
+  }
 }

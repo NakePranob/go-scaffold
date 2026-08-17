@@ -1,0 +1,87 @@
+// Package queue is this project's own vocabulary for background work.
+//
+// No backend package (River, Asynq, ...) may appear in this file or in any
+// caller — swapping backends has to mean rewriting one adapter file next to
+// this one, not every module that enqueues something.
+package queue
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// Job is one unit of background work. Each module defines its own job types;
+// the value is carried as JSON, so keep the fields plain and tagged.
+type Job interface {
+	// Kind is the stable identifier a handler registers against. Changing it
+	// orphans jobs already sitting in the queue.
+	Kind() string
+}
+
+// Options tunes a single enqueue. Each adapter translates these into its own
+// backend's equivalent — never rely on one for correctness, only for tuning.
+type Options struct {
+	// MaxRetry is how many times a failed job is retried before it is parked
+	// for inspection. Zero means "use the backend default".
+	MaxRetry int
+	// RunAt delays the job until this time. Zero means "as soon as possible".
+	RunAt time.Time
+}
+
+// Handler processes one job. raw is the JSON-encoded Job.
+type Handler func(ctx context.Context, raw []byte) error
+
+// Enqueuer is what application code depends on — nothing else.
+//
+// Contract: a job is delivered if, and only if, the database transaction
+// running on ctx commits. The Postgres-backed adapter gets this for free
+// (the job row joins that same transaction); a Redis-backed adapter cannot
+// provide it without an outbox, and says so in its own doc comment.
+type Enqueuer interface {
+	Enqueue(ctx context.Context, j Job, opts *Options) error
+}
+
+// Registry is what cmd/worker registers handlers on.
+type Registry interface {
+	Handle(kind string, h Handler)
+}
+
+// mux is the kind -> handler table every adapter dispatches through, so a
+// handler written against queue.Handler runs unchanged on any backend.
+type mux struct {
+	mu       sync.RWMutex
+	handlers map[string]Handler
+}
+
+func newMux() *mux { return &mux{handlers: make(map[string]Handler)} }
+
+// Handle panics on a duplicate kind: two handlers for one kind means one of
+// them silently never runs, which is far worse to debug than a boot failure.
+func (m *mux) Handle(kind string, h Handler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, dup := m.handlers[kind]; dup {
+		panic("queue: duplicate handler registered for kind " + kind)
+	}
+	m.handlers[kind] = h
+}
+
+func (m *mux) dispatch(ctx context.Context, kind string, raw []byte) error {
+	m.mu.RLock()
+	h, ok := m.handlers[kind]
+	m.mu.RUnlock()
+	if !ok {
+		// Retrying cannot help until a binary that knows this kind is
+		// deployed — the error is returned so the job is retried/parked
+		// rather than dropped, which keeps the payload recoverable.
+		return fmt.Errorf("queue: no handler registered for kind %q", kind)
+	}
+	return h(ctx, raw)
+}
+
+// encode is shared by every adapter so a payload written by one backend is
+// readable by another during a switch-over, when both run side by side.
+func encode(j Job) ([]byte, error) { return json.Marshal(j) }

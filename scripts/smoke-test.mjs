@@ -731,7 +731,10 @@ function waitForPort(port, attempts = 30) {
 step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires readyz, processes a real task" : "add worker: skipped (needs Docker for an isolated Redis)", () => {
   if (!hasDocker) return;
 
-  goScaffold(["add", "worker"], fullApp);
+  // --queue redis: this step (and `add auth` after it) asserts on the Redis
+  // path specifically — readyz pinging Redis, a task round-tripping through
+  // it. The Postgres-backed default is covered by its own build-only step.
+  goScaffold(["add", "worker", "--queue", "redis"], fullApp);
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
@@ -1997,6 +2000,33 @@ step("default minimal module layers up to full build", () => {
     const out = run("golangci-lint", ["run"], minApp);
     if (out.trim() && !out.includes("0 issues")) throw new Error(`layered minimal module: expected 0 issues, got:\n${out}`);
   }
+});
+
+// The Postgres-backed queue is the `add worker` default, and unlike the Redis
+// path it needs no external service to compile — so it gets its own scratch
+// project. Build-only on purpose: actually running jobs needs River's tables,
+// which is `make river-migrate`'s job, not the scaffold's.
+step("add worker --queue postgres: River adapter builds, no Redis anywhere", () => {
+  goScaffold(["create", "river-app", "--defaults"], scratch);
+  const riverApp = path.join(scratch, "river-app");
+  goScaffold(["add", "worker", "--queue", "postgres"], riverApp);
+
+  const queueDir = path.join(riverApp, "internal", "platform", "queue");
+  if (!existsSync(path.join(queueDir, "river.go"))) throw new Error("expected internal/platform/queue/river.go");
+  if (existsSync(path.join(queueDir, "asynq.go"))) throw new Error("asynq adapter should not be written for --queue postgres");
+  if (existsSync(path.join(riverApp, "internal", "platform", "cache"))) {
+    throw new Error("the Postgres-backed queue must not pull Redis into the project");
+  }
+  const cfg = readFileSync(path.join(riverApp, "internal", "shared", "config", "config.go"), "utf8");
+  if (cfg.includes("RedisURL")) throw new Error("config.go gained RedisURL without any Redis in the project");
+  const makefile = readFileSync(path.join(riverApp, "Makefile"), "utf8");
+  if (!makefile.includes("river-migrate:")) throw new Error("expected a river-migrate target in the Makefile");
+
+  run("go", ["mod", "tidy"], riverApp);
+  run("go", ["build", "./..."], riverApp);
+  run("go", ["vet", "./..."], riverApp);
+  const dirty = run("gofmt", ["-l", "."], riverApp).trim();
+  if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
 });
 
 // The two halves of drift detection. `create` emits the shared/ layer once;

@@ -3,16 +3,17 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
-import { WORKER_FILES } from "../templates/worker-manifest";
+import { workerFiles } from "../templates/worker-manifest";
 import { patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
+import { QueueBackend } from "../types";
 
-// addWorker scaffolds the async task processing subsystem: Redis
-// (platform/cache), Asynq client/server (platform/queue), SMTP mail
-// (platform/mail, with an email:send task type as the one thing the fresh
+// addWorker scaffolds async job processing: the backend-neutral queue
+// contract (platform/queue), one adapter for the chosen backing store, SMTP
+// mail (platform/mail, with an email:send job as the one thing a fresh
 // worker actually handles), and cmd/worker itself. Opt-in — most projects
-// don't need a queue on day one, and an empty worker with no task types
-// registered is a stranger scaffold than just not having one.
-export async function addWorker(projectDir: string = process.cwd()): Promise<void> {
+// don't need a queue on day one, and an empty worker with no job kinds
+// registered is a stranger scaffold than not having one.
+export async function addWorker(backend: QueueBackend, projectDir: string = process.cwd()): Promise<void> {
   const config = readConfig(projectDir);
 
   const queueDir = path.join(projectDir, "internal", "platform", "queue");
@@ -20,31 +21,42 @@ export async function addWorker(projectDir: string = process.cwd()): Promise<voi
     throw new Error(`${queueDir} already exists — worker infrastructure looks like it's already been added`);
   }
 
-  await applyTemplateEntries(projectDir, WORKER_FILES, { goModule: config.goModule });
+  const riverQueue = backend === "river";
+  await applyTemplateEntries(projectDir, workerFiles(backend), { goModule: config.goModule, riverQueue });
 
-  patchConfigForWorker(path.join(projectDir, "internal", "shared", "config", "config.go"));
-  patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
+  patchConfigForWorker(path.join(projectDir, "internal", "shared", "config", "config.go"), { redis: !riverQueue });
+  if (!riverQueue) {
+    patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
+  }
 
-  patchEnvExample(path.join(projectDir, ".env.example"));
-  patchMakefile(path.join(projectDir, "Makefile"));
+  patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
+  patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });
 
   gofmtTree(projectDir);
 
-  writeConfig(projectDir, { ...config, features: { ...config.features, worker: true } });
+  writeConfig(projectDir, { ...config, features: { ...config.features, worker: true, queue: backend } });
 
-  console.log(pc.green("\nadded internal/platform/{cache,queue,mail}/ and cmd/worker/"));
-  console.log("wired Redis into cmd/api (readyz check) — cmd/api does not enqueue anything yet");
-  console.log(pc.dim("\nnext: make worker (separate terminal, or `make dev` runs both), then go build ./... to confirm"));
+  console.log(pc.green(`\nadded internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend})`));
+  if (riverQueue) {
+    console.log("jobs are rows in your Postgres — no extra service, and an enqueue inside tx.Do commits with it");
+    console.log(pc.dim("\nnext: make river-migrate (creates River's tables), then make worker"));
+  } else {
+    console.log("wired Redis into cmd/api (readyz check) — cmd/api does not enqueue anything yet");
+    console.log(pc.yellow("note: a Redis enqueue cannot join a database transaction — see the warning on queue.Asynq"));
+    console.log(pc.dim("\nnext: make worker (separate terminal, or `make dev` runs both), then go build ./... to confirm"));
+  }
 }
 
-function patchEnvExample(envExamplePath: string): void {
+function patchEnvExample(envExamplePath: string, opts: { redis: boolean }): void {
   if (!fs.existsSync(envExamplePath)) return;
   let content = fs.readFileSync(envExamplePath, "utf8");
-  if (content.includes("REDIS_URL")) return; // already added
+  if (content.includes("SMTP_HOST")) return; // already added
+
+  const redisBlock = opts.redis && !content.includes("REDIS_URL") ? "\nREDIS_URL=redis://localhost:6379/0\n" : "";
 
   content =
     content.replace(/\n?$/, "\n") +
-    "\nREDIS_URL=redis://localhost:6379/0\n" +
+    redisBlock +
     "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
     "SMTP_HOST=\n" +
     "SMTP_PORT=587\n" +
@@ -54,12 +66,22 @@ function patchEnvExample(envExamplePath: string): void {
   fs.writeFileSync(envExamplePath, content);
 }
 
-function patchMakefile(makefilePath: string): void {
+function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
   if (!fs.existsSync(makefilePath)) return;
   let content = fs.readFileSync(makefilePath, "utf8");
   if (content.includes("\nworker:\n")) return; // already added
 
-  content = content.replace(/^\.PHONY: /m, ".PHONY: dev worker ");
+  content = content.replace(/^\.PHONY: /m, `.PHONY: dev worker${opts.river ? " river-migrate" : ""} `);
+
+  // River keeps its own tables, versioned by River itself rather than by this
+  // project's migrations/ directory — run its CLI once per database. Pinned
+  // by nothing on purpose: it is a one-shot setup command, not a build input.
+  const riverTarget = opts.river
+    ? "\n# create River's job tables (run once per database, and after upgrading River)\n" +
+      "river-migrate:\n" +
+      "\t@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); \\\n" +
+      '\tgo run github.com/riverqueue/river/cmd/river@latest migrate-up --line main --database-url "$$DB_DSN"\n'
+    : "";
 
   const targets =
     "\n# run both API + worker in one terminal — Ctrl+C kills both\n" +
@@ -70,10 +92,11 @@ function patchMakefile(makefilePath: string): void {
     "\t go run ./cmd/worker & \\\n" +
     "\t wait)\n" +
     "\n" +
-    "# background worker for async task processing (email, ...) — requires Redis.\n" +
+    `# background worker for async job processing (email, ...) — requires ${opts.river ? "Postgres (make river-migrate first)" : "Redis"}.\n` +
     "# Use `make dev` to run both in one terminal, or run this in a separate one.\n" +
     "worker:\n" +
-    "\t@[ -f .env ] && export $$(grep -v '^#' .env | xargs); go run ./cmd/worker\n";
+    "\t@[ -f .env ] && export $$(grep -v '^#' .env | xargs); go run ./cmd/worker\n" +
+    riverTarget;
 
   content = content.replace(/\nbuild:/, `${targets}\nbuild:`);
   fs.writeFileSync(makefilePath, content);

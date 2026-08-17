@@ -1,3 +1,7 @@
 node_modules/
 dist/
 *.log
+
+# working notes only — architecture decisions, comparisons, explainers.
+# never part of the published package or the repo history.
+/docs/

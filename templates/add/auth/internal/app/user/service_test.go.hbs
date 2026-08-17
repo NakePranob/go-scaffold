@@ -107,7 +107,7 @@ func (f *fakeRepo) UpdateIdentity(context.Context, *model.Identity) error       
 
 type fakeMailer struct{}
 
-func (fakeMailer) Send(string, string, string) error { return nil }
+func (fakeMailer) Send(context.Context, string, string, string) error { return nil }
 
 // go-scaffold:user-service-test-types
 

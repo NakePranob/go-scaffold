@@ -1,5 +1,6 @@
 import fs from "fs-extra";
 import { insertBeforeMarkerOnce } from "./marker-patch";
+import { QueueBackend } from "../types";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
@@ -63,7 +64,7 @@ export function patchConfigForAuth(configGoPath: string): void {
 // registration (the domain's own Handler.Register splits /auth public vs
 // /users protected — main.go doesn't need to know that split, same
 // convention as every other module).
-export function patchMainGoForAuth(mainGoPath: string, goModule: string): void {
+export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBackend: QueueBackend): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
 
   const importLine = `"${goModule}/internal/app/user"`;
@@ -83,10 +84,12 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string): void {
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
 
-  const queueInitBlock = ["q, err := queue.NewClient(cfg.RedisURL)", "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join(
-    "\n"
-  );
-  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.NewClient(cfg.RedisURL)");
+  // The enqueuer is built from whatever backend `add worker` chose — the
+  // constructor differs, everything downstream of it (mail.NewAsyncClient)
+  // only sees the queue.Enqueuer interface and doesn't change.
+  const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
+  const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
+  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
 
   const migrateLine1 = "&usermodel.User{},";
   const migrateLine2 = "&usermodel.Identity{},";
