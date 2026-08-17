@@ -1,7 +1,8 @@
 import fs from "fs-extra";
-import { insertBeforeMarker, insertBeforeMarkerOnce, removeLines, removeLinesByPrefix } from "./marker-patch";
+import { insertBeforeMarker, insertBeforeMarkerOnce, removeBlock, removeLines, removeLinesByPrefix } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
+const SCHEMA_MARKER = "// go-scaffold:schemas";
 const MODEL_MARKER = "// go-scaffold:models";
 const ROUTE_MARKER = "// go-scaffold:routes";
 // no leading tab: insertBeforeMarker re-indents, and removeLines matches by
@@ -14,6 +15,8 @@ export interface RoutePatch {
   modulePath: string;
   pkg: string;
   pascalName: string;
+  /** Postgres schema this module's table lives in, e.g. "order_svc" */
+  schemaName: string;
   /** wires middleware.RequireAuth(cfg.JWTSecret) into the module's route group */
   auth?: boolean;
   /** also wires authz.Require(permission) — requires auth too */
@@ -40,6 +43,17 @@ function mainGoLines(patch: RoutePatch) {
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
     modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`,
+    // AutoMigrate (dev) creates tables but not the schema they live in — see
+    // the comment on go-scaffold:schemas in main.go.hbs. One Exec per schema,
+    // guarded by its own sentinel so two modules sharing a schema name only
+    // ever produce one line (not expected today, but cheap to keep safe).
+    schemaLines: [
+      `if err := db.Exec("CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}").Error; err != nil {`,
+      `\tlogger.Error("create schema", "error", err)`,
+      `\tos.Exit(1)`,
+      `}`,
+    ].join("\n"),
+    schemaSentinel: `CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}`,
     migrateLine: `&${modelAlias}.${patch.pascalName}{},`,
     serviceLine: `${svcVar} := ${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))`,
     // matches the service line however the user has since extended it
@@ -60,13 +74,15 @@ function mainGoLines(patch: RoutePatch) {
 // edits markers can't express).
 export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, migrateLine, serviceLine, servicePrefix, routeLine } = mainGoLines(patch);
+  const { importLine, modelImportLine, schemaLines, schemaSentinel, migrateLine, serviceLine, servicePrefix, routeLine } =
+    mainGoLines(patch);
 
   // each guarded by its own sentinel so re-running after only the module
   // folder was deleted (main.go still wired) is a no-op, not a dup that
   // panics gin at startup.
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
   content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
   // sentinel is the prefix, not the whole line: a re-run must not add a
   // second service line just because the first one gained a dependency.
@@ -82,11 +98,15 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
 // main.go still compiles (api would otherwise be declared-and-unused).
 export function unpatchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, migrateLine, servicePrefix, routeLine } = mainGoLines(patch);
+  const { importLine, modelImportLine, schemaLines, migrateLine, servicePrefix, routeLine } = mainGoLines(patch);
 
   content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine]);
   // by prefix: the service line may have grown arguments since it was written
   content = removeLinesByPrefix(content, [servicePrefix]);
+  // by contiguous block, not removeLines: every module's schema block is
+  // identical except the schema name, so a line-by-line removal would also
+  // strip another module's matching lines.
+  content = removeBlock(content, schemaLines);
 
   if (!content.includes(".Register(api)") && !content.includes(UNUSED_API_LINE)) {
     content = insertBeforeMarker(content, ROUTE_MARKER, UNUSED_API_LINE);

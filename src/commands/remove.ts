@@ -73,6 +73,7 @@ export async function removeModule(
     modulePath,
     pkg: naming.pkg,
     pascalName: naming.pascalName,
+    schemaName: naming.schemaName,
     auth,
     permission,
   });

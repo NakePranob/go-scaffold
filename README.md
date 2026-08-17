@@ -118,8 +118,10 @@ Both modes also:
 - Register the module in `cmd/api/main.go` (via marker comments — see
   `// go-scaffold:*` in that file) — full wires an actual route, minimal
   wires an empty route group
-- Add the model to the `AutoMigrate(...)` call
-- Append `migrations/<seq>_create_<plural>.{up,down}.sql`
+- Create the module's own Postgres schema (`<module>_svc`, e.g. `order_svc`)
+  and add the model to the `AutoMigrate(...)` call
+- Append `migrations/<seq>_create_<plural>.{up,down}.sql`, which creates that
+  same schema for `AUTO_MIGRATE=false`/production
 
 What it does **not** do: invent your fields or wire foreign keys between
 domains — see `docs/architect/patterns.md` in the generated project for the

@@ -1,4 +1,6 @@
-CREATE TABLE users (
+CREATE SCHEMA IF NOT EXISTS user_svc;
+
+CREATE TABLE user_svc.users (
     id             UUID PRIMARY KEY,
     email          VARCHAR(255) NOT NULL UNIQUE,
     name           VARCHAR(255) NOT NULL DEFAULT '',

@@ -2157,6 +2157,9 @@ func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS order_svc").Error; err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
 	if err := db.AutoMigrate(&model.Order{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

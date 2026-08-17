@@ -135,6 +135,7 @@ export function resolveModuleNaming(rawName: string): ModuleNaming {
     pascalName: toPascalCase(singular),
     plural,
     tableName: toDbName(plural),
+    schemaName: `${pkg}_svc`,
     errorPrefix: toDbName(singular).toUpperCase(),
   };
 }
@@ -155,6 +156,12 @@ function resolveLegacyModuleNaming(rawName: string): ModuleNaming {
     pascalName: toPascalCase(pkg),
     plural,
     tableName: toDbName(plural),
+    // Not meaningful for a legacy match: its table already exists in
+    // whatever schema the project's own migrations put it in (usually
+    // "public", from before this field existed), and nothing re-renders its
+    // model/migration templates to move it. Every consumer of this result is
+    // generate method/remove module, neither of which reads schemaName.
+    schemaName: `${pkg}_svc`,
     errorPrefix: pkg.toUpperCase(),
   };
 }

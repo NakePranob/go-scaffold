@@ -49,6 +49,16 @@ export interface ModuleNaming {
   plural: string;
   /** plural snake_case database table name (e.g. "order_items") */
   tableName: string;
+  /**
+   * Postgres schema this module's tables live in, e.g. "orderitem_svc". Every
+   * generated module gets its own: a domain's migration only ever creates
+   * DDL inside its own schema, and a cross-schema FK is still fine (see
+   * docs/architect/patterns.md's FK rules) — what this buys is that "which
+   * migration owns this table" is never ambiguous, and a domain can rename
+   * its own columns without grepping the rest of the project for a raw SQL
+   * JOIN into them.
+   */
+  schemaName: string;
   /** SCREAMING_SNAKE prefix for error codes (e.g. "ORDER") */
   errorPrefix: string;
 }

@@ -14,6 +14,7 @@ const cases = [
       pascalName: "Order",
       plural: "orders",
       tableName: "orders",
+      schemaName: "order_svc",
       errorPrefix: "ORDER",
     },
   },
@@ -25,6 +26,7 @@ const cases = [
       pascalName: "Category",
       plural: "categories",
       tableName: "categories",
+      schemaName: "category_svc",
       errorPrefix: "CATEGORY",
     },
   },
@@ -36,6 +38,7 @@ const cases = [
       pascalName: "Status",
       plural: "statuses",
       tableName: "statuses",
+      schemaName: "status_svc",
       errorPrefix: "STATUS",
     },
   },
@@ -47,6 +50,7 @@ const cases = [
       pascalName: "OrderItem",
       plural: "order-items",
       tableName: "order_items",
+      schemaName: "orderitem_svc",
       errorPrefix: "ORDER_ITEM",
     },
   },
@@ -67,6 +71,7 @@ test("resolveExistingModuleNaming finds a pre-canonical plural package", () => {
     pascalName: "Orders",
     plural: "orderses",
     tableName: "orderses",
+    schemaName: "orders_svc",
     errorPrefix: "ORDERS",
   };
   assert.deepEqual(resolveExistingModuleNaming("orders", ["orders"]), expected);
@@ -80,6 +85,7 @@ test("resolveExistingModuleNaming can locate a legacy package whose singular is 
     pascalName: "Types",
     plural: "typeses",
     tableName: "typeses",
+    schemaName: "types_svc",
     errorPrefix: "TYPES",
   });
 });

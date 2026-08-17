@@ -45,9 +45,9 @@ test("plural module input produces a singular entity with one explicit table nam
     assert.match(model, /type Order struct/);
     assert.match(
       model,
-      /func \(Order\) TableName\(\) string \{\s*return "orders"\s*\}/
+      /func \(Order\) TableName\(\) string \{\s*return "order_svc\.orders"\s*\}/
     );
-    assert.match(migration(project, "_create_orders.up.sql"), /CREATE TABLE orders/);
+    assert.match(migration(project, "_create_orders.up.sql"), /CREATE TABLE order_svc\.orders/);
     assert.match(read(project, "internal/app/order/handler.go"), /Group\("\/orders"/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -65,11 +65,11 @@ test("multi-word module keeps URL words and uses snake_case SQL identifiers", ()
     assert.match(model, /type OrderItem struct/);
     assert.match(
       model,
-      /func \(OrderItem\) TableName\(\) string \{\s*return "order_items"\s*\}/
+      /func \(OrderItem\) TableName\(\) string \{\s*return "orderitem_svc\.order_items"\s*\}/
     );
     assert.match(
       migration(project, "_create_order-items.up.sql"),
-      /CREATE TABLE order_items/
+      /CREATE TABLE orderitem_svc\.order_items/
     );
     assert.match(
       read(project, "internal/app/orderitem/handler.go"),

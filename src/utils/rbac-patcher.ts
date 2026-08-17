@@ -2,6 +2,7 @@ import fs from "fs-extra";
 import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
+const SCHEMA_MARKER = "// go-scaffold:schemas";
 const MODEL_MARKER = "// go-scaffold:models";
 const ROUTE_MARKER = "// go-scaffold:routes";
 const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
@@ -267,6 +268,14 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
   const modelImportLine = `rolemodel "${goModule}/internal/app/role/model"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+
+  const schemaBlock = [
+    'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS role_svc").Error; err != nil {',
+    '\tlogger.Error("create schema", "error", err)',
+    "\tos.Exit(1)",
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS role_svc");
 
   const migrateLines = ["&rolemodel.Role{},", "&rolemodel.Permission{},", "&rolemodel.RolePermission{},"];
   for (const line of migrateLines) {

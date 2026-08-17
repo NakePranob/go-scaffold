@@ -49,6 +49,28 @@ export function removeLines(content: string, trimmedLines: string[]): string {
     .join("\n");
 }
 
+// removeBlock removes a multi-line block inserted by insertBeforeMarker,
+// matched as one contiguous run (each line compared trimmed) rather than
+// line-by-line like removeLines. Needed when a block's individual lines
+// aren't unique on their own — two modules' schema-creation blocks in
+// main.go are identical except for the schema name itself, and removeLines
+// would delete the shared lines from both when asked to remove just one.
+export function removeBlock(content: string, block: string): string {
+  const blockLines = block.split("\n").map((l) => l.trim());
+  const lines = content.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; ) {
+    const matches = blockLines.every((bl, j) => lines[i + j]?.trim() === bl);
+    if (matches) {
+      i += blockLines.length;
+    } else {
+      out.push(lines[i]);
+      i += 1;
+    }
+  }
+  return out.join("\n");
+}
+
 // removeLinesByPrefix is removeLines for a line the user is expected to edit
 // after it was generated — a service constructor that has since gained a
 // dependency, say. Matching the whole line would miss it and leave the

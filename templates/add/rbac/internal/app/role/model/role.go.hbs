@@ -16,3 +16,7 @@ type Role struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// TableName pins this to role_svc rather than GORM's default inflection —
+// every domain gets its own schema, see docs/architect/patterns.md.
+func (Role) TableName() string { return "role_svc.roles" }

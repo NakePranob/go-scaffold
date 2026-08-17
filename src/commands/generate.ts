@@ -124,6 +124,7 @@ export async function generateModule(
     modulePath,
     pkg: naming.pkg,
     pascalName: naming.pascalName,
+    schemaName: naming.schemaName,
     auth: opts.auth,
     permission: opts.permission,
   });

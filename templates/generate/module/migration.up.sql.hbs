@@ -1,4 +1,7 @@
-CREATE TABLE {{tableName}} (
+-- one schema per domain — see model.go's TableName for why
+CREATE SCHEMA IF NOT EXISTS {{schemaName}};
+
+CREATE TABLE {{schemaName}}.{{tableName}} (
     id         UUID PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

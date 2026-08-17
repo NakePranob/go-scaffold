@@ -32,6 +32,14 @@ internal/app/<domain>/
 - Every consumer inside `cmd/api/main.go` imports each domain's `model`
   package under an alias (`ordermodel`, `usermodel`, ...) since they all share
   the package name `model`
+- `TableName()` returns a schema-qualified name (`order_svc.orders`, not
+  `orders`) — every domain gets its own Postgres schema, created by its own
+  migration (`CREATE SCHEMA IF NOT EXISTS`) and by `cmd/api/main.go` before
+  `AutoMigrate` runs in dev (AutoMigrate creates tables, never the schema they
+  live in). A cross-domain FK is still fine — see the FK rules below — this
+  only stops one domain's table from silently colliding with another's, or a
+  raw SQL `JOIN` from reaching into a domain it doesn't own without at least
+  naming the schema it's crossing into.
 
 ## Layer Conventions
 

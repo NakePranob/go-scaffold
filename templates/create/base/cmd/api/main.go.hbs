@@ -38,6 +38,12 @@ func main() {
 	}
 	// go-scaffold:platform-init
 
+	// AutoMigrate creates tables but never the schema they live in — each
+	// domain gets its own (see model.go's TableName), so it has to exist
+	// before AutoMigrate runs. The versioned SQL migrations create the same
+	// schemas with CREATE SCHEMA IF NOT EXISTS, so this only matters for dev.
+	// go-scaffold:schemas
+
 	if cfg.AutoMigrate {
 		// ponytail: AutoMigrate is for dev only (add-only, locks the table once data grows)
 		// prod: set AUTO_MIGRATE=false and run golang-migrate as versioned SQL instead

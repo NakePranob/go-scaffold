@@ -7,3 +7,6 @@ type Permission struct {
 	Code        string `json:"code" gorm:"type:varchar(50);primaryKey"`
 	Description string `json:"description" gorm:"not null"`
 }
+
+// TableName — see Role.TableName; same schema, same reasoning.
+func (Permission) TableName() string { return "role_svc.permissions" }

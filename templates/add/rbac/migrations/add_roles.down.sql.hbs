@@ -3,13 +3,13 @@
 -- raise a clear, actionable error instead of a raw FK-violation.
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM users WHERE role NOT IN ('staff', 'admin')) THEN
+    IF EXISTS (SELECT 1 FROM user_svc.users WHERE role NOT IN ('staff', 'admin')) THEN
         RAISE EXCEPTION 'cannot roll back add_roles: users still have a role other than staff/admin — reassign them to staff/admin first';
     END IF;
 END $$;
 
-ALTER TABLE users DROP COLUMN role;
+ALTER TABLE user_svc.users DROP COLUMN role;
 
-DROP TABLE role_permissions;
-DROP TABLE permissions;
-DROP TABLE roles;
+DROP TABLE role_svc.role_permissions;
+DROP TABLE role_svc.permissions;
+DROP TABLE role_svc.roles;

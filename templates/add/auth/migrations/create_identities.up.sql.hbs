@@ -1,6 +1,6 @@
-CREATE TABLE identities (
+CREATE TABLE user_svc.identities (
     id            UUID PRIMARY KEY,
-    user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id       UUID NOT NULL REFERENCES user_svc.users(id) ON DELETE CASCADE,
     provider      VARCHAR(20) NOT NULL,
     password_hash TEXT,
     provider_uid  TEXT,

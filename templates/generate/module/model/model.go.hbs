@@ -26,6 +26,11 @@ type {{pascalName}} struct {
 // TableName pins the persistence contract to the versioned SQL migrations.
 // Do not rely on GORM's English inflector: irregular/plural module names must
 // resolve to exactly the same table in development and production.
+//
+// Schema-qualified ("{{schemaName}}", not just "{{tableName}}") so this
+// domain's table can never collide with another domain's, and a raw SQL JOIN
+// reaching into it from outside this package fails loudly instead of quietly
+// coupling two domains together.
 func ({{pascalName}}) TableName() string {
-	return "{{tableName}}"
+	return "{{schemaName}}.{{tableName}}"
 }

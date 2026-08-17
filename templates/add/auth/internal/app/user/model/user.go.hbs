@@ -20,3 +20,8 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// TableName pins this to user_svc rather than GORM's default inflection
+// ("users", schema-less) — every domain gets its own schema, see
+// docs/architect/patterns.md.
+func (User) TableName() string { return "user_svc.users" }

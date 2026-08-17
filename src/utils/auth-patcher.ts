@@ -7,6 +7,7 @@ const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 const CONFIG_CHECKS_MARKER = "// go-scaffold:config-checks";
 const PLATFORM_INIT_MARKER = "// go-scaffold:platform-init";
+const SCHEMA_MARKER = "// go-scaffold:schemas";
 const MODEL_MARKER = "// go-scaffold:models";
 const ROUTE_MARKER = "// go-scaffold:routes";
 const SHUTDOWN_MARKER = "// go-scaffold:shutdown";
@@ -90,6 +91,14 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBa
   const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
   const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
   content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
+
+  const schemaBlock = [
+    'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS user_svc").Error; err != nil {',
+    '\tlogger.Error("create schema", "error", err)',
+    "\tos.Exit(1)",
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
 
   const migrateLine1 = "&usermodel.User{},";
   const migrateLine2 = "&usermodel.Identity{},";

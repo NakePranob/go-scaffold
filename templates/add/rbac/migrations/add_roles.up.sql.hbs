@@ -1,4 +1,6 @@
-CREATE TABLE roles (
+CREATE SCHEMA IF NOT EXISTS role_svc;
+
+CREATE TABLE role_svc.roles (
     code       VARCHAR(20) PRIMARY KEY,
     name       TEXT NOT NULL,
     is_system  BOOLEAN NOT NULL DEFAULT FALSE,
@@ -6,30 +8,34 @@ CREATE TABLE roles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE permissions (
+CREATE TABLE role_svc.permissions (
     code        VARCHAR(50) PRIMARY KEY,
     description TEXT NOT NULL
 );
 
-CREATE TABLE role_permissions (
-    role_code       VARCHAR(20) NOT NULL REFERENCES roles(code) ON DELETE CASCADE,
-    permission_code VARCHAR(50) NOT NULL REFERENCES permissions(code) ON DELETE CASCADE,
+CREATE TABLE role_svc.role_permissions (
+    role_code       VARCHAR(20) NOT NULL REFERENCES role_svc.roles(code) ON DELETE CASCADE,
+    permission_code VARCHAR(50) NOT NULL REFERENCES role_svc.permissions(code) ON DELETE CASCADE,
     PRIMARY KEY (role_code, permission_code)
 );
 
-INSERT INTO roles (code, name, is_system) VALUES
+INSERT INTO role_svc.roles (code, name, is_system) VALUES
     ('staff', 'Staff', TRUE),
     ('admin', 'Admin', TRUE);
 
-INSERT INTO permissions (code, description) VALUES
+INSERT INTO role_svc.permissions (code, description) VALUES
     ('role:manage',       'Create roles and change their permissions'),
     ('user:manage-role',  'Change a user''s assigned role'),
     ('user:read',         'List and view other users');
 
 -- admin gets every permission that exists, staff gets none — no behavior
 -- change for existing users until an admin explicitly grants something.
-INSERT INTO role_permissions (role_code, permission_code)
-SELECT 'admin', code FROM permissions;
+INSERT INTO role_svc.role_permissions (role_code, permission_code)
+SELECT 'admin', code FROM role_svc.permissions;
 
-ALTER TABLE users
-    ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff' REFERENCES roles(code);
+-- cross-schema FK: role_svc's migration is the one place allowed to alter
+-- user_svc's table, because this feature's whole point is "give users a
+-- role" — see docs/architect/patterns.md's FK rules for why a plain FK, not
+-- an app-level existence check, is the right way to enforce this.
+ALTER TABLE user_svc.users
+    ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff' REFERENCES role_svc.roles(code);
