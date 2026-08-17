@@ -131,7 +131,9 @@ function patchMakefile(makefilePath: string): void {
     "seed:\n" +
     "\t@[ -f .env ] && export $$(grep -v '^#' .env | sed -E 's/[[:space:]]+#.*$//' | xargs); go run ./cmd/seed $(ARGS)\n";
 
-  content = content.replace(/\nbuild:/, `${target}\nbuild:`);
+  // Function replacer — target contains a literal "$$", see worker.ts's
+  // patchMakefile for why a string replacement would silently mangle it.
+  content = content.replace(/\nbuild:/, () => `${target}\nbuild:`);
   fs.writeFileSync(makefilePath, content);
 }
 

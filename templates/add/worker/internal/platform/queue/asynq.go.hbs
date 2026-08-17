@@ -65,9 +65,12 @@ func NewAsynqWorker(redisURL string, concurrency int) (*Asynq, error) {
 // Handle registers a handler. Asynq dispatches on its own task type string,
 // which maps one-to-one onto our kind — no envelope needed on this backend.
 func (a *Asynq) Handle(kind string, h Handler) {
-	a.m.Handle(kind, h) // reuse the duplicate-kind guard
+	a.m.Handle(kind, h)
+	// Dispatch through our own table rather than closing over h, so both
+	// backends resolve a kind the same way — including what happens when a
+	// job arrives for a kind this binary doesn't know.
 	a.mux.Handle(kind, asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
-		return h(ctx, task.Payload())
+		return a.m.dispatch(ctx, task.Type(), task.Payload())
 	}))
 }
 

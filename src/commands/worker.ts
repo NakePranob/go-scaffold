@@ -98,6 +98,10 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
     "\t@[ -f .env ] && export $$(grep -v '^#' .env | xargs); go run ./cmd/worker\n" +
     riverTarget;
 
-  content = content.replace(/\nbuild:/, `${targets}\nbuild:`);
+  // Function replacer: targets contains literal "$$" (Make's escape for a
+  // shell "$") which String.replace would otherwise collapse to a single "$"
+  // when the replacement is a plain string — turning "$$DB_DSN" into
+  // "$DB_DSN" and silently handing the wrong value to every command below.
+  content = content.replace(/\nbuild:/, () => `${targets}\nbuild:`);
   fs.writeFileSync(makefilePath, content);
 }

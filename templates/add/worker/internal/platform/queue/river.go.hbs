@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"regexp"
 
 	"{{goModule}}/internal/shared/tx"
 
@@ -90,6 +91,23 @@ func NewRiverWorker(db *gorm.DB, concurrency int) (*River, error) {
 
 func (r *River) Handle(kind string, h Handler) { r.m.Handle(kind, h) }
 
+// River validates a tag as \A[\w][\w\-]+[\w]\z and rejects the whole insert
+// if one doesn't match. Kinds like "email:send" don't, so map them to the
+// nearest legal form and drop the tag entirely if even that fails — a job
+// must never be lost over the spelling of a label in the admin UI.
+var (
+	tagUnsafe = regexp.MustCompile(`[^\w-]`)
+	tagLegal  = regexp.MustCompile(`\A[\w][\w\-]+[\w]\z`)
+)
+
+func kindTag(kind string) []string {
+	tag := tagUnsafe.ReplaceAllString(kind, "-")
+	if !tagLegal.MatchString(tag) {
+		return nil
+	}
+	return []string{tag}
+}
+
 func (r *River) Enqueue(ctx context.Context, j Job, opts *Options) error {
 	raw, err := encode(j)
 	if err != nil {
@@ -97,7 +115,7 @@ func (r *River) Enqueue(ctx context.Context, j Job, opts *Options) error {
 	}
 	env := envelope{K: j.Kind(), Raw: raw}
 
-	insertOpts := &river.InsertOpts{Tags: []string{j.Kind()}}
+	insertOpts := &river.InsertOpts{Tags: kindTag(j.Kind())}
 	if opts != nil {
 		if opts.MaxRetry > 0 {
 			insertOpts.MaxAttempts = opts.MaxRetry + 1 // River counts the first run as an attempt

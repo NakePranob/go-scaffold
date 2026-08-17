@@ -18,7 +18,12 @@ export function hasMarker(content: string, marker: string): boolean {
 export function ensureImport(content: string, importPath: string): string {
   const importLine = `"${importPath}"`;
   if (content.includes(importLine)) return content;
-  return content.replace(/import \(\n/, `import (\n\t${importLine}\n`);
+  // A function replacer, not a string one: String.replace treats "$$", "$&",
+  // digit-groups etc. in a *string* replacement as special patterns even when
+  // the search argument is a plain string, not a regex — collapsing any "$$"
+  // that happens to appear in importLine. A function's return value is spliced
+  // in literally, so this holds regardless of what importPath contains.
+  return content.replace(/import \(\n/, () => `import (\n\t${importLine}\n`);
 }
 
 // insertBeforeMarkerOnce: like insertBeforeMarker but a no-op if `sentinel`
@@ -69,5 +74,10 @@ export function insertBeforeMarker(content: string, marker: string, block: strin
     .split("\n")
     .map((line) => (line ? `${indent}${line}` : line))
     .join("\n");
-  return content.replace(markerLine, `${indentedBlock}\n${markerLine}`);
+  // Function replacer, not a string one — see the comment on ensureImport.
+  // Every caller of this — main.go/patterns.md route and import wiring,
+  // depguard rules, rbac's main.go patches — funnels through here, so fixing
+  // it here is what actually closes the bug off, rather than auditing every
+  // block a caller happens to pass in today.
+  return content.replace(markerLine, () => `${indentedBlock}\n${markerLine}`);
 }
