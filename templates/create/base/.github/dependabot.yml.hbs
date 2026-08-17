@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Go dependencies drift quietly: nothing fails, the project just ages until
+  # an upgrade becomes a project of its own. Weekly PRs keep each bump small
+  # enough to read, and CI already builds, vets, lints and tests every one.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # one PR for the routine patch/minor churn; majors stay separate so
+      # they get read properly
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

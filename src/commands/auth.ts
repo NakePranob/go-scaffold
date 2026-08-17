@@ -6,6 +6,7 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { AUTH_FILES } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
 import { patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 
@@ -77,6 +78,7 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
     {}
   );
 
+  patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.queue ?? "asynq");
   patchEnvExample(path.join(projectDir, ".env.example"));

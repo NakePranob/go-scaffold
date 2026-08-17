@@ -96,8 +96,12 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBa
   content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine1, migrateLine1);
   content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine2, migrateLine2);
 
-  const routeLine =
-    "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
+  // same two-line shape every generated module uses: a named service, then
+  // the handler that registers it. `add rbac` extends both lines later, and a
+  // human wiring another domain into user's service edits line one in place.
+  const svcLine = "userSvc := user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg)";
+  content = insertBeforeMarkerOnce(content, ROUTE_MARKER, svcLine, "userSvc :=");
+  const routeLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(/\n\t_ = api \/\/ dropped once `generate module` registers the first route\n/, "\n");
 

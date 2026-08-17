@@ -1,5 +1,5 @@
 import fs from "fs-extra";
-import { insertBeforeMarker, insertBeforeMarkerOnce, removeLines } from "./marker-patch";
+import { insertBeforeMarker, insertBeforeMarkerOnce, removeLines, removeLinesByPrefix } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const MODEL_MARKER = "// go-scaffold:models";
@@ -22,15 +22,28 @@ export interface RoutePatch {
 
 // the exact lines patchMainGo inserts for a module — one source of truth so
 // unpatchMainGo removes precisely what patch added.
+//
+// The service gets its own named variable rather than being constructed
+// inline inside NewHandler(...). docs/architect/patterns.md tells you to wire
+// one domain's service into another's constructor when it needs behaviour
+// from it, which means editing this block by hand — and an inline expression
+// has nowhere to hold the result. With a named variable the edit is "add an
+// argument to the end of line one", and unpatchMainGo can still find the line
+// afterwards because it matches on the `<pkg>Svc :=` prefix, not the whole
+// text.
 function mainGoLines(patch: RoutePatch) {
   const modelAlias = `${patch.pkg}model`; // every domain's model subpackage is named "model"
-  const handlerArgs = [`${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))`];
+  const svcVar = `${patch.pkg}Svc`;
+  const handlerArgs = [svcVar];
   if (patch.auth) handlerArgs.push("cfg.JWTSecret");
   if (patch.permission) handlerArgs.push("authz");
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
     modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`,
     migrateLine: `&${modelAlias}.${patch.pascalName}{},`,
+    serviceLine: `${svcVar} := ${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))`,
+    // matches the service line however the user has since extended it
+    servicePrefix: `${svcVar} :=`,
     // `api` is the one route group declared by main.go.hbs, prefixed with
     // whatever apiPrefix the project chose at create time (e.g. /v1, /api,
     // or none) — every module registers on it, there is no per-module choice.
@@ -47,7 +60,7 @@ function mainGoLines(patch: RoutePatch) {
 // edits markers can't express).
 export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, migrateLine, routeLine } = mainGoLines(patch);
+  const { importLine, modelImportLine, migrateLine, serviceLine, servicePrefix, routeLine } = mainGoLines(patch);
 
   // each guarded by its own sentinel so re-running after only the module
   // folder was deleted (main.go still wired) is a no-op, not a dup that
@@ -55,6 +68,9 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
   content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
+  // sentinel is the prefix, not the whole line: a re-run must not add a
+  // second service line just because the first one gained a dependency.
+  content = insertBeforeMarkerOnce(content, ROUTE_MARKER, serviceLine, servicePrefix);
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = removeLines(content, [UNUSED_API_LINE]);
 
@@ -66,9 +82,11 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
 // main.go still compiles (api would otherwise be declared-and-unused).
 export function unpatchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, migrateLine, routeLine } = mainGoLines(patch);
+  const { importLine, modelImportLine, migrateLine, servicePrefix, routeLine } = mainGoLines(patch);
 
   content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine]);
+  // by prefix: the service line may have grown arguments since it was written
+  content = removeLinesByPrefix(content, [servicePrefix]);
 
   if (!content.includes(".Register(api)") && !content.includes(UNUSED_API_LINE)) {
     content = insertBeforeMarker(content, ROUTE_MARKER, UNUSED_API_LINE);

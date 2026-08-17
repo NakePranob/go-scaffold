@@ -20,6 +20,7 @@ import {
   patchAuthDocsForRbac,
 } from "../utils/rbac-patcher";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
+import { patchGolangciForModule } from "../utils/golangci-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
 // route `add rbac` registers or adds onto the user handler.
@@ -76,6 +77,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserDTOForRbac(path.join(projectDir, "internal", "app", "user", "dto.go"));
   patchUserHandlerForRbac(path.join(projectDir, "internal", "app", "user", "handler.go"), config.goModule);
   patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
+  patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "role");
   patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
   patchEnvExample(path.join(projectDir, ".env.example"));

@@ -8,6 +8,7 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
 import { patchMainGo } from "../utils/main-patcher";
 import { patchOpenapiIndex } from "../utils/openapi-patcher";
+import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { promptModuleName } from "../prompts/generate-wizard";
@@ -116,6 +117,8 @@ export async function generateModule(
   }
 
   const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
+  patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, naming.pkg);
+
   patchMainGo(mainGoPath, {
     goModule: config.goModule,
     modulePath,

@@ -3,6 +3,7 @@ import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const MODEL_MARKER = "// go-scaffold:models";
+const ROUTE_MARKER = "// go-scaffold:routes";
 const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 
@@ -272,17 +273,26 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
     content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
   }
 
-  const oldRouteLine =
-    "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
-  if (content.includes(oldRouteLine)) {
-    const newRouteBlock = [
-      "roleSvc := role.NewService(role.NewRepository(db))",
-      "authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)",
-      "user.NewHandler(user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg, roleSvc), cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb, authz).Register(api)",
-      "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)",
-    ].join("\n");
-    content = content.replace(oldRouteLine, newRouteBlock);
+  // roleSvc and authz have to be declared *above* userSvc, which now takes
+  // roleSvc — so this rewrites the service line in place rather than
+  // appending at the marker (which would land below it).
+  const userSvcLine = "userSvc := user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg)";
+  if (content.includes(userSvcLine)) {
+    content = content.replace(
+      userSvcLine,
+      [
+        "roleSvc := role.NewService(role.NewRepository(db))",
+        "authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)",
+        `${userSvcLine.slice(0, -1)}, roleSvc)`,
+      ].join("\n")
+    );
   }
+
+  const userRouteLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
+  content = content.replace(userRouteLine, userRouteLine.replace("rdb)", "rdb, authz)"));
+
+  const roleRouteLine = "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)";
+  content = insertBeforeMarkerOnce(content, ROUTE_MARKER, roleRouteLine, roleRouteLine);
 
   fs.writeFileSync(mainGoPath, content);
 }

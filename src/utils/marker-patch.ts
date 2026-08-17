@@ -44,6 +44,18 @@ export function removeLines(content: string, trimmedLines: string[]): string {
     .join("\n");
 }
 
+// removeLinesByPrefix is removeLines for a line the user is expected to edit
+// after it was generated — a service constructor that has since gained a
+// dependency, say. Matching the whole line would miss it and leave the
+// project un-compilable after `remove module`; matching a distinctive prefix
+// (`orderSvc :=`) still finds it. Only use it where the prefix is unique.
+export function removeLinesByPrefix(content: string, prefixes: string[]): string {
+  return content
+    .split("\n")
+    .filter((l) => !prefixes.some((p) => l.trim().startsWith(p)))
+    .join("\n");
+}
+
 export function insertBeforeMarker(content: string, marker: string, block: string): string {
   const lines = content.split("\n");
   const markerLine = lines.find((l) => l.trim() === marker);

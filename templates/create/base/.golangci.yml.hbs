@@ -5,12 +5,39 @@ version: "2"
 
 linters:
   enable:
+    - depguard
     - errcheck
     - govet
     - ineffassign
     - staticcheck
     - unused
   settings:
+    depguard:
+      # What keeps this a modular monolith rather than a pile of folders: a
+      # domain may not reach into another domain's package. It declares a
+      # narrow interface for what it needs and cmd/api/main.go supplies the
+      # concrete service — see docs/architect/patterns.md "Calling Another
+      # Domain's Logic". Without this, the first shortcut someone takes stays
+      # invisible until the coupling is everywhere.
+      #
+      # One rule per domain, written by `go-scaffold generate module`: depguard
+      # matches import paths as static prefixes and has no notion of "the
+      # domain this file belongs to", so denying internal/app wholesale would
+      # also reject a domain importing its own model/ subpackage. Each rule
+      # scopes itself with `files:` and allows exactly its own path.
+      #
+      # This only sees Go imports. A raw SQL JOIN into another domain's table
+      # couples just as hard and no linter can see it — that boundary comes
+      # from giving each domain its own schema.
+      rules:
+        wiring-flows-inward:
+          list-mode: lax
+          files:
+            - "**/internal/app/**"
+          deny:
+            - pkg: "{{goModule}}/cmd"
+              desc: a domain must not import cmd/ — wiring flows the other way
+        # go-scaffold:depguard-rules
     errcheck:
       exclude-functions:
         # gin.Context.Error()'s return value is intentionally never checked —

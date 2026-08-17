@@ -3,9 +3,10 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { confirm } from "@inquirer/prompts";
 import { readConfig } from "../utils/config";
-import { resolveProjectModuleNaming } from "../utils/module-location";
+import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
 import { unpatchMainGo } from "../utils/main-patcher";
 import { unpatchOpenapiIndex } from "../utils/openapi-patcher";
+import { unpatchGolangciForModule } from "../utils/golangci-patcher";
 import { gofmtTree } from "../utils/template-renderer";
 import { promptModuleName } from "../prompts/generate-wizard";
 
@@ -52,6 +53,17 @@ export async function removeModule(
     permission = handlerContent.match(/h\.authz\.Require\("([^"]+)"\)/)?.[1];
   }
 
+  // Refuse if another domain still imports this one. Deleting it anyway
+  // leaves the project un-compilable, and the error Go reports then points at
+  // the surviving module rather than at the removal that caused it.
+  const dependents = findDependents(projectDir, config.goModule, modulePath);
+  if (dependents.length > 0) {
+    throw new Error(
+      `module "${naming.pkg}" is still used by: ${dependents.join(", ")}\n` +
+        `remove those references (or the modules themselves) first — deleting internal/app/${modulePath} now would break the build`
+    );
+  }
+
   // 1. the domain package
   fs.removeSync(moduleDir);
 
@@ -64,6 +76,8 @@ export async function removeModule(
     auth,
     permission,
   });
+
+  unpatchGolangciForModule(path.join(projectDir, ".golangci.yml"), modulePath);
 
   // 3. openapi index + per-module docs
   const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
@@ -103,4 +117,33 @@ export async function removeModule(
         `and write an explicit up/down migration.`
     )
   );
+}
+
+// findDependents lists the .go files in *other* domains that import this one.
+// Import path match, not a bare package-name match: `orders` appears in plenty
+// of strings and comments, but only an import of
+// "<goModule>/internal/app/orders" is a real compile-time dependency.
+function findDependents(projectDir: string, goModule: string, modulePath: string): string[] {
+  const needle = `"${goModule}/internal/app/${modulePath}`; // no closing quote: also catches the /model subpackage
+  const appDir = path.join(projectDir, "internal", "app");
+  const hits: string[] = [];
+
+  for (const pkg of existingModulePackages(projectDir)) {
+    if (pkg === modulePath) continue;
+    for (const file of goFilesIn(path.join(appDir, pkg))) {
+      if (fs.readFileSync(file, "utf8").includes(needle)) {
+        hits.push(path.relative(projectDir, file));
+      }
+    }
+  }
+  return hits;
+}
+
+function goFilesIn(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return goFilesIn(full);
+    return entry.name.endsWith(".go") ? [full] : [];
+  });
 }

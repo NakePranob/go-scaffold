@@ -92,22 +92,54 @@ if this project has one):
 For behavior, not just a data reference (e.g. `order` needs `user`'s email
 to put on a receipt) — the caller's `service.go` declares its own narrow
 interface for exactly what it needs, the same way it already declares a
-`repository` interface:
+`repository` interface.
+
+**The interface speaks in the caller's own terms.** No domain package ever
+imports another domain package — `golangci-lint`'s `depguard` rules enforce
+this, and it is the same rule that makes rule 1 above work. So the interface
+names primitives, or types the caller owns, never `user.Response`:
 
 ```go
 // order/service.go
 type userLookup interface {
-    GetByID(ctx context.Context, id uuid.UUID) (user.Response, error)
+    EmailOf(ctx context.Context, id uuid.UUID) (string, error)
 }
 ```
 
-`cmd/api/main.go` wires the concrete `user` service in — it already
-satisfies the interface, no adapter needed:
+`cmd/api/main.go` is the one place that knows both domains, so the adapter
+lives there — a func literal, not a type:
 
 ```go
-userSvc := user.NewService(userRepo)
-orderSvc := order.NewService(orderRepo, userSvc)
+userSvc := user.NewService(userRepo, ...)
+orderSvc := order.NewService(orderRepo, order.UserLookupFunc(
+    func(ctx context.Context, id uuid.UUID) (string, error) {
+        u, err := userSvc.Get(ctx, id)
+        if err != nil {
+            return "", err
+        }
+        return u.Email, nil
+    },
+))
 ```
+
+where `order` provides the usual func-to-interface shim next to its
+interface:
+
+```go
+// order/service.go
+type UserLookupFunc func(ctx context.Context, id uuid.UUID) (string, error)
+
+func (f UserLookupFunc) EmailOf(ctx context.Context, id uuid.UUID) (string, error) {
+    return f(ctx, id)
+}
+```
+
+It looks like more ceremony than passing `*user.Service` straight in, and it
+is — four lines of it. What you buy is that `order` compiles, tests, and
+moves without `user` existing at all, and that a change to `user.Response`
+can never silently ripple into `order`. The adapter is also the honest place
+to notice you are reaching for something that should have been the caller's
+own data.
 
 - **One direction only.** If `user` would need to call back into `order`,
   don't wire it both ways — either the two belong in one domain, or the
