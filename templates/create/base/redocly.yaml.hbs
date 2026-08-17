@@ -1,0 +1,21 @@
+# Config for `npx @redocly/cli lint docs/openapi.yaml` (run in CI, see
+# .github/workflows/ci.yml) and `make openapi-bundle`.
+#
+# `recommended` (the CLI's default with no config at all) enforces
+# documentation-completeness style — every operation must declare security,
+# every operation needs a documented 4xx, no unused security scheme, no
+# localhost server URL — none of which are spec defects, and all of which are
+# true of a freshly generated project before auth exists or of a redirect/
+# no-content endpoint by design. `minimal` checks the things that are
+# actually bugs: unresolved $refs, malformed schemas, invalid enum/type
+# values. The specific rules below would otherwise fire on this project's own
+# generated output, which would make the CI step fail from the day the
+# project is created rather than when someone actually breaks the spec.
+extends:
+  - minimal
+rules:
+  security-defined: off
+  operation-4xx-response: off
+  operation-2xx-response: off
+  no-unused-components: off
+  no-server-example.com: off

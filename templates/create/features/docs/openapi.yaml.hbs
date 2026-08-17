@@ -18,10 +18,6 @@ paths:
     $ref: './health/health-livez.yaml'
   /readyz:
     $ref: './health/health-readyz.yaml'
-{{#if observability}}
-  /metrics:
-    $ref: './observability/metrics.yaml'
-{{/if}}
   # go-scaffold:paths
 
 components:

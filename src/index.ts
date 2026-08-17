@@ -11,6 +11,7 @@ import { cliVersion } from "./utils/version";
 import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
+import { addObservability } from "./commands/observability";
 import { MethodType, GetMethodMode, QueueBackend } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
 
@@ -191,6 +192,18 @@ add
   .action(async () => {
     try {
       await addRbac();
+    } catch (err) {
+      console.error(pc.red((err as Error).message));
+      process.exitCode = 1;
+    }
+  });
+
+add
+  .command("observability")
+  .description("add Prometheus /metrics + OpenTelemetry tracing for Gin + GORM (also available at `create` time via --observability)")
+  .action(async () => {
+    try {
+      await addObservability();
     } catch (err) {
       console.error(pc.red((err as Error).message));
       process.exitCode = 1;

@@ -5,7 +5,7 @@
 // forbidden flags) actually reject. No Postgres required — integration
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,6 +69,18 @@ function findFreePort() {
     throw new Error(`could not allocate a TCP port for the smoke test: ${output}`);
   }
   return port;
+}
+
+// run() only returns stdout, which is fine for the CLI (everything user-
+// facing goes there) but not for redocly, which writes its lint report to
+// stderr and leaves stdout empty even on success. spawnSync exposes both.
+function runCombinedOutput(cmd, args, cwd) {
+  const result = spawnSync(cmd, args, { cwd, encoding: "utf8" });
+  const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  if (result.status !== 0) {
+    throw new Error(`${cmd} ${args.join(" ")} exited ${result.status}:\n${combined}`);
+  }
+  return combined;
 }
 
 function httpStatus(args, cwd) {
@@ -1122,6 +1134,8 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "POSTGRES_DB: full_app_test");
   assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "golangci-lint-action");
+  assertFileContains(path.join(fullApp, ".github", "workflows", "ci.yml"), "Lint OpenAPI spec");
+  if (!existsSync(path.join(fullApp, "redocly.yaml"))) throw new Error("expected redocly.yaml alongside docs/openapi.yaml");
 });
 
 let hasGolangciLint = true;
@@ -1651,6 +1665,23 @@ step(
   }
 );
 
+// Same file CI's "Lint OpenAPI spec" step runs, against fullApp at its most
+// feature-rich (auth + rbac + a full-CRUD module + five generate-method
+// shapes) — the combination most likely to trip a style rule that fires on
+// real generated output (a redirect endpoint, an unauthenticated health
+// check, a DELETE with only a 204). redocly.yaml's minimal-plus-exceptions
+// config exists specifically so this stays green without editing anything.
+step(
+  hasNpx
+    ? "redocly lint (the same check CI runs) passes on generated output without edits"
+    : "redocly lint skipped (npx not available)",
+  () => {
+    if (!hasNpx) return;
+    const out = runCombinedOutput("npx", ["--yes", "@redocly/cli", "lint", "docs/openapi.yaml"], fullApp);
+    if (!out.includes("valid")) throw new Error(`expected redocly lint to pass cleanly, got:\n${out}`);
+  }
+);
+
 step("re-generating after deleting only the folder doesn't duplicate wiring (would panic gin)", () => {
   // simulate: user rm -rf's the module dir but main.go/openapi.yaml still
   // reference it, then re-runs generate module. Must stay a single Register.
@@ -1977,6 +2008,71 @@ step(
     }
 
     runMake(["db-drop"], obsApp, obsDb);
+  }
+);
+
+// `add observability` is the same patch `create --observability` applies,
+// but run against a project that was created without it — the retrofit path
+// nothing above exercises. Lighter than the check above (which already
+// proves the runtime behavior in full): this proves the command works
+// standalone, wires the same places, and refuses to run twice.
+step(
+  hasDocker && (hasPsql || dockerPgContainer)
+    ? "add observability: retrofits a plain project the same way --observability at create time would, and refuses a second run"
+    : "add observability: skipped (needs Docker, psql/a Postgres container)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer))) return;
+
+    goScaffold(["create", "retrofit-app", "--defaults"], scratch);
+    const retrofitApp = path.join(scratch, "retrofit-app");
+
+    const mainGoBefore = readFileSync(path.join(retrofitApp, "cmd", "api", "main.go"), "utf8");
+    if (mainGoBefore.includes("telemetry")) throw new Error("expected a plain --defaults project to have no telemetry wiring yet");
+
+    goScaffold(["add", "observability"], retrofitApp);
+
+    const mainGoAfter = readFileSync(path.join(retrofitApp, "cmd", "api", "main.go"), "utf8");
+    if (!mainGoAfter.includes("telemetry.Init(") || !mainGoAfter.includes('r.GET("/metrics"')) {
+      throw new Error(`expected telemetry.Init and the /metrics route wired into main.go, got:\n${mainGoAfter}`);
+    }
+    if (!mainGoAfter.includes("middleware.Metrics(), middleware.Tracing(")) {
+      throw new Error("expected middleware.Metrics()/middleware.Tracing() appended to the existing r.Use(...) call");
+    }
+    const databaseGo = readFileSync(path.join(retrofitApp, "internal", "platform", "database", "database.go"), "utf8");
+    if (!databaseGo.includes("telemetry.NewGormPlugin()")) throw new Error("expected the GORM OpenTelemetry plugin wired into database.Open");
+    const openapiAfter = readFileSync(path.join(retrofitApp, "docs", "openapi.yaml"), "utf8");
+    if (!openapiAfter.includes("/metrics:") || !openapiAfter.includes("./observability/metrics.yaml")) {
+      throw new Error("expected /metrics wired into docs/openapi.yaml unprefixed (it isn't behind the api group)");
+    }
+
+    expectThrows(() => goScaffold(["add", "observability"], retrofitApp), "already exists");
+
+    run("go", ["mod", "tidy"], retrofitApp);
+    run("go", ["build", "./..."], retrofitApp);
+    run("go", ["vet", "./..."], retrofitApp);
+    const dirty = run("gofmt", ["-l", "."], retrofitApp).trim();
+    if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
+    if (hasGolangciLint) {
+      const lintOut = run("golangci-lint", ["run"], retrofitApp);
+      if (lintOut.trim() && !lintOut.includes("0 issues")) throw new Error(`expected 0 lint issues, got:\n${lintOut}`);
+    }
+
+    runMake(["db-create"], retrofitApp, fullTestDb);
+    const retrofitApi = startApi(retrofitApp, "retrofit-api", fullTestDb);
+    execFileSync("sleep", ["3"]);
+    // A CounterVec only appears in /metrics once one of its label
+    // combinations has been observed — /metrics's own request is counted
+    // *after* its response is already written, so it can't show up in the
+    // same scrape. Hit a route first, same reason the check above posts a
+    // widget before scraping.
+    const liveOut = httpStatus([`${smoke.baseURL}/livez`], retrofitApp);
+    const metricsOut = run("curl", ["-s", `${smoke.baseURL}/metrics`]);
+    stopApi(retrofitApi);
+    if (liveOut !== "200") throw new Error(`expected /livez to return 200 on the retrofitted project, got: ${liveOut}`);
+    if (!metricsOut.includes('http_requests_total{method="GET",path="/livez",status="200"}')) {
+      throw new Error(`expected the /livez request counted in /metrics, got:\n${metricsOut}`);
+    }
+    runMake(["db-drop"], retrofitApp, fullTestDb);
   }
 );
 

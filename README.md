@@ -258,14 +258,19 @@ middleware, and role assignment. Its migration seeds the default roles and
 permissions, so apply it with `migrate up`: AutoMigrate creates tables but does
 not run SQL seed statements.
 
-### Observability at project creation
+### `add observability` — add metrics + tracing
 
 ```bash
-go-scaffold create my-api --defaults --observability
+go-scaffold add observability                          # on an existing project
+go-scaffold create my-api --defaults --observability    # or at creation time
 ```
 
-Opt-in observability adds Prometheus metrics at `/metrics` and OpenTelemetry
-tracing. Tracing is disabled until `OTEL_EXPORTER_OTLP_ENDPOINT` is configured.
+Adds Prometheus metrics at `/metrics` and OpenTelemetry tracing for Gin +
+GORM, patched into `cmd/api/main.go` and `internal/platform/database` the same
+way `add worker`/`add auth`/`add rbac` patch an existing project. Tracing is
+disabled until `OTEL_EXPORTER_OTLP_ENDPOINT` is configured; `/metrics` works
+either way. `create --observability` is exactly this command run right after
+scaffolding — the two produce the same project.
 
 ### `remove module <name>` (alias `rm m`) — drop a domain
 

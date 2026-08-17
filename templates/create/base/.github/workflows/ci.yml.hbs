@@ -45,6 +45,14 @@ jobs:
           # that passes locally passes here too
           version: v2.12.2
 
+{{#if openapiDocs}}
+      # catches a broken $ref or malformed spec before it reaches anyone
+      # pointing a client generator or Scalar/Swagger UI at this file — those
+      # tools often fail with a much less specific error than this gives.
+      - name: Lint OpenAPI spec
+        run: npx --yes @redocly/cli lint docs/openapi.yaml
+
+{{/if}}
       - name: Install migration runner
         run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
 

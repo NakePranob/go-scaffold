@@ -8,6 +8,7 @@ import { assertValidGoModulePath, normalizeApiPrefix, toDbName, validateApiPrefi
 import { promptProjectName, runCreateWizard } from "../prompts/create-wizard";
 import { cliVersion } from "../utils/version";
 import { ProjectFeatures } from "../types";
+import { addObservability } from "./observability";
 
 export interface CreateOptions {
   defaults?: boolean;
@@ -53,6 +54,14 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
   gofmtTree(projectDir);
   writeConfig(projectDir, { projectName, goModule, apiPrefix, features, scaffoldVersion: cliVersion() });
+
+  // Composed the same way a user would do it by hand — `create` always
+  // renders the plain base, then this layers the same patches `add
+  // observability` would apply on an existing project, so the two paths
+  // produce identical output.
+  if (features.observability) {
+    await addObservability(projectDir, { silent: true });
+  }
 
   console.log(pc.green(`\ncreated ${projectName}/`));
   console.log(`\ncd ${projectName}`);

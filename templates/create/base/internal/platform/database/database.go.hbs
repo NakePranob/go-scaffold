@@ -5,11 +5,9 @@ import (
 	"regexp"
 	"strconv"
 
-{{#if observability}}
-	"{{goModule}}/internal/platform/telemetry"
-{{/if}}
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/migrations"
+	// go-scaffold:imports
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -23,13 +21,8 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// go-scaffold:platform-init
 
-{{#if observability}}
-	if err := db.Use(telemetry.NewGormPlugin()); err != nil {
-		return nil, err
-	}
-
-{{/if}}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err
