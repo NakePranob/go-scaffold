@@ -1,5 +1,7 @@
 CREATE TABLE {{tableName}} (
     id         UUID PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- bumped on every update; an update that carries an older value is refused
+    version    INTEGER NOT NULL DEFAULT 1
 );

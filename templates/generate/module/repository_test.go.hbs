@@ -2,6 +2,7 @@ package {{pkg}}
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -75,5 +76,34 @@ func TestRepository_CreateFindDelete(t *testing.T) {
 	}
 	if err := repo.Delete(ctx, id); err != nil {
 		t.Fatalf("delete: %v", err)
+	}
+}
+
+// Two clients both hold version 1; the second save must be refused instead of
+// overwriting the first. Runs against the real database because the guard is
+// a WHERE clause — a stub would only be testing itself.
+func TestRepository_Update_RefusesStaleVersion(t *testing.T) {
+	repo := NewRepository(repositoryDBForTest(t))
+	ctx := context.Background()
+	item := &model.{{pascalName}}{ID: uuid.New()}
+
+	if err := repo.Create(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first := &model.{{pascalName}}{ID: item.ID, Version: item.Version}
+	if err := repo.Update(ctx, first); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	if first.Version != item.Version+1 {
+		t.Fatalf("want version bumped to %d, got %d", item.Version+1, first.Version)
+	}
+
+	stale := &model.{{pascalName}}{ID: item.ID, Version: item.Version}
+	if err := repo.Update(ctx, stale); !errors.Is(err, ErrStaleVersion) {
+		t.Fatalf("want ErrStaleVersion for the second writer, got %v", err)
+	}
+	if stale.Version != item.Version {
+		t.Fatalf("a refused update must leave the caller's version alone, got %d", stale.Version)
 	}
 }

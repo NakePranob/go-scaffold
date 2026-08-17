@@ -2,6 +2,7 @@ package {{pkg}}
 
 import (
 	"context"
+	"errors"
 
 	"{{goModule}}/internal/app/{{modulePath}}/model"
 	"{{goModule}}/internal/shared/tx"
@@ -9,6 +10,10 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// ErrStaleVersion means the row moved on since the caller read it — someone
+// else saved first. Returned instead of overwriting their work.
+var ErrStaleVersion = errors.New("stale version")
 
 // Repository = data access for {{pkg}} (the only place that touches the DB for this domain)
 // every method takes ctx, so a cancelled request cancels the query too — and
@@ -41,8 +46,30 @@ func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*model.{{pasca
 	return &m, nil
 }
 
+// Update applies m only if the version it carries still matches the stored
+// row, then bumps it. Two clients that both loaded version 3 can't silently
+// overwrite each other: the second one gets ErrStaleVersion instead of the
+// first one's changes disappearing with no error anywhere.
 func (r *Repository) Update(ctx context.Context, m *model.{{pascalName}}) error {
-	return tx.From(ctx, r.db).WithContext(ctx).Save(m).Error
+	expected := m.Version
+	m.Version = expected + 1
+
+	res := tx.From(ctx, r.db).WithContext(ctx).
+		Model(&model.{{pascalName}}{}).
+		Where("id = ? AND version = ?", m.ID, expected).
+		// Select("*") because Updates on a struct skips zero values, which
+		// would quietly ignore a field the caller meant to clear.
+		Select("*").Omit("id", "created_at").
+		Updates(m)
+	if res.Error != nil {
+		m.Version = expected
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		m.Version = expected
+		return ErrStaleVersion
+	}
+	return nil
 }
 
 func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {

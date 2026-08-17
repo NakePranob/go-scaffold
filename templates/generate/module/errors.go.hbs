@@ -23,6 +23,11 @@ func errConflict() *apperror.AppError {
 }
 
 //nolint:unused
+func errStale() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "{{errorPrefix}}_STALE", "{{pkg}} was modified by someone else — reload and try again")
+}
+
+//nolint:unused
 func errHasReferences() *apperror.AppError {
 	return apperror.New(http.StatusConflict, "{{errorPrefix}}_HAS_REFERENCES", "{{pkg}} still has related records")
 }

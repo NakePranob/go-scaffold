@@ -68,8 +68,14 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in updateInput) (*mo
 		return nil, wrapFindErr(err)
 	}
 	// TODO: apply real fields from in before saving
-	_ = in
+	// The version the client read comes from the request, not from the row we
+	// just loaded — comparing the row against itself would always succeed and
+	// defeat the check.
+	m.Version = in.Version
 	if err := s.repo.Update(ctx, m); err != nil {
+		if errors.Is(err, ErrStaleVersion) {
+			return nil, errStale()
+		}
 		if dberr.IsDuplicate(err) {
 			return nil, errConflict()
 		}

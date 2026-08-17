@@ -16,11 +16,13 @@ import (
 type response struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
+	// clients send this back on an update so a concurrent save can be detected
+	Version int `json:"version"`
 }
 
 //nolint:unused
 func toResponse(m *model.{{pascalName}}) response {
-	return response{ID: m.ID, CreatedAt: m.CreatedAt}
+	return response{ID: m.ID, CreatedAt: m.CreatedAt, Version: m.Version}
 }
 
 // go-scaffold:dto

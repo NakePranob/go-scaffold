@@ -817,17 +817,19 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
       `package main
 
 import (
+	"context"
+
 	"full-app/internal/platform/mail"
 	"full-app/internal/platform/queue"
 )
 
 func main() {
-	q, err := queue.NewClient("${redisUrl}")
+	q, err := queue.NewAsynqEnqueuer("${redisUrl}")
 	if err != nil {
 		panic(err)
 	}
 	ac := mail.NewAsyncClient(q)
-	if err := ac.Send("someone@example.com", "smoke test", "processed by cmd/worker"); err != nil {
+	if err := ac.Send(context.Background(), "someone@example.com", "smoke test", "processed by cmd/worker"); err != nil {
 		panic(err)
 	}
 }
@@ -1763,7 +1765,10 @@ step(
     const afterApi = startMakeRun(fullApp, "migration-after", true);
     execFileSync("sleep", ["3"]);
     const afterReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
-    const afterCreate = httpStatus([
+    const createdBody = run("curl", [
+      "-s",
+      "-w",
+      "HTTPSTATUS:%{http_code}",
       "-X",
       "POST",
       `${smoke.baseURL}/v1/orders`,
@@ -1772,9 +1777,37 @@ step(
       "-d",
       "{}",
     ], fullApp);
+    const afterCreate = createdBody.split("HTTPSTATUS:")[1]?.trim();
+
+    // Optimistic locking, end to end: the second writer holding the version
+    // the first one already consumed must be refused, not silently allowed to
+    // erase their change. Asserted over HTTP because the guard spans dto ->
+    // service -> the repository's WHERE clause.
+    const created = JSON.parse(createdBody.split("HTTPSTATUS:")[0]);
+    const put = (version) =>
+      run("curl", [
+        "-s",
+        "-w",
+        "HTTPSTATUS:%{http_code}",
+        "-X",
+        "PUT",
+        `${smoke.baseURL}/v1/orders/${created.id}`,
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        JSON.stringify({ version }),
+      ], fullApp);
+    const firstPut = put(created.version);
+    const stalePut = put(created.version);
     stopApi(afterApi);
+
     if (afterReady !== "200" || afterCreate !== "201") {
       throw new Error(`expected migrated schema to boot and serve CRUD (READYZ=200 CREATE=201), got: READYZ=${afterReady} CREATE=${afterCreate}`);
+    }
+    if (created.version !== 1) throw new Error(`expected a new row at version 1, got ${created.version}`);
+    if (!firstPut.endsWith("HTTPSTATUS:200")) throw new Error(`expected the first update to succeed, got: ${firstPut}`);
+    if (!stalePut.endsWith("HTTPSTATUS:409") || !stalePut.includes("_STALE")) {
+      throw new Error(`expected a stale update to be refused with 409 *_STALE, got: ${stalePut}`);
     }
 
     runMake(["db-drop"], fullApp);
@@ -2002,6 +2035,96 @@ step("default minimal module layers up to full build", () => {
   }
 });
 
+// riverTxTest is written into the scratch project by the step below. It lives
+// here rather than as a template file because it asserts a property of the
+// scaffold, not something every generated project should carry.
+const riverTxTest = `package order
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+
+	"river-app/internal/app/order/model"
+	"river-app/internal/platform/mail"
+	"river-app/internal/platform/queue"
+	"river-app/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
+	db, err := gorm.Open(postgres.Open(os.Getenv("TEST_DB_DSN")), &gorm.Config{TranslateError: true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Order{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	q, err := queue.NewRiverEnqueuer(db)
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	ctx := context.Background()
+
+	jobs := func() int64 {
+		var n int64
+		if err := db.WithContext(ctx).Table("river_job").Count(&n).Error; err != nil {
+			t.Fatalf("count jobs: %v", err)
+		}
+		return n
+	}
+	orders := func(id uuid.UUID) int64 {
+		var n int64
+		if err := db.WithContext(ctx).Model(&model.Order{}).Where("id = ?", id).Count(&n).Error; err != nil {
+			t.Fatalf("count orders: %v", err)
+		}
+		return n
+	}
+
+	before := jobs()
+	boom := errors.New("boom")
+	rolledBack := uuid.New()
+	err = tx.Do(ctx, db, func(ctx context.Context) error {
+		if err := NewRepository(db).Create(ctx, &model.Order{ID: rolledBack}); err != nil {
+			return err
+		}
+		if err := q.Enqueue(ctx, mail.SendEmail{To: "nobody@example.test"}, nil); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("want boom back from the transaction, got %v", err)
+	}
+	if n := orders(rolledBack); n != 0 {
+		t.Fatalf("rolled-back row survived: %d", n)
+	}
+	if n := jobs(); n != before {
+		t.Fatalf("rolled-back job survived: %d jobs, want %d", n, before)
+	}
+
+	committed := uuid.New()
+	if err := tx.Do(ctx, db, func(ctx context.Context) error {
+		if err := NewRepository(db).Create(ctx, &model.Order{ID: committed}); err != nil {
+			return err
+		}
+		return q.Enqueue(ctx, mail.SendEmail{To: "someone@example.test"}, nil)
+	}); err != nil {
+		t.Fatalf("commit path: %v", err)
+	}
+	if n := orders(committed); n != 1 {
+		t.Fatalf("committed row missing: %d", n)
+	}
+	if n := jobs(); n != before+1 {
+		t.Fatalf("committed job missing: %d jobs, want %d", n, before+1)
+	}
+}
+`;
+
 // The Postgres-backed queue is the `add worker` default, and unlike the Redis
 // path it needs no external service to compile — so it gets its own scratch
 // project. Build-only on purpose: actually running jobs needs River's tables,
@@ -2028,6 +2151,33 @@ step("add worker --queue postgres: River adapter builds, no Redis anywhere", () 
   const dirty = run("gofmt", ["-l", "."], riverApp).trim();
   if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
 });
+
+// The guarantee the Postgres-backed queue exists for, against a real database:
+// a job enqueued inside a transaction has to disappear when that transaction
+// rolls back, and be there when it commits. Nothing short of running it proves
+// this — the code compiles either way.
+step(
+  hasDocker
+    ? "queue in Postgres: an enqueue inside a transaction commits and rolls back with it"
+    : "queue in Postgres: transactional enqueue skipped (needs Docker for a database)",
+  () => {
+    if (!hasDocker) return;
+    const riverApp = path.join(scratch, "river-app");
+    const dbName = `${smoke.dbName}_river`;
+    const dsn = `postgres://postgres:postgres@localhost:${smoke.dbPort}/${dbName}?sslmode=disable`;
+
+    run("docker", ["exec", sharedPostgresContainerId, "psql", "-U", "postgres", "-d", "postgres", "-c", `CREATE DATABASE ${dbName}`]);
+    goScaffold(["generate", "module", "order"], riverApp);
+    run("go", ["mod", "tidy"], riverApp);
+    // exercises the generated Makefile target, not a hand-rolled equivalent
+    run("make", ["river-migrate"], riverApp, { DB_DSN: dsn });
+
+    writeFileSync(path.join(riverApp, "internal", "app", "order", "txqueue_smoke_test.go"), riverTxTest);
+    run("go", ["test", "-count=1", "-run", "TestSmokeEnqueueJoinsTheTransaction", "./internal/app/order/..."], riverApp, {
+      TEST_DB_DSN: dsn,
+    });
+  }
+);
 
 // The two halves of drift detection. `create` emits the shared/ layer once;
 // `generate` renders templates written against that exact layer. A project that

@@ -17,6 +17,10 @@ type {{pascalName}} struct {
 	ID        uuid.UUID `json:"id" gorm:"type:uuid;primaryKey"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Version guards against two clients that both loaded this row overwriting
+	// each other: an update only applies if the version it carries still
+	// matches the stored one. Bumped by Repository.Update, never by hand.
+	Version int `json:"version" gorm:"not null;default:1"`
 }
 
 // TableName pins the persistence contract to the versioned SQL migrations.
