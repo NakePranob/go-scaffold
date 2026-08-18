@@ -1554,6 +1554,31 @@ step(
   }
 );
 
+// The two steps above run go test with no TEST_DB_DSN at all (fullApp's own
+// database was already dropped by then) — real by design for the stub-based
+// service tests they're named for, but it means the repository_test.go files
+// added alongside this step would otherwise never run in this suite, ever.
+// Give them one real, migrated database (auth's create_users/create_identities
+// plus rbac's add_roles, which is what makes the cross-schema
+// user_svc.users -> role_svc.roles FK exist) and prove they actually catch
+// something: a transaction that doesn't roll back, or a replace that doesn't
+// clear the old set, fails these tests — they aren't just exercising stubs.
+step(
+  hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
+    ? "add auth/add rbac: repository tests run against a real, fully-migrated database"
+    : "add auth/add rbac: repository tests skipped (needs Docker, psql/a Postgres container, and the migrate CLI)",
+  () => {
+    if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
+    runMake(["db-create"], fullApp, fullTestDb);
+    run("migrate", ["-path", "migrations", "-database", fullTestDb.dbDsn, "up"], fullApp);
+    run("go", ["test", "-run", "TestRepository", "./internal/app/user/...", "./internal/app/role/..."], fullApp, {
+      TEST_DB_DSN: fullTestDb.dbDsn,
+      REQUIRE_TEST_DB: "true",
+    });
+    runMake(["db-drop"], fullApp, fullTestDb);
+  }
+);
+
 // generate module --auth [--permission <code>]: without this, every module
 // this suite generates from here on would be reachable with no token at all
 // even though fullApp already has auth+rbac installed — the exact gap this

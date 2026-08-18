@@ -76,6 +76,7 @@ make tidy           # go mod tidy
 make db-create       # create the database itself (safe to re-run)
 make db-drop         # drop the database
 make migrate-up      # apply migrations (reads DB_DSN from ENV_FILE)
+make migrate-up-test  # same migrations, applied to TEST_DB_DSN instead — see Tests
 make migrate-down     # roll back one migration
 make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql (point DB_DSN at a throwaway DB)
 {{#if docker}}make docker-up       # docker compose up -d
@@ -147,7 +148,7 @@ becoming a false-green skip. Use a separate `{{dbName}}_test` database:
 make docker-up      # local postgres first
 {{/if}}
 make db-create DB_NAME={{dbName}}_test
-DB_DSN=postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable make migrate-up
+make migrate-up-test
 TEST_DB_DSN=postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable REQUIRE_TEST_DB=true go test ./...
 ```
 

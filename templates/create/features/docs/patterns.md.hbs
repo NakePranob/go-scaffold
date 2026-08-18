@@ -165,7 +165,7 @@ go-scaffold generate method <domain> <name> --type <get|post|put|patch|delete> [
 ```
 
 Patches `handler.go`/`service.go` (and `repository.go` + the `repository`
-interface + its `fakeRepo` test stub, for a `get --get-mode one --field`
+interface + its `repositoryStub` test stub, for a `get --get-mode one --field`
 lookup) in place, at the `// go-scaffold:*` marker comments near the end of
 each file. **Don't delete those markers** — they're where the next
 `generate method` call inserts. The method body is always left as a `TODO`

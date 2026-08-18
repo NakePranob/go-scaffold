@@ -22,7 +22,7 @@ not hand-write a new one. Hand-writing a new `internal/app/<name>/` package,
 or adding a method by editing the handler/service directly, produces a shape
 that doesn't match the rest of the codebase (missing route registration,
 missing AutoMigrate wiring, a `repository` interface out of sync with its
-`fakeRepo` test mock, inconsistent error-catalog naming, etc.).
+`repositoryStub` test mock, inconsistent error-catalog naming, etc.).
 
 ## When to use this skill
 
@@ -72,7 +72,7 @@ and shape depend on `--type`:
 | `--type` | Route | Notes |
 |---|---|---|
 | `get --get-mode all` | `GET /<plural>/<kebab-name>` | list-style, reuses `FindAll` — TODO to add real filtering |
-| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | adds a real `FindBy<F>` query to the repository (and its `repository` interface + `fakeRepo` test stub); `--field` can't be `id` |
+| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | adds a real `FindBy<F>` query to the repository (and its `repository` interface + `repositoryStub` test stub); `--field` can't be `id` |
 | `post` | `POST /<plural>/<kebab-name>` | adds a body DTO; service body is a TODO stub (`apperror.NewInternal()` until implemented) |
 | `put` / `patch` | `<VERB> /<plural>/:id/<kebab-name>` | finds the record by id, TODO before saving (safe no-op until implemented) |
 | `delete` | `DELETE /<plural>/:id/<kebab-name>` | TODO stub (`apperror.NewInternal()` until implemented) |

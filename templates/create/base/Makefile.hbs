@@ -30,7 +30,7 @@ POSTGRES_CONTAINER ?=
 # recipe line it's passed to the shell untouched.)
 ENV_FILE ?= .env
 
-.PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
+.PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 run:
 	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go run ./cmd/api
@@ -109,6 +109,12 @@ db-drop:
 
 migrate-up:
 	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" up
+
+# same migration files, applied to TEST_DB_DSN instead of DB_DSN — run this
+# once after `make db-create DB_NAME=..._test` so repository_test.go files
+# see real tables instead of skipping (or failing, if REQUIRE_TEST_DB=true).
+migrate-up-test:
+	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$TEST_DB_DSN" up
 
 migrate-down:
 	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" down 1

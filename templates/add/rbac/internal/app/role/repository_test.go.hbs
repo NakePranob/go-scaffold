@@ -1,0 +1,176 @@
+package role
+
+import (
+	"context"
+	"os"
+	"testing"
+
+	"{{goModule}}/internal/app/role/model"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+// repositoryDBForTest expects the test database schema to come from the same
+// versioned SQL migrations used in production. Unit tests stay database-free;
+// CI sets REQUIRE_TEST_DB=true so an unavailable/unmigrated database fails
+// instead of becoming a false-green skip. Same pattern as every generated
+// module's repository_test.go.
+func repositoryDBForTest(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatal("TEST_DB_DSN is required when REQUIRE_TEST_DB=true")
+		}
+		t.Skip("repository integration test skipped: set TEST_DB_DSN to a migrated PostgreSQL database")
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true})
+	if err != nil {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatalf("open required test database: %v", err)
+		}
+		t.Skipf("repository integration test skipped: %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get SQL database handle: %v", err)
+	}
+	if err := sqlDB.Ping(); err != nil {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatalf("ping required test database: %v", err)
+		}
+		t.Skipf("repository integration test skipped: %v", err)
+	}
+
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatalf("begin test transaction: %v", tx.Error)
+	}
+	t.Cleanup(func() {
+		if err := tx.Rollback().Error; err != nil {
+			t.Errorf("rollback test transaction: %v", err)
+		}
+	})
+	return tx
+}
+
+// testCode returns a role/permission code that fits both varchar(20) and
+// varchar(50) columns and won't collide with the seeded 'staff'/'admin'
+// roles or 'role:manage'/'user:manage-role'/'user:read' permissions.
+func testCode(t *testing.T) string {
+	t.Helper()
+	return "t" + uuid.New().String()[:7]
+}
+
+// seedPermission inserts directly rather than through Repository, which has
+// no create method for Permission on purpose (see model/permission.go.hbs:
+// "seeded by migration, not admin-created"). Tests still need rows to grant.
+func seedPermission(t *testing.T, tx *gorm.DB, code string) {
+	t.Helper()
+	if err := tx.WithContext(context.Background()).Create(&model.Permission{Code: code, Description: code}).Error; err != nil {
+		t.Fatalf("seed permission %s: %v", code, err)
+	}
+}
+
+// SetPermissions deletes-then-recreates the grant set inside one transaction
+// (see repository.go.hbs). A stub can assert it was called with the right
+// arguments, but not that the *table* ends up holding exactly the new set —
+// that's a property of the real delete+insert, not of the call.
+func TestRepository_SetPermissions_ReplacesEntireSet(t *testing.T) {
+	tx := repositoryDBForTest(t)
+	repo := NewRepository(tx)
+	ctx := context.Background()
+
+	roleCode := testCode(t)
+	permA, permB, permC := testCode(t), testCode(t), testCode(t)
+	if err := repo.Create(ctx, &model.Role{Code: roleCode, Name: roleCode}); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	seedPermission(t, tx, permA)
+	seedPermission(t, tx, permB)
+	seedPermission(t, tx, permC)
+
+	if err := repo.SetPermissions(ctx, roleCode, []string{permA, permB}); err != nil {
+		t.Fatalf("grant a,b: %v", err)
+	}
+	if err := repo.SetPermissions(ctx, roleCode, []string{permC}); err != nil {
+		t.Fatalf("replace with c: %v", err)
+	}
+
+	got, err := repo.PermissionCodes(ctx, roleCode)
+	if err != nil {
+		t.Fatalf("permission codes: %v", err)
+	}
+	if len(got) != 1 || got[0] != permC {
+		t.Fatalf("want only [%s] after replacing the grant set, got %v", permC, got)
+	}
+}
+
+// role_permissions references both roles and permissions with
+// ON DELETE CASCADE (add_roles.up.sql) — deleting a role should never leave
+// an orphaned grant row behind, and should never surface as an FK error the
+// caller has to handle.
+func TestRepository_Delete_CascadesRolePermissions(t *testing.T) {
+	tx := repositoryDBForTest(t)
+	repo := NewRepository(tx)
+	ctx := context.Background()
+
+	roleCode := testCode(t)
+	permCode := testCode(t)
+	if err := repo.Create(ctx, &model.Role{Code: roleCode, Name: roleCode}); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	seedPermission(t, tx, permCode)
+	if err := repo.SetPermissions(ctx, roleCode, []string{permCode}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if err := repo.Delete(ctx, roleCode); err != nil {
+		t.Fatalf("delete role: %v", err)
+	}
+
+	got, err := repo.PermissionCodes(ctx, roleCode)
+	if err != nil {
+		t.Fatalf("permission codes after delete: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("want role_permissions cascade-deleted along with the role, still have %v", got)
+	}
+}
+
+// CountRolesWithPermission backs the "would this leave no role holding the
+// permission" guard in service.go — the exclusion in its WHERE clause is
+// exactly the kind of off-by-one a stub returning a canned int can't catch.
+func TestRepository_CountRolesWithPermission_ExcludesGivenRole(t *testing.T) {
+	tx := repositoryDBForTest(t)
+	repo := NewRepository(tx)
+	ctx := context.Background()
+
+	roleA, roleB := testCode(t), testCode(t)
+	permCode := testCode(t)
+	if err := repo.Create(ctx, &model.Role{Code: roleA, Name: roleA}); err != nil {
+		t.Fatalf("seed role a: %v", err)
+	}
+	if err := repo.Create(ctx, &model.Role{Code: roleB, Name: roleB}); err != nil {
+		t.Fatalf("seed role b: %v", err)
+	}
+	seedPermission(t, tx, permCode)
+	if err := repo.SetPermissions(ctx, roleA, []string{permCode}); err != nil {
+		t.Fatalf("grant to a: %v", err)
+	}
+	if err := repo.SetPermissions(ctx, roleB, []string{permCode}); err != nil {
+		t.Fatalf("grant to b: %v", err)
+	}
+
+	count, err := repo.CountRolesWithPermission(ctx, permCode, roleA)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("want 1 (roleB only, roleA excluded), got %d", count)
+	}
+}

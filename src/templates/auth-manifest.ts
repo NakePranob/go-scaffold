@@ -11,6 +11,7 @@ export const AUTH_FILES: { template: string; output: string }[] = [
   { template: "add/auth/internal/app/user/repository.go.hbs", output: "internal/app/user/repository.go" },
   { template: "add/auth/internal/app/user/service.go.hbs", output: "internal/app/user/service.go" },
   { template: "add/auth/internal/app/user/service_test.go.hbs", output: "internal/app/user/service_test.go" },
+  { template: "add/auth/internal/app/user/repository_test.go.hbs", output: "internal/app/user/repository_test.go" },
   { template: "add/auth/internal/app/user/handler.go.hbs", output: "internal/app/user/handler.go" },
   { template: "add/auth/cmd/seed/main.go.hbs", output: "cmd/seed/main.go" },
 ];
