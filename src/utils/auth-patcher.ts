@@ -24,6 +24,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     "JWTAccessTTL time.Duration",
     "JWTRefreshTTL time.Duration",
     "CookieSecure bool",
+    "CookieSameSite string",
     "",
     "PasswordResetTTL time.Duration",
     "PasswordResetURL string",
@@ -42,6 +43,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     'JWTAccessTTL:  time.Duration(envInt("JWT_ACCESS_TTL_MIN", 15)) * time.Minute,',
     'JWTRefreshTTL: time.Duration(envInt("JWT_REFRESH_TTL_MIN", 43200)) * time.Minute,',
     'CookieSecure:  env("COOKIE_SECURE", "false") == "true",',
+    'CookieSameSite: env("COOKIE_SAMESITE", "strict"),',
     "",
     'PasswordResetTTL: time.Duration(envInt("PASSWORD_RESET_TTL_MIN", 30)) * time.Minute,',
     'PasswordResetURL: env("PASSWORD_RESET_URL", "http://localhost:3000/reset-password"),',
@@ -85,6 +87,19 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBa
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
 
+  // Without SMTP the mail client logs the message instead of sending it — a
+  // deliberate dev convenience that in production means password-reset and
+  // email-verification links land in the log aggregator while
+  // /auth/forgot-password still answers 200, so nobody finds out the mail
+  // never went anywhere.
+  const smtpCheckBlock = [
+    'if cfg.IsProd() && cfg.SMTPHost == "" {',
+    '\tlogger.Error("SMTP_HOST is unset — password reset and email verification links would be written to the log instead of sent")',
+    "\tos.Exit(1)",
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, smtpCheckBlock, "SMTP_HOST is unset");
+
   // The enqueuer is built from whatever backend `add worker` chose — the
   // constructor differs, everything downstream of it (mail.NewAsyncClient)
   // only sees the queue.Enqueuer interface and doesn't change.
@@ -110,7 +125,7 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBa
   // human wiring another domain into user's service edits line one in place.
   const svcLine = "userSvc := user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg)";
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, svcLine, "userSvc :=");
-  const routeLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
+  const routeLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, rdb).Register(api)";
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(/\n\t_ = api \/\/ dropped once `generate module` registers the first route\n/, "\n");
 

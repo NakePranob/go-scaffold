@@ -2,6 +2,7 @@ package user
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"{{goModule}}/internal/shared/httpx"
@@ -13,16 +14,22 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const refreshCookieName = "refresh_token"
+const (
+	refreshCookieName = "refresh_token"
+	// oauthStateCookieName holds the nonce that binds a Google login to the
+	// browser that started it — see Service.GoogleLoginURL.
+	oauthStateCookieName = "oauth_state"
+)
 
 // go-scaffold:user-handler-consts
 
 type Handler struct {
-	svc          *Service
-	jwtSecret    string
-	refreshTTL   time.Duration
-	cookieSecure bool
-	rdb          *redis.Client
+	svc            *Service
+	jwtSecret      string
+	refreshTTL     time.Duration
+	cookieSecure   bool
+	cookieSameSite string
+	rdb            *redis.Client
 	// go-scaffold:user-handler-fields
 }
 
@@ -31,15 +38,17 @@ func NewHandler(
 	jwtSecret string,
 	refreshTTL time.Duration,
 	cookieSecure bool,
+	cookieSameSite string,
 	rdb *redis.Client,
 	// go-scaffold:user-handler-params
 ) *Handler {
 	return &Handler{
-		svc:          svc,
-		jwtSecret:    jwtSecret,
-		refreshTTL:   refreshTTL,
-		cookieSecure: cookieSecure,
-		rdb:          rdb,
+		svc:            svc,
+		jwtSecret:      jwtSecret,
+		refreshTTL:     refreshTTL,
+		cookieSecure:   cookieSecure,
+		cookieSameSite: cookieSameSite,
+		rdb:            rdb,
 		// go-scaffold:user-handler-init
 	}
 }
@@ -194,16 +203,26 @@ func (h *Handler) logoutAll(c *gin.Context) {
 }
 
 func (h *Handler) googleLogin(c *gin.Context) {
-	url, err := h.svc.GoogleLoginURL()
+	url, nonce, err := h.svc.GoogleLoginURL()
 	if err != nil {
 		c.Error(err)
 		return
 	}
+	// Lax, not Strict, and deliberately not h.cookieSameSite: the callback
+	// arrives as a top-level navigation from Google, i.e. cross-site, and a
+	// Strict cookie is not sent on one — the flow would fail every time.
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(oauthStateCookieName, nonce, int(oauthStateTTL.Seconds()), "/", "", h.cookieSecure, true)
 	c.Redirect(http.StatusFound, url)
 }
 
 func (h *Handler) googleCallback(c *gin.Context) {
-	auth, err := h.svc.GoogleCallback(c.Request.Context(), c.Query("code"), c.Query("state"))
+	nonce, _ := c.Cookie(oauthStateCookieName)
+	// One shot, whatever happens next.
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(oauthStateCookieName, "", -1, "/", "", h.cookieSecure, true)
+
+	auth, err := h.svc.GoogleCallback(c.Request.Context(), c.Query("code"), c.Query("state"), nonce)
 	if err != nil {
 		c.Error(err)
 		return
@@ -225,11 +244,32 @@ func (h *Handler) me(c *gin.Context) {
 // go-scaffold:user-handler-funcs
 
 func (h *Handler) setRefreshCookie(c *gin.Context, token string) {
-	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
 	c.SetCookie(refreshCookieName, token, int(h.refreshTTL.Seconds()), "/", "", h.cookieSecure, true)
 }
 
 func (h *Handler) clearRefreshCookie(c *gin.Context) {
-	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
 	c.SetCookie(refreshCookieName, "", -1, "/", "", h.cookieSecure, true)
+}
+
+// sameSiteFrom maps COOKIE_SAMESITE onto the http constant, defaulting to the
+// strictest option for anything it doesn't recognise.
+//
+// "strict" is right while the frontend and this API are the same site
+// (localhost:3000 -> localhost:8080 is, and so is app.example.com ->
+// api.example.com). A frontend on a genuinely different site — the usual
+// vercel.app-plus-own-API-domain split — needs "none", because the browser
+// will not attach a Strict or Lax cookie to the fetch that calls
+// /auth/refresh: sessions then die at every access-token expiry with no
+// error anywhere to explain it. "none" requires COOKIE_SECURE=true.
+func sameSiteFrom(mode string) http.SameSite {
+	switch strings.ToLower(mode) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "lax":
+		return http.SameSiteLaxMode
+	default:
+		return http.SameSiteStrictMode
+	}
 }

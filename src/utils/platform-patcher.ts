@@ -35,6 +35,39 @@ export function patchComposeForRedis(composePath: string): void {
   fs.writeFileSync(composePath, out);
 }
 
+// patchCiForRedis adds a redis service to .github/workflows/ci.yml, for the
+// same reason patchComposeForRedis exists: once cmd/api calls cache.Open, a
+// test that touches the token store has nothing to connect to on a runner
+// whose only service is Postgres. The generated workflow was written at
+// `create` time, before anything needed Redis, and nothing patched it after.
+//
+// No-op when the workflow was deleted or replaced by hand.
+export function patchCiForRedis(ciPath: string): void {
+  if (!fs.existsSync(ciPath)) return;
+  const content = fs.readFileSync(ciPath, "utf8");
+  if (/^\s{6}redis:/m.test(content)) return;
+
+  // `steps:` sits one level under the job, so it's the first line that ends
+  // the `services:` block — insert the service just above it.
+  const stepsLine = content.split("\n").find((l) => l.trimEnd() === "    steps:");
+  if (!stepsLine) return;
+
+  const service = [
+    "      redis:",
+    "        image: redis:7-alpine",
+    "        ports:",
+    "          - 6379:6379",
+    "        options: >-",
+    '          --health-cmd "redis-cli ping"',
+    "          --health-interval 10s",
+    "          --health-timeout 5s",
+    "          --health-retries 5",
+    "",
+  ].join("\n");
+
+  fs.writeFileSync(ciPath, content.replace(stepsLine, () => `${service}\n${stepsLine}`));
+}
+
 // patchConfigForRedis adds RedisURL to Config and its env() load to Load().
 // Split out from the worker patch because Redis is no longer the worker's
 // concern by default — `add auth` needs it for the refresh-token store even

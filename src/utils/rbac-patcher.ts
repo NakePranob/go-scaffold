@@ -309,7 +309,7 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
     ].join("\n")
   );
 
-  const userRouteLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
+  const userRouteLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, rdb).Register(api)";
   content = content.replace(userRouteLine, userRouteLine.replace("rdb)", "rdb, authz)"));
 
   const roleRouteLine = "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)";

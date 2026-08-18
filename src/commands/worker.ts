@@ -4,7 +4,7 @@ import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { workerFiles } from "../templates/worker-manifest";
-import { patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchCiForRedis, patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
 import { QueueBackend } from "../types";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
@@ -32,6 +32,7 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   if (!riverQueue) {
     patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
     patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
+    patchCiForRedis(path.join(projectDir, ".github", "workflows", "ci.yml"));
   }
 
   // pinned to what this scaffold was written against — see gomod-patcher

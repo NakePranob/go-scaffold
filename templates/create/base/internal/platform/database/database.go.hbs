@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 
@@ -67,8 +68,16 @@ func CheckMigrationVersion(db *gorm.DB) error {
 	if dirty {
 		return fmt.Errorf("schema_migrations is dirty at version %d — a previous migration failed partway; fix it before starting the app", version)
 	}
-	if version != latest {
+	if version < latest {
 		return fmt.Errorf("DB schema is at migration %d, this binary expects %d — run `make migrate-up`", version, latest)
+	}
+	if version > latest {
+		// Only "DB behind binary" is fatal. A rolling deploy migrates first and
+		// replaces pods after, so an old pod restarting mid-rollout legitimately
+		// sees a newer schema — refusing to boot there turns a normal rollout
+		// into a crashloop of the very replicas still serving traffic.
+		slog.Warn("DB schema is ahead of this binary — fine mid-rollout, investigate if it persists",
+			"db_version", version, "binary_version", latest)
 	}
 	return nil
 }

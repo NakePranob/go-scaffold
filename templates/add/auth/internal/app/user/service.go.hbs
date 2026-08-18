@@ -91,6 +91,16 @@ func NewService(
 	}
 }
 
+// normalizeEmail is applied at every boundary an address enters the service
+// through. The column is a plain case-sensitive UNIQUE, so without this
+// "Foo@x.com" and "foo@x.com" are two accounts that never collide — and a
+// Google login (Google always reports lowercase) fails to find the local
+// account it should have linked to, silently creating a second user for the
+// same person.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -98,7 +108,7 @@ func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse
 	}
 	hashStr := string(hash)
 
-	u := &model.User{ID: id.New(), Email: in.Email, Name: in.Name}
+	u := &model.User{ID: id.New(), Email: normalizeEmail(in.Email), Name: in.Name}
 	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
 	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
 		if dberr.IsDuplicate(err) {
@@ -113,7 +123,7 @@ func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse
 }
 
 func (s *Service) Login(ctx context.Context, in loginInput) (*authResponse, error) {
-	u, err := s.repo.FindByEmail(ctx, in.Email)
+	u, err := s.repo.FindByEmail(ctx, normalizeEmail(in.Email))
 	if err != nil {
 		return nil, errInvalidCredentials()
 	}
@@ -207,7 +217,7 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, er
 // enumerate registered accounts. Only if the email resolves to a local
 // (password-based) identity does it actually issue+email a reset token.
 func (s *Service) ForgotPassword(ctx context.Context, email string) error {
-	u, err := s.repo.FindByEmail(ctx, email)
+	u, err := s.repo.FindByEmail(ctx, normalizeEmail(email))
 	if err != nil {
 		return nil
 	}
@@ -319,14 +329,16 @@ func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
 	return s.repo.UpdateUser(ctx, u)
 }
 
-// GoogleLoginURL signs a short-lived CSRF state token and builds the
-// redirect URL — stateless, no server-side row for the state (see jwt.go).
-func (s *Service) GoogleLoginURL() (string, error) {
-	state, err := s.issueOAuthState()
+// GoogleLoginURL signs a short-lived CSRF state token and builds the redirect
+// URL. The second return value is the nonce the caller must set as a cookie:
+// the callback checks it against the one inside the state (see jwt.go), which
+// is what binds the flow to this one browser.
+func (s *Service) GoogleLoginURL() (string, string, error) {
+	state, nonce, err := s.issueOAuthState()
 	if err != nil {
-		return "", apperror.NewInternal()
+		return "", "", apperror.NewInternal()
 	}
-	return s.googleOAuth.AuthCodeURL(state), nil
+	return s.googleOAuth.AuthCodeURL(state), nonce, nil
 }
 
 type googleUserInfo struct {
@@ -337,8 +349,8 @@ type googleUserInfo struct {
 	Picture       string `json:"picture"`
 }
 
-func (s *Service) GoogleCallback(ctx context.Context, code, state string) (*authResponse, error) {
-	if err := s.verifyOAuthState(state); err != nil {
+func (s *Service) GoogleCallback(ctx context.Context, code, state, nonce string) (*authResponse, error) {
+	if err := s.verifyOAuthState(state, nonce); err != nil {
 		return nil, err
 	}
 	tok, err := s.googleOAuth.Exchange(ctx, code)
@@ -377,8 +389,9 @@ func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInf
 	}
 
 	providerUID := info.Sub
+	email := normalizeEmail(info.Email)
 	if info.EmailVerified {
-		if u, err := s.repo.FindByEmail(ctx, info.Email); err == nil {
+		if u, err := s.repo.FindByEmail(ctx, email); err == nil {
 			ident := &model.Identity{ID: id.New(), UserID: u.ID, Provider: model.ProviderGoogle, ProviderUID: &providerUID}
 			if err := s.repo.CreateIdentity(ctx, ident); err != nil {
 				return nil, apperror.NewInternal()
@@ -387,7 +400,7 @@ func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInf
 		}
 	}
 
-	u := &model.User{ID: id.New(), Email: info.Email, Name: info.Name, AvatarURL: info.Picture, EmailVerified: info.EmailVerified}
+	u := &model.User{ID: id.New(), Email: email, Name: info.Name, AvatarURL: info.Picture, EmailVerified: info.EmailVerified}
 	ident := &model.Identity{ID: id.New(), Provider: model.ProviderGoogle, ProviderUID: &providerUID}
 	if err := s.repo.CreateUserWithIdentity(ctx, u, ident); err != nil {
 		if dberr.IsDuplicate(err) {
@@ -403,7 +416,7 @@ func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInf
 // password on every deploy), otherwise a new local user+identity is
 // created. Used by cmd/seed only — nothing in the HTTP API calls this.
 func (s *Service) EnsureUser(ctx context.Context, email, password, name string) (*model.User, error) {
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = normalizeEmail(email)
 	if u, err := s.repo.FindByEmail(ctx, email); err == nil {
 		return u, nil
 	}

@@ -72,8 +72,19 @@ func (r *Repository) Update(ctx context.Context, m *model.{{pascalName}}) error 
 	return nil
 }
 
+// Delete reports gorm.ErrRecordNotFound when the row wasn't there, so a
+// DELETE on an id that never existed answers 404 like GET does — a plain
+// GORM delete affects zero rows and returns no error, which had the same
+// request answer 204 as a real deletion.
 func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
-	return tx.From(ctx, r.db).WithContext(ctx).Delete(&model.{{pascalName}}{}, "id = ?", id).Error
+	res := tx.From(ctx, r.db).WithContext(ctx).Delete(&model.{{pascalName}}{}, "id = ?", id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // go-scaffold:repository-methods

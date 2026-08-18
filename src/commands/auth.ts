@@ -5,7 +5,7 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { AUTH_FILES } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
-import { patchComposeForRedis, patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
@@ -167,6 +167,12 @@ function patchEnvExample(envExamplePath: string): void {
     "JWT_ACCESS_TTL_MIN=15\n" +
     "JWT_REFRESH_TTL_MIN=43200\n" +
     "COOKIE_SECURE=false\n" +
+    "# strict | lax | none — the refresh cookie's SameSite. Keep strict while the\n" +
+    "# frontend is the same site as this API (localhost:3000 -> localhost:8080 is,\n" +
+    "# and so is app.example.com -> api.example.com). A frontend on a different\n" +
+    "# site entirely needs none, together with COOKIE_SECURE=true, or the browser\n" +
+    "# never sends the cookie to /auth/refresh and sessions die at every expiry.\n" +
+    "COOKIE_SAMESITE=strict\n" +
     "\nPASSWORD_RESET_TTL_MIN=30\n" +
     "PASSWORD_RESET_URL=http://localhost:3000/reset-password\n" +
     "\nEMAIL_VERIFY_TTL_MIN=1440\n" +
@@ -194,6 +200,7 @@ async function ensureRedis(projectDir: string, goModule: string): Promise<void> 
   patchConfigForRedis(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), goModule);
   patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
+  patchCiForRedis(path.join(projectDir, ".github", "workflows", "ci.yml"));
 
   const envExamplePath = path.join(projectDir, ".env.example");
   if (fs.existsSync(envExamplePath)) {

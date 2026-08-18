@@ -938,6 +938,19 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const loginCookie = cookie(login);
   if (!access || !loginCookie) throw new Error(`expected access_token + refresh_token cookie on login, got:\n${login}`);
 
+  // Same account, typed with a capital. The column is a plain case-sensitive
+  // UNIQUE, so without normalization this is a 401 on login and a second
+  // account on register — and a Google login (Google always reports the
+  // address lowercase) would silently create a duplicate user for the same
+  // person. (Surrounding whitespace is a separate matter: `binding:"email"`
+  // rejects it before the service ever sees it, so only cmd/seed's env-var
+  // path needs the trim.)
+  const mixedCaseLogin = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"Alice@Example.COM","password":"correcthorsebattery"}']);
+  if (status(mixedCaseLogin) !== "200") throw new Error(`expected login to match the account regardless of email case, got:\n${mixedCaseLogin}`);
+
+  const mixedCaseRegister = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"ALICE@example.com","password":"correcthorsebattery","name":"Not Alice"}']);
+  if (status(mixedCaseRegister) !== "409") throw new Error(`expected a differently-cased email to collide with the existing account, got:\n${mixedCaseRegister}`);
+
   const meNoToken = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me`]);
   if (status(meNoToken) !== "401") throw new Error(`expected 401 on /me with no token, got:\n${meNoToken}`);
 
@@ -1073,6 +1086,21 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     } else if (status(out) !== "429" || !out.includes("RATE_LIMITED")) {
       throw new Error(`expected the 6th rapid register within a minute to be rate limited (429 RATE_LIMITED), got:\n${out}`);
     }
+  }
+
+  // The budget is spent for this client, and a header must not buy a fresh
+  // one. gin trusts every proxy unless SetTrustedProxies says otherwise, so
+  // c.ClientIP() used to return whatever X-Forwarded-For the caller sent —
+  // which made every limit above a formality: rotate the header, brute force
+  // forever. TRUSTED_PROXIES is empty here (the default), so the header must
+  // be ignored entirely.
+  const spoofed = run("curl", [
+    "-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/register`, ...jsonHeader,
+    "-H", "X-Forwarded-For: 203.0.113.7",
+    "-d", '{"email":"spoofed@example.com","password":"correcthorsebattery","name":"Spoofed"}',
+  ]);
+  if (status(spoofed) !== "429") {
+    throw new Error(`X-Forwarded-For bought a fresh rate-limit budget — the limiter is bypassable, got:\n${spoofed}`);
   }
 
   // a DIFFERENT route's budget must be untouched — proves limits are

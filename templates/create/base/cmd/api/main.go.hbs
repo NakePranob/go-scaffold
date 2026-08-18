@@ -59,6 +59,15 @@ func main() {
 	}
 
 	r := gin.New()
+	// gin trusts every proxy by default, which makes c.ClientIP() — and so
+	// anything keyed on it, like the auth rate limiter — whatever
+	// X-Forwarded-For the caller felt like sending. Empty TRUSTED_PROXIES
+	// means trust nobody and use the peer address; set it to your load
+	// balancer's CIDRs when you actually run behind one.
+	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		logger.Error("trusted proxies", "error", err)
+		os.Exit(1)
+	}
 	r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))
 
 	// liveness = is the process up / readiness = ready for traffic (can it reach the DB)
@@ -77,7 +86,13 @@ func main() {
 	// <domain>/) via relative $ref — serve the whole tree under one prefix so a client that
 	// resolves $ref over HTTP (Scalar, Swagger UI, Redoc, Hey API pointed at a URL) can reach
 	// them too; StaticFile on just the index file would 404 on every $ref it follows.
-	r.Static("/docs", "./docs")
+	//
+	// Not in production: this serves your whole API surface — every path,
+	// parameter and schema — to anyone who asks. Publish the spec deliberately
+	// (`make openapi-bundle`) rather than by leaving this on.
+	if !cfg.IsProd() {
+		r.Static("/docs", "./docs")
+	}
 {{/if}}
 
 	api := r.Group("/{{apiPrefix}}")

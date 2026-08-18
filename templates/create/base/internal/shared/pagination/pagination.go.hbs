@@ -37,3 +37,14 @@ func Parse(c *gin.Context) Params {
 func (p Params) Response(data any) gin.H {
 	return gin.H{"data": data, "limit": p.Limit, "offset": p.Offset}
 }
+
+// ResponseWithTotal is Response plus the row count the filter matched, which
+// is what a client needs to render "page 3 of 12". Separate rather than
+// folded into Response because the count costs a second query:
+//
+//	var total int64
+//	if err := db.Model(&model.Thing{}).Count(&total).Error; err != nil { ... }
+//	c.JSON(http.StatusOK, p.ResponseWithTotal(out, total))
+func (p Params) ResponseWithTotal(data any, total int64) gin.H {
+	return gin.H{"data": data, "limit": p.Limit, "offset": p.Offset, "total": total}
+}
