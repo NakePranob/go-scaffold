@@ -12,9 +12,7 @@
   "files": [
     "dist",
     "templates",
-    "bin",
-    "scripts",
-    "tests"
+    "bin"
   ],
   "type": "commonjs",
   "packageManager": "pnpm@11.0.7",
@@ -26,7 +24,7 @@
     "test:integration": "node --test tests/integration/*.test.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "verify": "pnpm run build && pnpm run test",
-    "prepack": "pnpm run build",
+    "prepack": "rm -rf dist && pnpm run build",
     "prepublishOnly": "pnpm run verify"
   },
   "keywords": [

@@ -6,7 +6,7 @@ import { toDbName } from "../utils/naming";
 import { resolveProjectModuleNaming } from "../utils/module-location";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
-import { patchMainGo } from "../utils/main-patcher";
+import { assertMainGoPatchable, patchMainGo } from "../utils/main-patcher";
 import { patchOpenapiIndex } from "../utils/openapi-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
@@ -53,6 +53,12 @@ export async function generateModule(
   if (fs.existsSync(moduleDir) && fs.readdirSync(moduleDir).length > 0) {
     throw new Error(`${moduleDir} already exists — pick a different name or delete it first`);
   }
+
+  // Every marker this command patches has to be there before the first file
+  // is written — a failure after the module folder and its migration exist is
+  // a dead end, since the retry trips the "already exists" guard above.
+  const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
+  assertMainGoPatchable(mainGoPath);
 
   // snapshot before writing anything, so assertNoDrift below can tell "we broke
   // it" from "it was already broken"
@@ -116,7 +122,6 @@ export async function generateModule(
     await applyTemplateEntries(projectDir, permissionEntries, context);
   }
 
-  const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, naming.pkg);
 
   patchMainGo(mainGoPath, {

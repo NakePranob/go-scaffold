@@ -24,9 +24,20 @@ export function readConfig(projectDir: string): ProjectConfig {
 
 function detectConfig(projectDir: string): ProjectConfig {
   const goModPath = path.join(projectDir, "go.mod");
+  const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
   if (!fs.existsSync(goModPath)) {
     throw new Error(
       `no ${CONFIG_FILE} and no go.mod found in ${projectDir} — run this inside a go-scaffold project`
+    );
+  }
+  // go.mod alone is just "some Go module". Without cmd/api/main.go there is
+  // nothing to wire a module into, and every command would write its files
+  // first and only then die on a missing main.go — a half-scaffolded
+  // directory the user has to clean up by hand.
+  if (!fs.existsSync(mainGoPath)) {
+    throw new Error(
+      `${projectDir} has a go.mod but no cmd/api/main.go — this looks like a plain Go module, not a go-scaffold project.\n` +
+        `Run \`go-scaffold create <name>\` to start one.`
     );
   }
   const goMod = fs.readFileSync(goModPath, "utf8");
@@ -36,19 +47,31 @@ function detectConfig(projectDir: string): ProjectConfig {
   // parse the chosen prefix back out of `api := r.Group("/v1")` in main.go;
   // an empty group (`r.Group("")`) or no match at all means no prefix.
   let apiPrefix = "";
-  const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
-  if (fs.existsSync(mainGoPath)) {
-    const groupMatch = fs.readFileSync(mainGoPath, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9/]*)"\)/);
-    if (groupMatch) apiPrefix = groupMatch[1];
-  }
+  const groupMatch = fs.readFileSync(mainGoPath, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9/]*)"\)/);
+  if (groupMatch) apiPrefix = groupMatch[1];
+
+  // Every feature is detectable from the tree each `add` command creates, so
+  // detect them all rather than reporting only docker/openapi. Leaving the
+  // rest undefined made a config-less project a dead end: `add auth` refused
+  // ("needs add worker first") while `add worker` also refused ("queue
+  // already exists"), with no way out. Worse, the first `add` to succeed then
+  // wrote a config that recorded the undetected features as absent.
+  const has = (...segments: string[]) => fs.existsSync(path.join(projectDir, ...segments));
+  const worker = has("internal", "platform", "queue");
 
   return {
     projectName: path.basename(projectDir),
     goModule,
     apiPrefix,
     features: {
-      docker: fs.existsSync(path.join(projectDir, "docker-compose.yml")),
-      openapiDocs: fs.existsSync(path.join(projectDir, "docs", "openapi.yaml")),
+      docker: has("docker-compose.yml"),
+      openapiDocs: has("docs", "openapi.yaml"),
+      worker,
+      // which adapter file is present is what `add worker --queue` decided
+      queue: !worker ? undefined : has("internal", "platform", "queue", "asynq.go") ? "asynq" : "river",
+      auth: has("internal", "app", "user"),
+      rbac: has("internal", "app", "role"),
+      observability: has("internal", "platform", "telemetry"),
     },
   };
 }

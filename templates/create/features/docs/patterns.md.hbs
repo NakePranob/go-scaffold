@@ -62,6 +62,15 @@ internal/app/<domain>/
 - The only file per domain that talks to GORM
 - Every method takes `ctx context.Context` first, so a cancelled request
   cancels the query
+- Every query starts from `tx.From(ctx, r.db).WithContext(ctx)`, never from
+  `r.db` directly — `shared/tx` is what lets a caller wrap two repositories
+  in one `tx.Do(ctx, db, func(ctx) error { ... })` and have both commit or
+  roll back together. `From` returns the transaction on the context, or the
+  plain `*gorm.DB` when there is none, so a method written this way behaves
+  identically either way. A hand-written method that uses `r.db` compiles,
+  passes its tests, and silently escapes any surrounding transaction — that
+  write commits on its own even when the rest of `tx.Do` rolls back. This is
+  the single easiest convention to miss when adding a method by hand.
 - Look up by ID with an explicit `"id = ?"` — the PK is a UUID, not an int,
   and GORM can misinterpret a bare struct arg
 
@@ -76,6 +85,31 @@ internal/app/<domain>/
   across concurrent requests
 - Codes are domain-specific (`ORDER_NOT_FOUND`), never the generic
   `apperror.NewNotFound()` directly from a handler
+
+## Optimistic Locking
+
+Every generated table has a `version INTEGER NOT NULL DEFAULT 1` column, and
+every generated `Repository.Update` is guarded by it — the `UPDATE` carries
+`WHERE id = ? AND version = ?` and bumps the version in the same statement.
+Zero rows affected means someone else saved between the caller's read and its
+write, so the repository returns `ErrStaleVersion` instead of reporting a
+success that changed nothing.
+
+The version the check compares against is the one **the client** last read,
+not the one on the row the service just loaded — comparing a row against
+itself always matches and defeats the whole check. That's why a CRUD
+skeleton's `updateInput` carries `Version int` with `binding:"required"`
+and `response` echoes it back: the client round-trips the value, and an
+update that arrives without one is rejected rather than treated as a blind
+overwrite.
+
+In a CRUD skeleton the service translates `ErrStaleVersion` into `errStale()`
+from the domain's error catalog (`<DOMAIN>_STALE`, HTTP 409) — a lost update
+is a client problem to retry, not a 500. A minimal module has the same
+`Repository.Update` and the same `errStale()` waiting for it, just no update
+path yet. Keep the chain intact when you add one by hand:
+`errors.Is(err, ErrStaleVersion)` → `errStale()`, and never set `Version` on
+the model yourself — `Repository.Update` owns the bump.
 
 ## Domains With a Foreign Key (Relations) — 3 Rules
 

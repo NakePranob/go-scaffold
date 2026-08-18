@@ -21,6 +21,7 @@ import {
 } from "../utils/rbac-patcher";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
+import { assertNoDrift, assertStillParses, parseChecks, typeChecks } from "../utils/gocheck";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
 // route `add rbac` registers or adds onto the user handler.
@@ -53,6 +54,9 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   if (fs.existsSync(roleDir)) {
     throw new Error(`${roleDir} already exists — RBAC looks like it's already been added`);
   }
+
+  const before = typeChecks(projectDir);
+  const parsedBefore = parseChecks(projectDir);
 
   await applyTemplateEntries(projectDir, RBAC_FILES, { goModule: config.goModule });
 
@@ -99,6 +103,13 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   }
 
   gofmtTree(projectDir);
+  assertStillParses(projectDir, parsedBefore, "added RBAC");
+  // rbac introduces no new third-party dependency, so unlike add auth/worker
+  // this can hold the stronger line: the project has to still type-check.
+  assertNoDrift(projectDir, before, config, {
+    didWhat: "added RBAC",
+    recover: "internal/app/role/ and the rbac patches were left in place — reconcile cmd/api/main.go by hand.",
+  });
 
   writeConfig(projectDir, { ...config, features: { ...config.features, rbac: true } });
 

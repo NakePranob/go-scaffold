@@ -4,8 +4,10 @@ import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { workerFiles } from "../templates/worker-manifest";
-import { patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
 import { QueueBackend } from "../types";
+import { assertStillParses, parseChecks } from "../utils/gocheck";
+import { patchGoModRequires } from "../utils/gomod-patcher";
 
 // addWorker scaffolds async job processing: the backend-neutral queue
 // contract (platform/queue), one adapter for the chosen backing store, SMTP
@@ -21,18 +23,31 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
     throw new Error(`${queueDir} already exists — worker infrastructure looks like it's already been added`);
   }
 
+  const parsedBefore = parseChecks(projectDir);
+
   const riverQueue = backend === "river";
   await applyTemplateEntries(projectDir, workerFiles(backend), { goModule: config.goModule, riverQueue });
 
   patchConfigForWorker(path.join(projectDir, "internal", "shared", "config", "config.go"), { redis: !riverQueue });
   if (!riverQueue) {
     patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
+    patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
   }
 
+  // pinned to what this scaffold was written against — see gomod-patcher
+  patchGoModRequires(
+    path.join(projectDir, "go.mod"),
+    riverQueue
+      ? ["github.com/riverqueue/river v0.43.0", "github.com/riverqueue/river/riverdriver/riverdatabasesql v0.43.0"]
+      : ["github.com/hibiken/asynq v0.26.0", "github.com/redis/go-redis/v9 v9.22.0"]
+  );
   patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
   patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });
 
   gofmtTree(projectDir);
+  // parse-only: river/asynq aren't in go.mod until the user runs `go mod
+  // tidy`, so `go vet` can't be the gate here.
+  assertStillParses(projectDir, parsedBefore, `added worker (${backend})`);
 
   writeConfig(projectDir, { ...config, features: { ...config.features, worker: true, queue: backend } });
 
@@ -83,10 +98,16 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
       '\tgo run github.com/riverqueue/river/cmd/river@latest migrate-up --line main --database-url "$$DB_DSN"\n'
     : "";
 
+  // Both load config exactly the way Makefile.hbs says every target does:
+  // via $(ENV_FILE), and through the same sed that strips trailing comments.
+  // Without it, .env.example's own `APP_ENV=development  # prod: production`
+  // reaches `export` as a bare `#` and prints an error on every run.
+  const loadEnv = "@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs);";
+
   const targets =
     "\n# run both API + worker in one terminal — Ctrl+C kills both\n" +
     "dev:\n" +
-    "\t@[ -f .env ] && export $$(grep -v '^#' .env | xargs); \\\n" +
+    `\t${loadEnv} \\\n` +
     "\t(trap 'kill 0' SIGINT SIGTERM; \\\n" +
     "\t go run ./cmd/api & \\\n" +
     "\t go run ./cmd/worker & \\\n" +
@@ -95,7 +116,7 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
     `# background worker for async job processing (email, ...) — requires ${opts.river ? "Postgres (make river-migrate first)" : "Redis"}.\n` +
     "# Use `make dev` to run both in one terminal, or run this in a separate one.\n" +
     "worker:\n" +
-    "\t@[ -f .env ] && export $$(grep -v '^#' .env | xargs); go run ./cmd/worker\n" +
+    `\t${loadEnv} go run ./cmd/worker\n` +
     riverTarget;
 
   // Function replacer: targets contains literal "$$" (Make's escape for a

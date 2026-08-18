@@ -55,9 +55,13 @@ hand-rolling anything that looks like scaffolding.
   with the same name — pick a different one if it collides. With OpenAPI
   enabled it also writes a valid TODO path document and wires the index;
   replace placeholder schemas while implementing the method
-- `go-scaffold remove module <name>` — deletes the package and un-wires
-  main.go/OpenAPI while preserving immutable migrations and table data. Use
-  `generate migration drop_<table>` for an explicit reviewed data removal
+- `go-scaffold undo module <name>` — takes back a `generate module` that
+  shouldn't have happened (typo'd name, domain decided against): deletes the
+  package, un-wires main.go/OpenAPI, and deletes the module's migration files.
+  It refuses if those migrations are committed to git or already applied to
+  your database, since then they may exist somewhere this can't reach. Not for
+  retiring a domain that has shipped — that's `generate migration drop_<table>`
+  plus a reviewed data removal; the table is never dropped either way
 - Every route in this project is grouped under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
   (set once at `create` time via `--api-prefix`) — there is no per-domain
   versioning; a breaking API change gets a new domain package or a new DTO

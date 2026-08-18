@@ -17,6 +17,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CLI = path.join(ROOT, "bin", "go-scaffold.js");
 
 let passed = 0;
+const skipped = [];
 let scratch;
 let fullApp = null;
 let smokeEnv = null;
@@ -25,10 +26,34 @@ let hasPsql = false;
 let cleanupStarted = false;
 let sharedPostgresContainerId = null;
 
+// Every step that needs a tool this machine may not have is written the same
+// way: `step(have ? "..." : "...: skipped (needs X)", () => { if (!have) return; ... })`.
+// Counting those as passes is how a Docker-less run still printed "54 checks
+// passed" and exited 0, having never exercised add worker/auth/rbac/
+// observability, the migration ordering, or the OpenAPI bundle — with
+// prepublishOnly gating on exactly that number.
+const SKIP_MARKER = "skipped (";
+
+// notVerified is for the other shape: a step that genuinely runs, but whose
+// name promises one more thing than a missing tool let it do (bundling the
+// OpenAPI spec, linting the result). Those still count as passes — real work
+// happened — but the part that didn't run belongs in the skip list, which
+// under SMOKE_ALLOW_SKIPS is the only record of what this run actually
+// covered.
+function notVerified(what) {
+  skipped.push(what);
+}
+
 function step(name, fn) {
+  const isSkip = name.includes(SKIP_MARKER);
   process.stdout.write(`- ${name} ... `);
   try {
-    fn();
+    fn(); // still called: a skipped step's body is a bare `if (!have) return`
+    if (isSkip) {
+      console.log("SKIPPED");
+      skipped.push(name);
+      return;
+    }
     console.log("ok");
     passed++;
   } catch (err) {
@@ -1129,6 +1154,7 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
     if (!openapi.includes(p)) throw new Error(`expected ${p} in docs/openapi.yaml after add auth, got:\n${openapi}`);
   }
   if (hasNpx) run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+  else notVerified("add auth: the openapi bundle resolving — skipped (npx not available)");
 });
 
 step("bare project: CI workflow renders with the right db name, valid trigger keys", () => {
@@ -1153,7 +1179,7 @@ try {
 step(
   hasGolangciLint
     ? "bare project: golangci-lint is clean out of the box (the CI gate the scaffold ships would pass)"
-    : "bare project: golangci-lint not installed locally — skipping a real run",
+    : "bare project: golangci-lint clean — skipped (golangci-lint not installed)",
   () => {
     if (!hasGolangciLint) return;
     const out = run("golangci-lint", ["run"], fullApp);
@@ -1201,7 +1227,7 @@ step(
     ? "make db-create is idempotent and actually creates the DB"
     : dockerPgContainer
       ? "make db-create falls back to docker exec (no local psql) and actually creates the DB"
-      : "make db-create parses (no psql, no Postgres container — skipping a real run)",
+      : "make db-create actually creates the DB — skipped (no psql, no Postgres container; only the Makefile syntax was checked)",
   () => {
     if (!hasPsql && !dockerPgContainer) {
       run("make", ["-n", "db-create"], fullApp); // dry run: catches Makefile/shell syntax errors
@@ -1541,6 +1567,7 @@ step(
     }
     assertFileContains(path.join(fullApp, "docs", "auth", "schemas.yaml"), "role: { type: string }");
     if (hasNpx) run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+    else notVerified("add rbac: the openapi bundle resolving — skipped (npx not available)");
   }
 );
 
@@ -1738,11 +1765,15 @@ step("full module: go test ./... (integration tests skip without a DB)", () => {
 // built — FK constraints and seed data included — so the default has to be a
 // separate <db>_test. This is the check that the default actually holds.
 step(
-  hasPsql || dockerPgContainer
+  (hasPsql || dockerPgContainer) && hasMigrate
     ? "go test wipes only <db>_test, never the app's own database"
-    : "go test DB isolation: skipped (no psql, no Postgres container)",
+    // the body runs `migrate up` against the test database, so the migrate CLI
+    // belongs in the condition — without it this step failed the whole suite
+    // on a machine that merely lacked the tool, rather than skipping like its
+    // neighbours do.
+    : "go test DB isolation: skipped (needs psql/a Postgres container, and the migrate CLI)",
   () => {
-    if (!hasPsql && !dockerPgContainer) return;
+    if ((!hasPsql && !dockerPgContainer) || !hasMigrate) return;
     // stand up a "dev database" that looks like one `make migrate-up` produced,
     // holding a row the test run must not be allowed to destroy
     runMake(["db-create"], fullApp);
@@ -1890,6 +1921,8 @@ step("after 5 generate method calls: build + vet + gofmt + test + OpenAPI bundle
   run("go", ["test", "./..."], fullApp);
   if (hasNpx) {
     run("npx", ["--yes", "@redocly/cli", "bundle", "docs/openapi.yaml", "-o", "docs/openapi.bundled.yaml"], fullApp);
+  } else {
+    notVerified("after 5 generate method calls: the OpenAPI bundle — skipped (npx not available)");
   }
 });
 
@@ -1930,15 +1963,22 @@ step("rejects reserved Go words before writing broken code (module/method/field)
   expectThrows(() => goScaffold(["generate", "module", "2fa"], fullApp), "starts with a digit");
 });
 
-step("remove module reverses wiring and re-generating stays clean", () => {
+step("undo module reverses wiring, deletes its migrations, and re-generating stays clean", () => {
+  const widgetMigrations = () =>
+    readdirSync(path.join(fullApp, "migrations")).filter((name) => name.includes("_create_widgets."));
   goScaffold(["generate", "module", "widget"], fullApp);
   run("go", ["build", "./..."], fullApp);
-  goScaffold(["remove", "module", "widget", "--yes"], fullApp);
+  if (widgetMigrations().length !== 2) throw new Error("expected an up/down migration pair for widget");
+  goScaffold(["undo", "module", "widget", "--yes"], fullApp);
   if (existsSync(path.join(fullApp, "internal", "app", "widget"))) throw new Error("widget folder not deleted");
+  // uncommitted here, and newer than anything this app's database has applied,
+  // so undo deletes them — a typo'd module must not leave a migration behind
+  // for `//go:embed *` to run on every database from then on
+  if (widgetMigrations().length !== 0) throw new Error("widget migrations survived undo");
   const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8");
-  if (mainGo.includes("widget.NewHandler")) throw new Error("main.go still wires widget after remove");
+  if (mainGo.includes("widget.NewHandler")) throw new Error("main.go still wires widget after undo");
   const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
-  if (openapi.includes("/v1/widgets:")) throw new Error("openapi still lists widgets after remove");
+  if (openapi.includes("/v1/widgets:")) throw new Error("openapi still lists widgets after undo");
   run("go", ["build", "./..."], fullApp); // must still compile with widget gone
   goScaffold(["generate", "module", "widget"], fullApp); // re-adding must not duplicate
   const registers = (readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8").match(/widget\.NewHandler\(/g) ?? []).length;
@@ -1990,6 +2030,8 @@ step(
     if (hasGolangciLint) {
       const lintOut = run("golangci-lint", ["run"], obsApp);
       if (lintOut.trim() && !lintOut.includes("0 issues")) throw new Error(`expected 0 lint issues, got:\n${lintOut}`);
+    } else {
+      notVerified("add observability: the generated tree being lint-clean — skipped (golangci-lint not installed)");
     }
 
     goScaffold(["generate", "module", "widget", "--full"], obsApp);
@@ -2360,3 +2402,20 @@ step("generate doesn't blame itself for a project that was already broken", () =
 
 cleanup();
 console.log(`\n${passed} checks passed.`);
+
+if (skipped.length) {
+  console.log(`${skipped.length} skipped — this run did NOT verify:`);
+  for (const name of skipped) console.log(`  - ${name}`);
+  if (process.env.SMOKE_ALLOW_SKIPS === "true") {
+    console.log("\nSMOKE_ALLOW_SKIPS=true — accepting a partial run.");
+  } else {
+    writeSync(
+      2,
+      "\nRefusing to report success with checks skipped — this is the gate `pnpm run verify`\n" +
+        "and prepublishOnly rely on, and a partial pass here reads exactly like a full one.\n" +
+        "Install the missing tools (Docker, psql, the migrate CLI, golangci-lint, npx), or set\n" +
+        "SMOKE_ALLOW_SKIPS=true to accept a partial run.\n"
+    );
+    process.exit(1);
+  }
+}

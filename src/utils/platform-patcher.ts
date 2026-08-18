@@ -8,6 +8,33 @@ const PLATFORM_INIT_MARKER = "// go-scaffold:platform-init";
 const READYZ_MARKER = "// go-scaffold:readyz-checks";
 const SHUTDOWN_MARKER = "// go-scaffold:shutdown";
 
+// patchComposeForRedis adds a redis service to docker-compose.yml. Whatever
+// pulls Redis in — `add worker --queue redis`, or `add auth`'s refresh-token
+// store on top of a Postgres queue — makes cmd/api call cache.Open and adds a
+// Redis ping to /readyz. Leaving compose Postgres-only meant the documented
+// path (`make docker-up` then `make run`) produced a permanent 503, which is
+// a rough first five minutes with a brand new project.
+//
+// No-op when the project was scaffolded with --no-docker.
+export function patchComposeForRedis(composePath: string): void {
+  if (!fs.existsSync(composePath)) return;
+  const content = fs.readFileSync(composePath, "utf8");
+  if (/^\s{2}redis:/m.test(content)) return;
+
+  const service = [
+    "  redis:",
+    "    image: redis:7-alpine",
+    "    ports:",
+    '      - "6379:6379"',
+  ].join("\n");
+
+  // before the top-level `volumes:` key, so redis stays inside `services:`
+  const out = content.includes("\nvolumes:")
+    ? content.replace("\nvolumes:", () => `\n${service}\n\nvolumes:`)
+    : content.replace(/\n?$/, "\n") + `\n${service}\n`;
+  fs.writeFileSync(composePath, out);
+}
+
 // patchConfigForRedis adds RedisURL to Config and its env() load to Load().
 // Split out from the worker patch because Redis is no longer the worker's
 // concern by default — `add auth` needs it for the refresh-token store even

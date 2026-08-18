@@ -85,6 +85,22 @@ export function assertNotGoKeyword(ident: string, role: string): void {
   }
 }
 
+// Anything that ends up spliced into a Go declaration has to be a legal
+// identifier first. Without this, `generate method thing 2fa` exits 0 over a
+// `func (s *Service) 2fa(...)` spread across four files, and a --field like
+// `x string) error { panic(0) } // ` is injected straight into the generated
+// signatures. Neither is caught later: gofmt's failure is only advisory and
+// go vet needs a project that compiled a moment ago.
+export function assertGoIdentifier(ident: string, role: string): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(ident)) {
+    throw new Error(
+      `"${ident}" is not a valid Go identifier — can't use it as a ${role} name.\n` +
+        `Letters, digits and underscores only, and it can't start with a digit.`
+    );
+  }
+  assertNotGoKeyword(ident, role);
+}
+
 // module name becomes a Go package name; keywords and predeclared type names
 // both produce code that won't compile (`package func`, or a `string` package
 // shadowing the builtin in main.go). Returns true|message for inquirer, and
@@ -160,7 +176,7 @@ function resolveLegacyModuleNaming(rawName: string): ModuleNaming {
     // whatever schema the project's own migrations put it in (usually
     // "public", from before this field existed), and nothing re-renders its
     // model/migration templates to move it. Every consumer of this result is
-    // generate method/remove module, neither of which reads schemaName.
+    // generate method/undo module, neither of which reads schemaName.
     schemaName: `${pkg}_svc`,
     errorPrefix: pkg.toUpperCase(),
   };
@@ -211,8 +227,10 @@ export function resolveMethodNaming(rawName: string): MethodNaming {
   if (!pascalName) {
     throw new Error(`invalid method name: "${rawName}" (must contain letters/numbers)`);
   }
-  // handlerName becomes a Go method name (`func (h *Handler) <name>`)
-  assertNotGoKeyword(toCamelCase(cleaned), "method");
+  // both become Go identifiers: handlerName as a method name
+  // (`func (h *Handler) <name>`), pascalName as a DTO type (`<Name>Input`)
+  assertGoIdentifier(toCamelCase(cleaned), "method");
+  assertGoIdentifier(pascalName, "method");
   return {
     name: cleaned,
     pascalName,

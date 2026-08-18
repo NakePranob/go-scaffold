@@ -1,5 +1,5 @@
 import fs from "fs-extra";
-import { insertBeforeMarker, insertBeforeMarkerOnce, removeBlock, removeLines, removeLinesByPrefix } from "./marker-patch";
+import { hasMarker, insertBeforeMarker, insertBeforeMarkerOnce, removeBlock, removeLines, removeLinesByPrefix } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const SCHEMA_MARKER = "// go-scaffold:schemas";
@@ -65,6 +65,28 @@ function mainGoLines(patch: RoutePatch) {
     // is only ever set once that's already been verified by the caller.
     routeLine: `${patch.pkg}.NewHandler(${handlerArgs.join(", ")}).Register(api)`,
   };
+}
+
+// assertMainGoPatchable is the pre-flight for it: every marker patchMainGo
+// needs, checked before the caller writes anything. Without it a missing
+// marker surfaced only once the module files and its migration were already
+// on disk, and the retry then hit "internal/app/<pkg> already exists" — a
+// dead end that pointed nowhere useful.
+export function assertMainGoPatchable(mainGoPath: string): void {
+  if (!fs.existsSync(mainGoPath)) {
+    throw new Error(`${mainGoPath} not found — this doesn't look like a go-scaffold project`);
+  }
+  const content = fs.readFileSync(mainGoPath, "utf8");
+  const missing = [IMPORT_MARKER, SCHEMA_MARKER, MODEL_MARKER, ROUTE_MARKER].filter((m) => !hasMarker(content, m));
+  if (missing.length) {
+    throw new Error(
+      `cmd/api/main.go is missing the marker comment${missing.length > 1 ? "s" : ""} this command patches at:\n` +
+        missing.map((m) => `  ${m}`).join("\n") +
+        `\n\nEither the file was hand-edited, or it was scaffolded by an older go-scaffold that\n` +
+        `didn't emit ${missing.length > 1 ? "them" : "it"} yet. Add the marker${missing.length > 1 ? "s" : ""} back where the generated code should go, or\n` +
+        `wire this module into main.go by hand.`
+    );
+  }
 }
 
 // patchMainGo wires a newly generated module into cmd/api/main.go: its

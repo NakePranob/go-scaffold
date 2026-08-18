@@ -2,7 +2,7 @@
 
 A CLI that scaffolds a Gin + GORM + PostgreSQL Go backend, then keeps
 generating consistent domain modules into that project as it grows — the Go
-counterpart to [nest-scaffold](../nest-scaffold).
+counterpart to nest-scaffold.
 
 You don't hand-wire a new domain into `cmd/api/main.go`, write the
 handler/service/repository boilerplate, or decide error-handling conventions
@@ -61,7 +61,7 @@ go-scaffold create my-api --defaults --no-docker --api-prefix beta
 ```
 
 Produces a **bare skeleton only** — `cmd/api`, the shared platform packages
-(config/apperror/dberr/httpx/id/middleware/pagination), Docker+Postgres,
+(config/apperror/dberr/httpx/id/middleware/pagination/tx), Docker+Postgres,
 migrations folder, and the standards docs (`docs/architect/`, `AGENTS.md`,
 `CLAUDE.md`, `.claude/skills/go-scaffold/`). No domain modules — add those
 with `generate module`.
@@ -71,9 +71,10 @@ with `generate module`.
 | `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, prefix `v1`) |
 | `--no-docker` | Skip `docker-compose.yml` (with `--defaults`) |
 | `--no-openapi-docs` | Skip `docs/openapi.yaml` (with `--defaults`) |
+| `--observability` | Prometheus `/metrics` + OpenTelemetry tracing (with `--defaults`; off by default — `add observability` does the same later) |
 | `--api-prefix <prefix>` | URL prefix every route is grouped under (with `--defaults`; default `v1`, `""` for none, `/`-separated segments like `api/v1` are fine) |
 
-Without `--defaults`, an interactive wizard asks the same three questions.
+Without `--defaults`, an interactive wizard asks the same four questions.
 The prefix is a single project-wide choice made once at `create` time —
 there's no per-domain versioning (a domain that needs a real breaking change
 gets a new domain package or a new DTO field, not a duplicated model pointed
@@ -97,7 +98,7 @@ go-scaffold generate module orders --full           # opt-in CRUD skeleton
 internal/app/order/
 ├── model/model.go      # domain model + GORM table (id/created_at/updated_at — add real fields yourself; a folder so multi-table domains can add more files)
 ├── dto.go               # request/response structs (empty stubs — add real fields yourself)
-├── errors.go             # ORDER_NOT_FOUND / ORDER_CONFLICT / ORDER_HAS_REFERENCES
+├── errors.go             # ORDER_NOT_FOUND / ORDER_CONFLICT / ORDER_HAS_REFERENCES / ORDER_STALE
 ├── repository.go         # GORM data access
 ├── service.go            # business logic + repository interface (mockable)
 ├── handler.go            # Gin routes, registered under the project's API prefix
@@ -120,7 +121,7 @@ Both modes also:
   wires an empty route group
 - Create the module's own Postgres schema (`<module>_svc`, e.g. `order_svc`)
   and add the model to the `AutoMigrate(...)` call
-- Append `migrations/<seq>_create_<plural>.{up,down}.sql`, which creates that
+- Append `migrations/<timestamp>_create_<plural>.{up,down}.sql`, which creates that
   same schema for `AUTO_MIGRATE=false`/production
 
 What it does **not** do: invent your fields or wire foreign keys between
@@ -274,22 +275,37 @@ disabled until `OTEL_EXPORTER_OTLP_ENDPOINT` is configured; `/metrics` works
 either way. `create --observability` is exactly this command run right after
 scaffolding — the two produce the same project.
 
-### `remove module <name>` (alias `rm m`) — drop a domain
+### `undo module <name>` (alias `undo m`) — take back a `generate module`
 
 ```bash
-go-scaffold remove module orders          # confirms first
-go-scaffold rm m orders --yes             # skip the confirm
+go-scaffold undo module orders          # confirms first
+go-scaffold undo m orders --yes         # skip the confirm
 ```
 
-The inverse of `generate module`: deletes `internal/app/<name>/` and reverses
-the import/AutoMigrate/route in `main.go`, paths/schemas in `docs/openapi.yaml`,
-and the per-module docs folder. **Existing migrations are preserved** because
-production may already have recorded those immutable versions. The table/data
-are also untouched; create a new `generate migration drop_<table>` migration
-when removal is intentional. Restores the `_ = api` placeholder if it was the
-last module, so the project still builds. Use this instead of hand-deleting
-the folder — a partial hand-delete leaves stale wiring that duplicates on the
-next `generate module` (which would panic gin at startup).
+The inverse of `generate module`, for the case it's actually the inverse of:
+a module you didn't mean to generate — a typo'd name, a domain you decided
+against. It deletes `internal/app/<name>/`, the per-module docs folder, **and
+the module's migration files**, and reverses the import/AutoMigrate/route in
+`main.go` plus the paths/schemas in `docs/openapi.yaml`. Restores the
+`_ = api` placeholder if it was the last module, so the project still builds.
+
+Deleting the migrations is the point. `migrations/embed.go` is a `//go:embed
+*`, so a typo'd `create_oders` left behind once ran on every database created
+from then on. That's only safe while those files exist nowhere but your
+working tree, so `undo` proves it first and refuses loudly otherwise:
+
+- **any of them is tracked by git** — it may already have been pulled or
+  deployed somewhere, so nothing is deleted. Retire that domain the explicit
+  way instead: `go-scaffold generate migration drop_<name>`.
+- **your database is already at or past that version** (read via the `migrate`
+  CLI when it's on `PATH` and a DSN is configured) — deleting the files would
+  strand `schema_migrations` at a version with no migration behind it. Run
+  `migrate ... down` first, then try again.
+
+The table itself is never dropped either way — `undo` only reverses what the
+CLI wrote. Prefer it to hand-deleting the folder: it also un-wires `main.go`,
+`.golangci.yml` and the OpenAPI index, and it refuses when another domain
+still imports this one rather than leaving you an un-compilable project.
 
 ## Why no per-domain versioning
 
@@ -316,7 +332,7 @@ out of sync with.
 cmd/api/main.go
 internal/
 ├── platform/database/
-├── shared/{config,apperror,dberr,httpx,id,middleware,pagination}/
+├── shared/{config,apperror,dberr,httpx,id,middleware,pagination,tx}/
 └── app/                      # empty until you `generate module`
 docs/
 ├── architect/{architecture,patterns,techstack}.md
@@ -324,8 +340,13 @@ docs/
 migrations/
 .github/workflows/ci.yml    # build, vet, gofmt check, golangci-lint, go test (with a Postgres service)
 Makefile
+.env.example
+.gitignore
 .golangci.yml
+redocly.yaml                # if openapi docs enabled
+docker-compose.yml          # if Docker enabled
 .vscode/settings.json
+README.md
 AGENTS.md
 CLAUDE.md
 .claude/skills/go-scaffold/SKILL.md
@@ -334,11 +355,14 @@ go-scaffold.config.json
 
 ## Supported stack
 
+Pinned in the generated `go.mod` — this table mirrors
+`templates/create/base/go.mod.hbs`, which is the source of truth.
+
 | Package | Version |
 |---|---|
-| Gin | v1.10.0 |
-| GORM + postgres driver | v1.25.12 / v1.5.9 |
-| validator/v10 | v10.20.0 |
+| Gin | v1.10.1 |
+| GORM + postgres driver | v1.31.2 / v1.6.2 |
+| validator/v10 | v10.30.3 |
 | google/uuid | v1.6.0 |
 
 ## License

@@ -1,0 +1,101 @@
+# CI for the CLI itself. The projects it generates have shipped with a
+# workflow for a while; this repo had none, so `pnpm run verify` only ever ran
+# when someone remembered to type it — and it degrades silently on a machine
+# missing Docker or the migrate CLI, which is why the smoke job installs
+# everything rather than letting steps skip.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          # must be >= the `go` directive templates/create/base/go.mod.hbs
+          # writes, or every generated project fails to build here
+          go-version: "1.25"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run test:unit
+      - run: pnpm run test:integration
+
+      # The smoke suite shells out to all of these. Without them its steps
+      # skip, and a skipped step used to count as a pass.
+      #
+      # migrate needs `-tags 'postgres'`: without it the binary builds and
+      # `migrate -version` succeeds — so the suite's hasMigrate probe passes —
+      # but every actual command dies with "unknown driver postgres". Same
+      # invocation and pin the generated project's own ci.yml.hbs uses.
+      #
+      # golangci-lint via `go install` on the v2 module path, not the upstream
+      # install.sh: that script's checksums don't verify for v2 releases, and
+      # v1 can't read the `version: "2"` config every generated project ships.
+      - name: install the tools the smoke suite needs
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: smoke
+        run: pnpm run test:smoke
+
+  # The only job that would catch a broken `files` list or a template npm
+  # strips out of the tarball: everything above tests the checkout, which
+  # always has every file regardless of what actually ships.
+  packaged-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          # must be >= the `go` directive templates/create/base/go.mod.hbs
+          # writes, or every generated project fails to build here
+          go-version: "1.25"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+
+      - name: pack and install the tarball into a clean directory
+        run: |
+          npm pack --pack-destination /tmp
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install /tmp/nakedev-go-scaffold-*.tgz
+
+      - name: scaffold from the packed CLI, not the checkout
+        working-directory: /tmp/consumer
+        run: |
+          CLI=node_modules/.bin/go-scaffold
+          $CLI create packaged-app --defaults --observability
+          cd packaged-app
+          # dotfiles are the ones npm is most likely to have dropped
+          for f in .env.example .gitignore .golangci.yml; do
+            test -f "$f" || { echo "missing $f — the tarball dropped a template"; exit 1; }
+          done
+          ../$CLI add worker --defaults
+          ../$CLI add auth
+          ../$CLI add rbac
+          ../$CLI generate module order --full --auth --permission orders:manage
+          ../$CLI generate method order approve --type post
+          go mod tidy
+          go build ./...
+          go vet ./...
+          test -z "$(gofmt -l .)" || { echo "generated tree is not gofmt-clean"; exit 1; }
+          ../$CLI undo module order --yes
+          go build ./...

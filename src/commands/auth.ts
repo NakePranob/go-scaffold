@@ -5,10 +5,12 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { AUTH_FILES } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
-import { patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchComposeForRedis, patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
+import { assertStillParses, parseChecks } from "../utils/gocheck";
+import { patchGoModRequires } from "../utils/gomod-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
 // route `add auth` registers — kept next to AUTH_FILES's route list so the
@@ -49,6 +51,8 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   // The refresh-token store needs Redis regardless of where jobs live. With
   // the Postgres-backed queue the project has no Redis yet, so add it here
   // rather than forcing a queue backend nobody asked for.
+  const parsedBefore = parseChecks(projectDir);
+
   await ensureRedis(projectDir, config.goModule);
 
   await applyTemplateEntries(projectDir, AUTH_FILES, { goModule: config.goModule });
@@ -81,6 +85,12 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.queue ?? "asynq");
+  patchGoModRequires(path.join(projectDir, "go.mod"), [
+    "github.com/golang-jwt/jwt/v5 v5.3.1",
+    "github.com/redis/go-redis/v9 v9.22.0",
+    "golang.org/x/crypto v0.52.0",
+    "golang.org/x/oauth2 v0.36.0",
+  ]);
   patchEnvExample(path.join(projectDir, ".env.example"));
   patchMakefile(path.join(projectDir, "Makefile"));
 
@@ -100,13 +110,17 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   }
 
   gofmtTree(projectDir);
+  // parse-only: jwt/oauth2/bcrypt aren't in go.mod until the `go mod tidy`
+  // printed below, so `go vet` can't be the gate here.
+  assertStillParses(projectDir, parsedBefore, "added auth");
 
   writeConfig(projectDir, { ...config, features: { ...config.features, auth: true } });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
   console.log(
-    "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password}, " +
-      "GET /auth/google/{login,callback}, and GET /users/me in cmd/api/main.go" +
+    "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
+      "GET /auth/google/{login,callback}, GET /users/me, and " +
+      "POST /users/me/{resend-verification,logout-all} in cmd/api/main.go" +
       docsMessage
   );
   console.log(
@@ -129,7 +143,11 @@ function patchMakefile(makefilePath: string): void {
     "# environment, not .env, so a real secret never sits in a checked-in file.\n" +
     "# --fixtures adds throwaway dev sample users, never use it outside dev.\n" +
     "seed:\n" +
-    "\t@[ -f .env ] && export $$(grep -v '^#' .env | sed -E 's/[[:space:]]+#.*$//' | xargs); go run ./cmd/seed $(ARGS)\n";
+    // `$$` throughout: make expands a single `$` as a variable reference, so
+    // `$//` became `//` and left sed an unterminated s/// expression — the
+    // recipe then failed, `.env` never loaded, and a bare `export` dumped the
+    // whole environment. Matches every target in Makefile.hbs verbatim.
+    "\t@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go run ./cmd/seed $(ARGS)\n";
 
   // Function replacer — target contains a literal "$$", see worker.ts's
   // patchMakefile for why a string replacement would silently mangle it.
@@ -175,6 +193,7 @@ async function ensureRedis(projectDir: string, goModule: string): Promise<void> 
   );
   patchConfigForRedis(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), goModule);
+  patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
 
   const envExamplePath = path.join(projectDir, ".env.example");
   if (fs.existsSync(envExamplePath)) {

@@ -38,7 +38,7 @@ export function insertBeforeMarkerOnce(content: string, marker: string, block: s
 }
 
 // removeLines drops every line whose trimmed text exactly equals one of the
-// given lines — the inverse of insertBeforeMarker for `remove module`, which
+// given lines — the inverse of insertBeforeMarker for `undo module`, which
 // needs to pull a module's import/route/path entries back out. Exact-trim
 // match so it can't clip an unrelated line that merely contains the text.
 export function removeLines(content: string, trimmedLines: string[]): string {
@@ -74,13 +74,91 @@ export function removeBlock(content: string, block: string): string {
 // removeLinesByPrefix is removeLines for a line the user is expected to edit
 // after it was generated — a service constructor that has since gained a
 // dependency, say. Matching the whole line would miss it and leave the
-// project un-compilable after `remove module`; matching a distinctive prefix
+// project un-compilable after `undo module`; matching a distinctive prefix
 // (`orderSvc :=`) still finds it. Only use it where the prefix is unique.
+//
+// A match consumes lines until its brackets balance, not just the first one:
+// docs/architect/patterns.md tells you to expand that single wiring line into
+// a multi-line adapter literal, and dropping only line one leaves an orphaned
+// func body behind — a main.go that no longer parses, reported by the Go
+// compiler long after `undo module` has printed success.
 export function removeLinesByPrefix(content: string, prefixes: string[]): string {
-  return content
-    .split("\n")
-    .filter((l) => !prefixes.some((p) => l.trim().startsWith(p)))
-    .join("\n");
+  const lines = content.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!prefixes.some((p) => lines[i].trim().startsWith(p))) {
+      out.push(lines[i]);
+      continue;
+    }
+    const start = i;
+    let depth = 0;
+    let overran = false;
+    do {
+      // A marker comment is a structural anchor — no wiring statement can
+      // contain one. Reaching it with brackets still open means the count is
+      // wrong (a malformed line above), and carrying on would swallow the
+      // marker plus every module wired after it. Stop at the boundary.
+      if (i > start && lines[i].trim().startsWith("// go-scaffold:")) {
+        overran = true;
+        break;
+      }
+      depth += bracketDelta(lines[i]);
+      i += 1;
+    } while (depth > 0 && i < lines.length);
+
+    // Either we hit a marker or ran out of file with brackets still open.
+    // Consuming anyway deletes everything in between — in main.go that's the
+    // other modules' wiring and the closing brace, from a command whose whole
+    // job is to touch one module. Refuse: undo un-wires before it deletes
+    // anything, so throwing here costs the user nothing.
+    if (overran || depth > 0) {
+      throw new Error(
+        `the statement starting at line ${start + 1} never closes its brackets:\n` +
+          `  ${lines[start].trim()}\n\n` +
+          `Refusing to guess where it ends — removing through to where the count finally balances\n` +
+          `would take the lines in between with it. Fix the brackets, or remove it by hand.`
+      );
+    }
+    i -= 1; // the for's own increment steps past the last consumed line
+  }
+  return out.join("\n");
+}
+
+// bracketDelta counts on code only. Brackets inside a string literal or a
+// trailing comment are text, not structure — `order.WithPrefix("(")` on the
+// wiring line would otherwise leave the count permanently open.
+//
+// ponytail: a raw string that spans lines is still counted wrong, since this
+// works a line at a time. Nothing generated produces one; reach for go/ast if
+// that ever changes.
+function bracketDelta(line: string): number {
+  let delta = 0;
+  for (const ch of stripLiteralsAndComments(line)) {
+    if (ch === "(" || ch === "{" || ch === "[") delta += 1;
+    else if (ch === ")" || ch === "}" || ch === "]") delta -= 1;
+  }
+  return delta;
+}
+
+function stripLiteralsAndComments(line: string): string {
+  let out = "";
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === "/" && line[i + 1] === "/") break; // rest of the line is a comment
+    if (ch !== '"' && ch !== "'" && ch !== "`") {
+      out += ch;
+      continue;
+    }
+    // skip to the closing quote; \" doesn't close an interpreted string, but
+    // a backslash is literal inside a raw one
+    const quote = ch;
+    i += 1;
+    while (i < line.length && line[i] !== quote) {
+      if (quote !== "`" && line[i] === "\\") i += 1;
+      i += 1;
+    }
+  }
+  return out;
 }
 
 export function insertBeforeMarker(content: string, marker: string, block: string): string {

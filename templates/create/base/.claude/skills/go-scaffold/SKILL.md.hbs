@@ -46,22 +46,45 @@ missing AutoMigrate wiring, a `repository` interface out of sync with its
 Run from the project root:
 
 ```bash
-go-scaffold generate module <name>
+go-scaffold generate module <name> [--full] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
+go-scaffold generate migration <name>
+go-scaffold undo module <name> [-y]
 ```
 
-`<name>` for a module should be a singular, lowercase, one-word domain noun
-(e.g. `order`, not `Orders` or `order-item`) — the CLI derives the Go
-package name, the pluralized REST route (`/orders`), and the table name
-from it.
+`<name>` for a module is a domain noun in whatever form reads naturally —
+singular or plural, any case, hyphens or underscores are all accepted and
+normalized (`products` → `product`, `Orders` → `order`, `order-item` →
+`orderitem`). From it the CLI derives the Go package name, the pluralized
+REST route (`/orders`, `/order-items`), the table, and the error-code prefix
+(`ORDER_ITEM_NOT_FOUND`). The only names it refuses are the ones that
+wouldn't compile: starting with a digit, or a Go keyword / predeclared type
+(`type`, `string`, `error`, ...).
 
 ### `generate module <name>`
 
-What you get: `internal/app/<name>/{model/,dto,errors,repository,service,handler,service_test,handler_test}.go`,
-a route registered under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
-in `cmd/api/main.go`, the model added to the `AutoMigrate` call, and a new
-file in `migrations/`. There's no per-domain versioning — the route prefix
-is a single project-wide choice made at `create` time.
+**Minimal is the default** — the module is created with no endpoints, and
+what lands in `cmd/api/main.go` is an *empty route group* under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
+waiting for `generate method`. You still get every file:
+`internal/app/<pkg>/{model/,dto,errors,repository,service,handler,service_test,handler_test,repository_test}.go`
+— the full data-access surface exists (the repository and its interface are
+complete) so `generate method` has something to call. Plus the model added
+to the `AutoMigrate` call and a new `migrations/<version>_create_<plural>.{up,down}.sql`.
+
+`--full` swaps in a CRUD skeleton instead: list/get/create/update/delete
+already routed and wired, with DTO fields and business rules left as TODOs.
+With OpenAPI enabled it also writes `docs/<plural>/{collection,item,schemas}.yaml`
+and wires them into `docs/openapi.yaml`. Use it only when a full CRUD surface
+is actually intended — otherwise prefer minimal plus explicit `generate method`
+calls.
+
+`--auth` puts the module's routes behind a valid access token (requires
+`go-scaffold add auth` in this project first). `--permission <code>` also
+requires that permission via `authz.Require` and seeds it in its own
+migration — it needs `add rbac`, and `--auth` must be passed alongside it.
+
+There's no per-domain versioning — the route prefix is a single
+project-wide choice made at `create` time.
 
 ### `generate method <module> <name>`
 
@@ -76,6 +99,30 @@ and shape depend on `--type`:
 | `post` | `POST /<plural>/<kebab-name>` | adds a body DTO; service body is a TODO stub (`apperror.NewInternal()` until implemented) |
 | `put` / `patch` | `<VERB> /<plural>/:id/<kebab-name>` | finds the record by id, TODO before saving (safe no-op until implemented) |
 | `delete` | `DELETE /<plural>/:id/<kebab-name>` | TODO stub (`apperror.NewInternal()` until implemented) |
+
+### `generate migration <name>`
+
+Reserves a timestamped `migrations/<version>_<name>.{up,down}.sql` pair,
+both TODO stubs — the CLI doesn't guess at columns, you write the SQL. This
+is the way to make any schema change that isn't a new module: adding a
+column, an index, a foreign key, a backfill, a drop.
+
+### `undo module <name>`
+
+For a `generate module` that shouldn't have happened — a typo'd name, a
+domain decided against. Deletes `internal/app/<pkg>/`, the module's
+`migrations/<version>_create_<plural>.{up,down}.sql` pair, and reverses
+everything `generate module` wired up in `cmd/api/main.go` (and in
+`docs/openapi.yaml` + `docs/<plural>/` when OpenAPI is enabled). `-y` skips
+the confirmation prompt.
+
+The migration files go because `migrations/embed.go` is a `//go:embed *`: a
+typo's migration left behind runs on every database created from then on.
+That's only safe while those files exist nowhere else, so `undo` refuses —
+deleting nothing — when they're committed to git, or when the database is
+already at or past that version. Neither is a bug to work around: a domain
+that has shipped is retired with `generate migration drop_<table>` and a
+reviewed data removal, not with this command. The table is never dropped.
 
 What you still do by hand: real field names on the model/DTOs (the generated
 ones are placeholders), any foreign key to another domain (see

@@ -27,8 +27,10 @@ internal/
 │   ├── apperror/               # central error type (status + payload)
 │   ├── dberr/                 # maps DB errors to constraint kind (IsDuplicate, IsForeignKey) — shared by every domain
 │   ├── httpx/                 # HTTP helpers shared by every domain (ParseID, BindErr)
-│   ├── middleware/            # RequestID, Logger (slog), Error
-│   └── pagination/             # parses ?limit=&offset=, response envelope
+│   ├── id/                    # UUID v7 generation (id.New) — app-side, not a DB default
+│   ├── middleware/            # RequestID, Logger (slog), Error, CORS
+│   ├── pagination/             # parses ?limit=&offset=, response envelope
+│   └── tx/                    # carries a transaction on the ctx (tx.Do / tx.From) so two repositories commit together
 └── app/                       # domain packages — empty until you `generate module`
 ```
 
@@ -53,13 +55,14 @@ safe; a `#` inside a value (password, DSN) is kept.
 
 `make db-create` connects to Postgres at `DB_HOST`/`DB_PORT`/`DB_USER` (default:
 `localhost`/`5432`/`postgres`, matching `.env.example`) using the `psql`
-client — works the same whether Postgres came from `make docker-up` or an
-existing instance you already have running. Override any of
+client — works the same whether Postgres came from
+{{#if docker}}`make docker-up`{{else}}a container{{/if}} or an existing instance you already have
+running. Override any of
 `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_NAME`/`PGPASSWORD` to point at a different
 server. If `psql` isn't installed locally and `DB_HOST` is `localhost`, it
 falls back to `docker exec` into whichever container is publishing
-`DB_PORT` — this project's own Postgres (`make docker-up` first) or any
-other Postgres container you already have running.
+`DB_PORT` — {{#if docker}}this project's own Postgres (`make docker-up` first) or any
+other Postgres container{{else}}any Postgres container{{/if}} you already have running.
 
 Server listens on `:8080` (override with `PORT`). Ctrl+C = graceful shutdown.
 

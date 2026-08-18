@@ -116,8 +116,8 @@ test("generate module refuses to duplicate a legacy plural package", () => {
   }
 });
 
-test("remove module locates legacy plural packages and preserves their migrations", () => {
-  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-legacy-remove-"));
+test("undo module locates legacy plural packages and deletes their migrations", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-legacy-undo-"));
   try {
     run("node", [CLI, "create", "sample", "--defaults", "--no-docker"], scratch);
     const project = path.join(scratch, "sample");
@@ -125,14 +125,18 @@ test("remove module locates legacy plural packages and preserves their migration
     const legacyDir = convertToLegacyPluralModule(project);
     const migrationsDir = path.join(project, "migrations");
     const migrationsBefore = readdirSync(migrationsDir).filter((name) => name.includes("_create_orderses."));
+    assert.equal(migrationsBefore.length, 2);
 
-    const output = run("node", [CLI, "remove", "module", "orders", "--yes"], project);
+    const output = run("node", [CLI, "undo", "module", "orders", "--yes"], project);
 
     assert.equal(existsSync(legacyDir), false);
-    for (const name of migrationsBefore) assert.equal(existsSync(path.join(migrationsDir, name)), true);
+    // the legacy package's migrations are named after its legacy plural, and
+    // undo has to find them under that name too — a miss here is the leftover
+    // migration this command exists to stop
+    for (const name of migrationsBefore) assert.equal(existsSync(path.join(migrationsDir, name)), false);
     assert.doesNotMatch(readFileSync(path.join(project, "cmd", "api", "main.go"), "utf8"), /internal\/app\/orders/);
     assert.doesNotMatch(readFileSync(path.join(project, "docs", "openapi.yaml"), "utf8"), /orderses/);
-    assert.match(output, /preserved migration history/);
+    assert.match(output, /deleted migrations\//);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

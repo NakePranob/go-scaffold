@@ -6,7 +6,7 @@ import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
 import { generateMethod } from "./commands/method";
 import { generateMigration } from "./commands/migration";
-import { removeModule } from "./commands/remove";
+import { undoModule } from "./commands/undo";
 import { cliVersion } from "./utils/version";
 import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
@@ -14,6 +14,27 @@ import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
 import { MethodType, GetMethodMode, QueueBackend } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
+
+// fail is every command's catch: one place so the two non-obvious cases stay
+// consistent. @inquirer/prompts throws ExitPromptError both on Ctrl-C and when
+// stdin isn't a TTY, and its raw message ("User force closed the prompt with 0
+// null") tells a user nothing — the CI case especially, where the real problem
+// is a missing argument, not the prompt.
+function fail(err: unknown): void {
+  const message = (err as Error).message ?? String(err);
+  if ((err as Error).name === "ExitPromptError") {
+    console.error(
+      pc.red(
+        process.stdin.isTTY
+          ? "aborted"
+          : "no interactive terminal to prompt on — pass every value as an argument/flag (see --help), or add --defaults"
+      )
+    );
+  } else {
+    console.error(pc.red(message));
+  }
+  process.exitCode = 1;
+}
 
 const program = new Command();
 program
@@ -40,8 +61,7 @@ program
         apiPrefix: opts.apiPrefix,
       });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -69,8 +89,7 @@ const generate = program
         await generateMigration(undefined);
       }
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -84,13 +103,12 @@ generate
   )
   .option("--no-full", "deprecated compatibility alias; minimal is already the default")
   .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
-  .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; implies --auth)")
+  .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; pass --auth too)")
   .action(async (name, opts) => {
     try {
       await generateModule(name, { full: opts.full, auth: opts.auth, permission: opts.permission });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -117,8 +135,7 @@ generate
         field: opts.field,
       });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -130,8 +147,7 @@ generate
     try {
       await generateMigration(name);
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -146,8 +162,7 @@ add
     try {
       await addWorker(await resolveQueueBackend(opts));
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -181,8 +196,7 @@ add
     try {
       await addAuth();
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -193,8 +207,7 @@ add
     try {
       await addRbac();
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
@@ -205,36 +218,52 @@ add
     try {
       await addObservability();
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
-const remove = program
-  .command("remove")
-  .alias("rm")
-  .description("remove a domain module (deletes the package + un-wires main.go/openapi.yaml/migration)")
+const undo = program
+  .command("undo")
+  .description("undo a `generate module` you didn't mean to run (typo'd name, domain you decided against)")
   .action(async () => {
-    // bare `remove`/`rm` — module is the only target, so prompt for the name
+    // bare `undo` — module is the only target, so prompt for the name
     try {
-      await removeModule(undefined, {});
+      await undoModule(undefined, {});
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
     }
   });
 
-remove
+undo
   .command("module [name]")
   .alias("m")
-  .description("delete a domain module and reverse everything `generate module` wired up")
+  .description("delete a generated module and everything it wired up, migration files included")
   .option("-y, --yes", "skip the confirmation prompt")
   .action(async (name, opts) => {
     try {
-      await removeModule(name, { yes: opts.yes });
+      await undoModule(name, { yes: opts.yes });
     } catch (err) {
-      console.error(pc.red((err as Error).message));
-      process.exitCode = 1;
+      fail(err);
+    }
+  });
+
+// `remove module` was this command's old name, back when it claimed to retire
+// a domain that might be live — and so kept the migration files, which for the
+// case people actually used it in (undoing a mistake) meant a typo's migration
+// ran on every database created from then on. Kept as an alias rather than
+// deleted outright: a muscle-memory `rm m` shouldn't be an unrecognised-command
+// error, and the semantics only got safer.
+const remove = program.command("remove", { hidden: true }).alias("rm");
+remove
+  .command("module [name]")
+  .alias("m")
+  .option("-y, --yes", "skip the confirmation prompt")
+  .action(async (name, opts) => {
+    console.error(pc.yellow("`remove module` is now `undo module` — running that instead."));
+    try {
+      await undoModule(name, { yes: opts.yes });
+    } catch (err) {
+      fail(err);
     }
   });
 

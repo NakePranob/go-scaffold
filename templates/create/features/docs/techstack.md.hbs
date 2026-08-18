@@ -7,10 +7,10 @@
 | Layer | Technology |
 |-------|-----------|
 | Language | Go 1.25 |
-| HTTP framework | Gin (`github.com/gin-gonic/gin` v1.10.0) |
+| HTTP framework | Gin (`github.com/gin-gonic/gin` v1.10.1) |
 | Database | PostgreSQL |
-| ORM | GORM (`gorm.io/gorm` v1.25.12 + `gorm.io/driver/postgres` v1.5.9) |
-| Validation | `go-playground/validator/v10` v10.20.0 |
+| ORM | GORM (`gorm.io/gorm` v1.31.2 + `gorm.io/driver/postgres` v1.6.2) |
+| Validation | `go-playground/validator/v10` v10.30.3 |
 | IDs | UUID v7 (`google/uuid` v1.6.0) |
 | Logging | `log/slog`, JSON handler |
 | Migrations | [golang-migrate](https://github.com/golang-migrate/migrate) |
@@ -39,3 +39,8 @@
   nowhere — set it to a real OTLP/HTTP collector address to see traces
 {{/if}}- Versions above are what `go-scaffold create` pinned in `go.mod` — bump them
   by hand (`go get -u` + `go mod tidy`) as the stack evolves
+- Each `go-scaffold add ...` command pins its own dependencies the same way
+  (River/Asynq, JWT, oauth2, Prometheus, OpenTelemetry, ...), so `go mod tidy`
+  resolves them to the versions that feature was built against instead of
+  whatever happened to be newest that day. The full list is `go.mod`; this
+  table only covers what `create` itself brings in

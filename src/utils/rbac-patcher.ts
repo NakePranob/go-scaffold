@@ -286,16 +286,28 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
   // roleSvc — so this rewrites the service line in place rather than
   // appending at the marker (which would land below it).
   const userSvcLine = "userSvc := user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg)";
-  if (content.includes(userSvcLine)) {
-    content = content.replace(
-      userSvcLine,
-      [
-        "roleSvc := role.NewService(role.NewRepository(db))",
-        "authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)",
-        `${userSvcLine.slice(0, -1)}, roleSvc)`,
-      ].join("\n")
+  // Throw rather than skip: the roleSvc/authz declarations this rewrite adds
+  // are what the unconditional patches below refer to. Skipping quietly still
+  // emits `roleSvc`/`authz` references with nothing declaring them, so the
+  // command reports success over a main.go that doesn't compile.
+  if (!content.includes(userSvcLine)) {
+    throw new Error(
+      `cmd/api/main.go's userSvc line doesn't match what \`add auth\` wrote, so \`add rbac\` can't extend it.\n` +
+        `Expected to find:\n  ${userSvcLine}\n\n` +
+        `It was probably hand-edited. Restore that line (add rbac will re-extend it), or apply the rbac wiring by hand:\n` +
+        `  roleSvc := role.NewService(role.NewRepository(db))\n` +
+        `  authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)\n` +
+        `  ...then pass roleSvc as user.NewService's last argument.`
     );
   }
+  content = content.replace(
+    userSvcLine,
+    [
+      "roleSvc := role.NewService(role.NewRepository(db))",
+      "authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)",
+      `${userSvcLine.slice(0, -1)}, roleSvc)`,
+    ].join("\n")
+  );
 
   const userRouteLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, rdb).Register(api)";
   content = content.replace(userRouteLine, userRouteLine.replace("rdb)", "rdb, authz)"));

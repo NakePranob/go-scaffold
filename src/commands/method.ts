@@ -3,13 +3,13 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig } from "../utils/config";
 import {
-  assertNotGoKeyword,
+  assertGoIdentifier,
   resolveMethodNaming,
   toCamelCase,
   toDbName,
 } from "../utils/naming";
 import { resolveProjectModuleNaming } from "../utils/module-location";
-import { MethodPatchPaths, patchMethod } from "../utils/method-patcher";
+import { MethodPatchPaths, markersPresent, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { gofmtTree } from "../utils/template-renderer";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
@@ -161,10 +161,23 @@ export async function generateMethod(
   }
   const getMode = type === "get" ? opts.getMode ?? (await promptGetMode()) : undefined;
   const field = type === "get" && getMode === "one" ? opts.field ?? (await promptLookupField()) : undefined;
-  // field becomes a Go param name (`func (...)(ctx, <field> string)`)
-  if (field) assertNotGoKeyword(toCamelCase(field), "lookup field");
+  // field becomes a Go param name (`func (...)(ctx, <field> string)`) and a
+  // column name in the generated `WHERE <field> = ?`
+  if (field) assertGoIdentifier(toCamelCase(field), "lookup field");
 
   const method = resolveMethodNaming(methodNameArg ?? (await promptMethodName()));
+
+  // Every marker this command patches has to exist before the first write:
+  // patchMethod writes dto.go, then handler.go, then reads service.go, so a
+  // missing service marker used to leave two files patched and the method
+  // permanently un-retryable (assertNotDuplicate then sees it as existing).
+  if (!markersPresent(paths.handlerPath, paths.servicePath)) {
+    throw new Error(
+      `internal/app/${naming.pkg} is missing the marker comments \`generate method\` patches at.\n` +
+        `handler.go and service.go must both still carry their \`// go-scaffold:*\` markers —\n` +
+        `restore them, or add this method by hand.`
+    );
+  }
   const docsRelativePath = config.features.openapiDocs
     ? `${naming.plural}/methods/${method.pathSegment}.yaml`
     : undefined;
