@@ -16,6 +16,7 @@ import {
   patchUserHandlerForRbac,
   patchUserErrorsForRbac,
   patchMainGoForRbac,
+  assertRbacPatchable,
   patchCmdSeedForRbac,
   patchAuthDocsForRbac,
 } from "../utils/rbac-patcher";
@@ -56,6 +57,16 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   }
 
   const before = typeChecks(projectDir);
+  // Every file below is patched in place, and main.go's userSvc line is the
+  // one rbac cannot construct on its own — check it first so a mismatch costs
+  // an error message rather than a half-patched project.
+  assertRbacPatchable(
+    path.join(projectDir, "cmd", "api", "main.go"),
+    config.goModule,
+    config.features.authStore ?? "redis",
+    config.features.worker ?? false
+  );
+
   const parsedBefore = parseChecks(projectDir);
 
   await applyTemplateEntries(projectDir, RBAC_FILES, { goModule: config.goModule });
@@ -83,7 +94,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "role");
   // projects scaffolded before --store existed are all Redis-backed
-  patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.authStore ?? "redis", config.features.worker ?? true);
+  patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.authStore ?? "redis", config.features.worker ?? false);
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
   patchEnvExample(path.join(projectDir, ".env.example"));
 

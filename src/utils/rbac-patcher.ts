@@ -263,6 +263,27 @@ export function patchUserErrorsForRbac(errorsGoPath: string): void {
 // isn't enough — REPLACES the `add auth` PR's user.NewHandler(...) call with
 // a version that also builds roleSvc/authz and passes them through, plus
 // registers role's own routes right after it.
+// userSvcLineFor rebuilds the exact line `add auth` wrote, from the same
+// helper it used. Exported so the command can check for it *before* it starts
+// patching: every other file rbac touches is edited first, and until this
+// existed a mismatch here threw after user.NewService had already grown a
+// roleChecker parameter — leaving a project that no longer compiled and an
+// error telling you to restore a line that wouldn't have fixed it.
+export function userSvcLineFor(goModule: string, store: AuthStore, worker: boolean): string {
+  const { tokenStore, mailer } = authWiringLines({ goModule, queueBackend: "river", store, worker });
+  return `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, ${mailer}, cfg)`;
+}
+
+export function assertRbacPatchable(mainGoPath: string, goModule: string, store: AuthStore, worker: boolean): void {
+  const expected = userSvcLineFor(goModule, store, worker);
+  if (fs.readFileSync(mainGoPath, "utf8").includes(expected)) return;
+  throw new Error(
+    "cmd/api/main.go's userSvc line doesn't match what `add auth` wrote, so `add rbac` can't extend it.\n" +
+      `Expected to find:\n  ${expected}\n\n` +
+      "It was probably hand-edited. Restore that line and re-run — nothing has been changed yet."
+  );
+}
+
 export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: AuthStore, worker: boolean): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
 
@@ -289,8 +310,8 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
   // appending at the marker (which would land below it).
   // Rebuilt from the same helper `add auth` used, so a project on either store
   // gets its own line matched rather than a hardcoded guess at one of them.
-  const { tokenStore, limiter } = authWiringLines({ goModule, queueBackend: "river", store, worker });
-  const userSvcLine = `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, mail.NewAsyncClient(q), cfg)`;
+  const { limiter } = authWiringLines({ goModule, queueBackend: "river", store, worker });
+  const userSvcLine = userSvcLineFor(goModule, store, worker);
   // Throw rather than skip: the roleSvc/authz declarations this rewrite adds
   // are what the unconditional patches below refer to. Skipping quietly still
   // emits `roleSvc`/`authz` references with nothing declaring them, so the

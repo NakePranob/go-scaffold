@@ -4,7 +4,7 @@
 // after `add auth` and stops building after `add rbac`.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -116,4 +116,54 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   const config = read(app, "internal/shared/config/config.go");
   assert.equal((config.match(/SMTPHost/g) ?? []).length, 2, "SMTP config was added twice");
   assert.equal((config.match(/JWTSecret\s+string/g) ?? []).length, 1, "JWT config was added twice");
+});
+
+// `add rbac` rebuilds the userSvc line to append roleSvc, which means it has
+// to reproduce byte-for-byte what `add auth` wrote — including which mailer.
+// It read features.worker as `?? true`, and a project that never ran
+// `add worker` has no such field, so it rebuilt the async line for a project
+// wired with the synchronous one and refused to match.
+test("add rbac extends the userSvc line on a project that never ran add worker", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-rbac-noworker-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cli(dir, "create", "app", "--defaults", "--no-docker");
+  const app = path.join(dir, "app");
+
+  cli(app, "add", "auth");
+  cli(app, "add", "rbac");
+
+  const main = read(app, "cmd/api/main.go");
+  assert.match(
+    main,
+    /mail\.NewSyncClient\(mail\.Open\(cfg\)\), cfg, roleSvc\)/,
+    "rbac must append roleSvc to the synchronous-mailer line auth actually wrote"
+  );
+  assert.match(read(app, "internal/app/user/service.go"), /roleChecker/, "the service must have gained the dependency");
+});
+
+// Every other file rbac touches is patched before main.go, so a mismatch used
+// to land after user.NewService had already grown a roleChecker parameter —
+// a project that no longer compiled, and an error telling you to restore a
+// line that wouldn't have fixed it.
+test("add rbac checks main.go before it edits anything else", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-rbac-preflight-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cli(dir, "create", "app", "--defaults", "--no-docker");
+  const app = path.join(dir, "app");
+  cli(app, "add", "auth");
+
+  const mainPath = path.join(app, "cmd", "api", "main.go");
+  writeFileSync(
+    mainPath,
+    readFileSync(mainPath, "utf8").replace("userSvc := user.NewService(", "userSvc := user.NewService( /* hand edited */ ")
+  );
+
+  assert.throws(() => cli(app, "add", "rbac"), /doesn't match what `add auth` wrote/);
+
+  assert.doesNotMatch(
+    read(app, "internal/app/user/service.go"),
+    /roleChecker/,
+    "the service must be untouched when the pre-flight refuses"
+  );
+  assert.ok(!has(app, "internal/app/role"), "no role domain may be written either");
 });
