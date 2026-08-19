@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { select } from "@inquirer/prompts";
+import { confirm, select } from "@inquirer/prompts";
 import pc from "picocolors";
 import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
@@ -14,6 +14,7 @@ import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
 import { MethodType, GetMethodMode, QueueBackend } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
+import { readConfig } from "./utils/config";
 
 // fail is every command's catch: one place so the two non-obvious cases stay
 // consistent. @inquirer/prompts throws ExitPromptError both on Ctrl-C and when
@@ -151,7 +152,85 @@ generate
     }
   });
 
-const add = program.command("add").description("add opt-in infrastructure to an existing go-scaffold project");
+// confirmAdd prints what a target is about to do and asks before it happens
+// — the interactive menu is the one path where nothing was typed out loud
+// yet, so it's the one place a summary earns its keep. A direct
+// `add auth --store redis` skips this on purpose: that command line already
+// says what it does, and asking again would just be in a script's way.
+//
+// Defaults to no, like `undo`'s confirm and unlike the create wizard's. This
+// prompt lands immediately after a select, where Enter meant "choose this" a
+// keystroke ago — carrying that Enter straight through would write ~15 files
+// and patch main.go, and there is no `undo auth` to walk it back. A stray
+// Enter costs a re-run instead.
+async function confirmAdd(summaryLines: string[]): Promise<void> {
+  console.log(pc.bold("\nThis will:"));
+  for (const line of summaryLines) console.log(`  ${pc.dim("•")} ${line}`);
+  console.log();
+
+  const proceed = await confirm({ message: "Proceed?", default: false });
+  if (!proceed) {
+    throw new Error("cancelled — nothing was written");
+  }
+}
+
+const add = program
+  .command("add")
+  .description("add opt-in infrastructure to an existing go-scaffold project")
+  .action(async () => {
+    // bare `add` — ask which target, then delegate (each subcommand still
+    // prompts for anything else it's missing, e.g. the queue backend).
+    try {
+      const target = await select({
+        message: "What do you want to add?",
+        choices: [
+          { name: "Worker (background job queue, SMTP mail, cmd/worker)", value: "worker" },
+          { name: "Auth (JWT access tokens, refresh rotation, register/login/refresh/logout/me)", value: "auth" },
+          { name: "RBAC (roles/permissions, cached Authz middleware — requires auth)", value: "rbac" },
+          { name: "Observability (Prometheus /metrics + OpenTelemetry tracing)", value: "observability" },
+        ],
+      });
+
+      // read once, up front: every add command reads it anyway, and the
+      // summary below needs to know what's already installed (e.g. whether
+      // auth's mail goes out inline or through an existing queue).
+      const config = readConfig(process.cwd());
+
+      if (target === "worker") {
+        const backend = await resolveQueueBackend({});
+        await confirmAdd([
+          `add internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend === "river" ? "postgres/River" : "redis/Asynq"})`,
+          backend === "river"
+            ? "no extra service to run — jobs are rows in your own Postgres"
+            : pc.yellow("requires Redis to be running"),
+        ]);
+        await addWorker(backend);
+      } else if (target === "auth") {
+        await confirmAdd([
+          "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
+          "tokens + rate-limit counters: Postgres (user_svc.auth_tokens), in-process — no extra service",
+          config.features.worker
+            ? "verification/reset mail: queued through the worker already installed"
+            : pc.yellow("verification/reset mail: sent inline over SMTP (no worker yet) — /auth/register and /auth/forgot-password block until it's sent"),
+        ]);
+        await addAuth("postgres");
+      } else if (target === "rbac") {
+        if (!config.features.auth) {
+          throw new Error("`add rbac` requires `add auth` first — there's no Role claim to check permissions against otherwise");
+        }
+        await confirmAdd(["add roles/permissions admin API, cached Authz middleware, and PATCH /users/:id/set-role"]);
+        await addRbac();
+      } else {
+        await confirmAdd([
+          "add Prometheus /metrics + OpenTelemetry tracing",
+          "patch cmd/api/main.go and internal/platform/database to wire it in",
+        ]);
+        await addObservability();
+      }
+    } catch (err) {
+      fail(err);
+    }
+  });
 
 add
   .command("worker")
