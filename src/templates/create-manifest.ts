@@ -3,6 +3,8 @@ import { TemplateEntry } from "../utils/template-renderer";
 export const CREATE_MANIFEST: TemplateEntry[] = [
   { template: "create/base/go.mod.hbs", output: "go.mod" },
   { template: "create/base/.gitignore.hbs", output: ".gitignore" },
+  { template: "create/base/Dockerfile.hbs", output: "Dockerfile" },
+  { template: "create/base/.dockerignore.hbs", output: ".dockerignore" },
   { template: "create/base/.env.example.hbs", output: ".env.example" },
   { template: "create/base/Makefile.hbs", output: "Makefile" },
   { template: "create/base/.golangci.yml.hbs", output: ".golangci.yml" },

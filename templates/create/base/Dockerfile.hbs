@@ -1,0 +1,42 @@
+# Build both binaries in one image, ship each from a separate stage — cmd/api
+# and cmd/worker are deployed as two processes, and neither needs the other's.
+#
+#   docker build --target api    -t {{projectName}}-api .
+#   docker build --target worker -t {{projectName}}-worker .
+#
+# The worker target only builds once `go-scaffold add worker` has created
+# cmd/worker; until then `--target api` is the only one that resolves.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+
+# Dependencies first: this layer is cached until go.mod/go.sum change, so an
+# ordinary code edit doesn't re-download the module graph.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+# CGO off so the result runs on a distroless/scratch base with no libc.
+# -trimpath keeps build-machine paths out of panics; -s -w drops the symbol
+# table and DWARF, which is most of the binary size and nothing you can use in
+# production anyway.
+ENV CGO_ENABLED=0
+RUN go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
+RUN if [ -d ./cmd/worker ]; then go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker; fi
+
+# nonroot, and no shell: there is nothing in this image to exec into if
+# something gets in. Debug with `docker run --entrypoint` against the build
+# stage instead.
+FROM gcr.io/distroless/static-debian12:nonroot AS api
+WORKDIR /app
+COPY --from=build /out/api /app/api
+# migrations/ is embedded in the binary (migrations/embed.go), so nothing to
+# copy for CheckMigrationVersion. docs/ is only served outside production.
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/app/api"]
+
+FROM gcr.io/distroless/static-debian12:nonroot AS worker
+WORKDIR /app
+COPY --from=build /out/worker /app/worker
+USER nonroot:nonroot
+ENTRYPOINT ["/app/worker"]

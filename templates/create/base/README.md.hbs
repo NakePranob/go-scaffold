@@ -187,3 +187,36 @@ Scaffolds the safe minimal `internal/app/order/` module, wires its empty route
 group/model into `cmd/api/wiring.go`, and appends a migration file. Add endpoints
 with `generate method`; use `--full` only when a CRUD skeleton is intentional.
 See `docs/architect/patterns.md` for the module shape and foreign-key rules.
+
+## Deploying
+
+Two processes, one image, one target each:
+
+```bash
+docker build --target api    -t {{projectName}}-api .
+docker build --target worker -t {{projectName}}-worker .    # once `add worker` exists
+```
+
+Both stages are distroless and run as `nonroot`, so there is no shell in either
+image. Debug against the `build` stage instead:
+`docker run --rm -it --entrypoint sh $(docker build -q --target build .)`.
+
+`cmd/api` serves HTTP. `cmd/worker` consumes the queue and is a separate
+deployment with **no port and no health endpoint** — scale it independently,
+and remember that not running it means queued mail is never sent, silently.
+
+Before the first deploy of a release:
+
+| | |
+|---|---|
+| `AUTO_MIGRATE` | leave unset — it defaults off when `APP_ENV=production`, and the app checks the applied migration version instead |
+| migrations | `migrate -path migrations -database "$DB_DSN" up` as its own step, before the new binaries roll |
+| `TRUSTED_PROXIES` | the CIDRs of your ingress, or the auth rate limiter keys on a header anyone can send |
+| `COOKIE_SECURE` | `true` · `COOKIE_SAMESITE=none` as well if your frontend is on a different site |
+| `/metrics` | reachable in-cluster for Prometheus, blocked at the ingress |
+| `JWT_SECRET`, `SMTP_HOST` | the app refuses to start in production without real values |
+
+The migration check is what makes the rollout order safe: a binary whose
+embedded migrations are ahead of the database refuses to start, while one
+that's behind logs a warning and serves — so migrating first, then rolling, is
+the order that never leaves a pod serving against a schema it doesn't know.

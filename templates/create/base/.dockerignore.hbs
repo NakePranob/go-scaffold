@@ -1,0 +1,13 @@
+# Everything the build stage doesn't need. Keeping the context small is most of
+# what makes `docker build` fast on a repeat run.
+.git
+.github
+bin
+docs
+*.md
+.env
+.env.*
+!.env.example
+docker-compose.yml
+Dockerfile
+.dockerignore
