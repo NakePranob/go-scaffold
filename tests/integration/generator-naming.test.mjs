@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -122,6 +123,34 @@ test("undo answers to the package name too, and takes the migrations with it", (
       readdirSync(path.join(project, "migrations")).filter((f) => f.endsWith(".sql")).length,
       0,
       "undo left the module's migrations behind"
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// `vendor` is a directory name the go tool reserves, so internal/app/vendor is
+// treated as a vendor directory: the project stops building with "use of
+// vendored package not allowed" and "must be imported as model". The drift
+// check doesn't catch it either — that compares a passing build to a failing
+// one, and this breaks every package at once.
+test("a module name that would create a go-reserved directory is refused", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-reserved-dir-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+
+    assert.throws(
+      () => runCLI(project, "generate", "module", "vendors"),
+      /directory name the go tool reserves/
+    );
+    // internal/app doesn't exist until the first module lands, so "nothing
+    // was written" is either no directory at all or an empty one
+    const appDir = path.join(project, "internal", "app");
+    assert.equal(
+      existsSync(appDir) ? readdirSync(appDir).length : 0,
+      0,
+      "nothing may be written when the name is refused"
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });

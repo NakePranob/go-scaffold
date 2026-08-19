@@ -77,6 +77,14 @@ const GO_PREDECLARED_TYPES = new Set([
   "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
 ]);
 
+// Directory names the go tool reserves. A module named "vendors" singularises
+// to "vendor", and internal/app/vendor is then treated as a vendor directory:
+// the build fails with "use of vendored package not allowed" and "must be
+// imported as model", for a project that was generated, not hand-written.
+// Not caught by the drift check either — that compares before and after, and
+// this breaks the whole module at once.
+const GO_RESERVED_DIRS = new Set(["vendor", "testdata"]);
+
 // method/handler/param identifier: only keywords are hard-illegal (a param or
 // func named `string` is legal Go, just shadows the builtin locally).
 export function assertNotGoKeyword(ident: string, role: string): void {
@@ -113,6 +121,9 @@ export function validateModuleName(rawName: string): string | true {
   }
   if (GO_KEYWORDS.has(pkg) || GO_PREDECLARED_TYPES.has(pkg)) {
     return `"${pkg}" is a reserved Go word — a package named it won't compile; pick another module name`;
+  }
+  if (GO_RESERVED_DIRS.has(pkg)) {
+    return `"${pkg}" is a directory name the go tool reserves — internal/app/${pkg} would be treated as a ${pkg} directory and the project wouldn't build; pick another module name`;
   }
   return true;
 }
