@@ -100,7 +100,7 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
   const riverTarget = opts.river
     ? "\n# create River's job tables (run once per database, and after upgrading River)\n" +
       "river-migrate:\n" +
-      "\t@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); \\\n" +
+      "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \\\n" +
       '\tgo run github.com/riverqueue/river/cmd/river@latest migrate-up --line main --database-url "$$DB_DSN"\n'
     : "";
 
@@ -108,7 +108,7 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
   // via $(ENV_FILE), and through the same sed that strips trailing comments.
   // Without it, .env.example's own `APP_ENV=development  # prod: production`
   // reaches `export` as a bare `#` and prints an error on every run.
-  const loadEnv = "@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs);";
+  const loadEnv = "@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a;";
 
   const targets =
     "\n# run both API + worker in one terminal — Ctrl+C kills both\n" +

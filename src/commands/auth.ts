@@ -197,7 +197,7 @@ function patchMakefile(makefilePath: string): void {
     // `$//` became `//` and left sed an unterminated s/// expression — the
     // recipe then failed, `.env` never loaded, and a bare `export` dumped the
     // whole environment. Matches every target in Makefile.hbs verbatim.
-    "\t@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go run ./cmd/seed $(ARGS)\n";
+    "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/seed $(ARGS)\n";
 
   // Function replacer — target contains a literal "$$", see worker.ts's
   // patchMakefile for why a string replacement would silently mangle it.

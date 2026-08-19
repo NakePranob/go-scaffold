@@ -21,19 +21,26 @@ POSTGRES_CONTAINER ?=
 # override to run against another file, e.g. copy .env.example to .env.production,
 # fill it in, then `make run ENV_FILE=.env.production`.
 #
-# Every target that needs config loads it the same way: drop whole-line comments
-# (^#) AND trailing ` # ...` comments — the sed only strips a `#` preceded by
-# whitespace, so a `#` inside a value (password, DSN) is kept. Without the sed,
-# `xargs` hands the comment's words to `export` too: `PORT=8080 # prod: PORT=80`
-# would export PORT twice and the comment's value would win. (Can't factor this
-# into a make variable: a `#` in a variable value starts a make comment; in a
-# recipe line it's passed to the shell untouched.)
+# Every target that needs config loads it the same way: `set -a` marks whatever
+# follows for export, the file is sourced, `set +a` stops.
+#
+# Sourcing rather than piping through xargs, which is what this used to do. The
+# shell already understands the format: `PORT=8080 # prod: 80` keeps 8080,
+# blank lines are nothing, and — the reason it changed — a quoted value with a
+# space in it survives. xargs word-split `SMTP_PASSWORD="two words"` into two
+# arguments and exported the wrong thing, silently.
+#
+# It does mean .env is executed, so `$(...)` in a value runs. That file is your
+# own gitignored config, and the alternative could not read half of it.
+#
+# (Can't factor this into a make variable: a `#` in a variable value starts a
+# make comment; in a recipe line it is passed to the shell untouched.)
 ENV_FILE ?= .env
 
 .PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 run:
-	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go run ./cmd/api
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/api
 
 build:
 	go build -o bin/api ./cmd/api
@@ -42,7 +49,7 @@ build:
 # integration tests. A bare `go test ./...` still works, but falls back to
 # whatever defaults the test files carry.
 test:
-	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); go test ./...
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go test ./...
 
 fmt:
 	gofmt -w .
@@ -108,22 +115,22 @@ db-drop:
 	fi
 
 migrate-up:
-	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" up
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" up
 
 # same migration files, applied to TEST_DB_DSN instead of DB_DSN — run this
 # once after `make db-create DB_NAME=..._test` so repository_test.go files
 # see real tables instead of skipping (or failing, if REQUIRE_TEST_DB=true).
 migrate-up-test:
-	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$TEST_DB_DSN" up
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$TEST_DB_DSN" up
 
 migrate-down:
-	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); migrate -path migrations -database "$$DB_DSN" down 1
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" down 1
 
 # runs up -> down-to-zero -> up against $DB_DSN to catch a bit-rotted down.sql
 # (one that no longer reverses cleanly) before you actually need a rollback.
 # point DB_DSN at a throwaway/test database first — this drops every table.
 migrate-verify:
-	@[ -f $(ENV_FILE) ] && export $$(grep -v '^#' $(ENV_FILE) | sed -E 's/[[:space:]]+#.*$$//' | xargs); \
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
 	migrate -path migrations -database "$$DB_DSN" up && \
 	migrate -path migrations -database "$$DB_DSN" down -all && \
 	migrate -path migrations -database "$$DB_DSN" up
