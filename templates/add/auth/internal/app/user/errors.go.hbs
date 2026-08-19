@@ -21,6 +21,13 @@ func errEmailTaken() *apperror.AppError {
 // errInvalidCredentials is returned for both "no such user" and "wrong
 // password" — a single generic message so a login attempt can't be used to
 // enumerate which emails have accounts.
+// errTooManyAttempts is the account-level lockout, distinct from the per-IP
+// RATE_LIMITED the middleware returns: this one follows the account wherever
+// the attempts come from.
+func errTooManyAttempts() *apperror.AppError {
+	return apperror.New(http.StatusTooManyRequests, "AUTH_TOO_MANY_ATTEMPTS", "too many failed attempts — try again later")
+}
+
 func errInvalidCredentials() *apperror.AppError {
 	return apperror.New(http.StatusUnauthorized, "AUTH_INVALID_CREDENTIALS", "invalid email or password")
 }

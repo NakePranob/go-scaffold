@@ -82,6 +82,18 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
     {}
   );
 
+  // the failed-attempt counter is not a store choice — lockout has to survive a
+  // deploy and mean the same thing on every replica whichever store holds tokens
+  const throttleVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/create_login_throttle.up.sql.hbs", output: path.join("migrations", `${throttleVersion}_create_login_throttle.up.sql`) },
+      { template: "add/auth/migrations/create_login_throttle.down.sql.hbs", output: path.join("migrations", `${throttleVersion}_create_login_throttle.down.sql`) },
+    ],
+    {}
+  );
+
   if (store === "postgres") {
     const authTokensVersion = newMigrationVersion(migrationsDir);
     await applyTemplateEntries(

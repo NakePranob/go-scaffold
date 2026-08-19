@@ -34,6 +34,9 @@ type repository interface {
 	CreateUserWithIdentity(ctx context.Context, u *model.User, i *model.Identity) error
 	CreateIdentity(ctx context.Context, i *model.Identity) error
 	UpdateIdentity(ctx context.Context, i *model.Identity) error
+	LoginLockedUntil(ctx context.Context, key string) (time.Time, error)
+	RecordLoginFailure(ctx context.Context, key string, freeAttempts int, maxLock time.Duration) error
+	ClearLoginFailures(ctx context.Context, key string) error
 	// go-scaffold:user-repository-interface
 }
 
@@ -101,6 +104,42 @@ func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
+// Failed-attempt policy. Constants rather than config: these are a security
+// posture, not something to tune per environment, and every knob added here is
+// a knob someone can quietly widen until the control stops working. Change the
+// numbers if your threat model differs.
+//
+// The first loginFreeAttempts failures cost nothing — a typo shouldn't lock
+// anyone out. After that each failure doubles the wait (1s, 2s, 4s, ...) up to
+// loginMaxLock, which is the shape OWASP's Authentication Cheat Sheet asks for.
+const (
+	loginFreeAttempts = 3
+	loginMaxLock      = 15 * time.Minute
+)
+
+// throttleKey namespaces the counter by what is being attempted, so a locked
+// login never blocks the password-reset that would fix it — someone who forgot
+// their password is exactly the person who trips the login counter.
+//
+// Hashed, because the counter must exist for addresses that have no account
+// (otherwise "was I throttled" answers "does this account exist"), and a table
+// of plain addresses that anyone has ever typed is a user list.
+func throttleKey(purpose, email string) string {
+	return hashToken(purpose + ":" + normalizeEmail(email))
+}
+
+// throttled reports whether this key is inside its lockout window. A failure
+// to read the counter is treated as not-throttled: this is a brake, and it
+// should not be able to lock everybody out on its own.
+func (s *Service) throttled(ctx context.Context, key string) bool {
+	until, err := s.repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		slog.Error("read login throttle", "error", err)
+		return false
+	}
+	return !until.IsZero() && time.Now().Before(until)
+}
+
 func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -123,16 +162,35 @@ func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse
 }
 
 func (s *Service) Login(ctx context.Context, in loginInput) (*authResponse, error) {
+	key := throttleKey("login", in.Email)
+	if s.throttled(ctx, key) {
+		return nil, errTooManyAttempts()
+	}
+
+	// Every failure below is recorded against the same key whether or not the
+	// account exists, and answers with the same error — so the counter cannot
+	// be used to enumerate accounts either.
+	fail := func() (*authResponse, error) {
+		if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
+			slog.Error("record login failure", "error", err)
+		}
+		return nil, errInvalidCredentials()
+	}
+
 	u, err := s.repo.FindByEmail(ctx, normalizeEmail(in.Email))
 	if err != nil {
-		return nil, errInvalidCredentials()
+		return fail()
 	}
 	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
 	if err != nil || ident.PasswordHash == nil {
-		return nil, errInvalidCredentials()
+		return fail()
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*ident.PasswordHash), []byte(in.Password)); err != nil {
-		return nil, errInvalidCredentials()
+		return fail()
+	}
+
+	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
+		slog.Error("clear login failures", "error", err)
 	}
 	return s.issueTokens(ctx, u)
 }
@@ -217,6 +275,18 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, er
 // enumerate registered accounts. Only if the email resolves to a local
 // (password-based) identity does it actually issue+email a reset token.
 func (s *Service) ForgotPassword(ctx context.Context, email string) error {
+	// Its own counter, so hammering this endpoint cannot lock anyone out of
+	// logging in, and a locked-out login cannot block the reset that fixes it.
+	// Every request counts here, not just failures: what this throttles is
+	// using someone else's address as a mail-bomb target.
+	key := throttleKey("pwreset", email)
+	if s.throttled(ctx, key) {
+		return nil // same answer as always — silence is the whole design here
+	}
+	if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
+		slog.Error("record password reset attempt", "error", err)
+	}
+
 	u, err := s.repo.FindByEmail(ctx, normalizeEmail(email))
 	if err != nil {
 		return nil

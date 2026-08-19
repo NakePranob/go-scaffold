@@ -8,6 +8,7 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/shared/middleware/ratelimit.go.hbs", output: "internal/shared/middleware/ratelimit.go" },
   { template: "add/auth/internal/app/user/model/user.go.hbs", output: "internal/app/user/model/user.go" },
   { template: "add/auth/internal/app/user/model/identity.go.hbs", output: "internal/app/user/model/identity.go" },
+  { template: "add/auth/internal/app/user/model/loginthrottle.go.hbs", output: "internal/app/user/model/loginthrottle.go" },
   { template: "add/auth/internal/app/user/dto.go.hbs", output: "internal/app/user/dto.go" },
   { template: "add/auth/internal/app/user/errors.go.hbs", output: "internal/app/user/errors.go" },
   { template: "add/auth/internal/app/user/jwt.go.hbs", output: "internal/app/user/jwt.go" },

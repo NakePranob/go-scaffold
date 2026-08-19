@@ -2,6 +2,8 @@ package user
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"{{goModule}}/internal/app/user/model"
 	"{{goModule}}/internal/shared/tx"
@@ -82,4 +84,54 @@ func (r *Repository) CreateUserWithIdentity(ctx context.Context, u *model.User, 
 		i.UserID = u.ID
 		return t.Create(i).Error
 	})
+}
+
+// --- failed-login throttle -------------------------------------------------
+//
+// Keyed on a caller-supplied hash rather than a user id, because the counter
+// has to work for addresses that have no account — see model.LoginThrottle.
+
+// LoginLockedUntil reports when this key stops being locked out — zero time
+// when it isn't. Read on every login attempt, so it stays a primary-key hit.
+func (r *Repository) LoginLockedUntil(ctx context.Context, key string) (time.Time, error) {
+	var row model.LoginThrottle
+	err := tx.From(ctx, r.db).WithContext(ctx).Where("email_hash = ?", key).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return time.Time{}, nil
+	}
+	if err != nil || row.LockedUntil == nil {
+		return time.Time{}, err
+	}
+	return *row.LockedUntil, nil
+}
+
+// RecordLoginFailure bumps the counter and pushes the lock further out,
+// doubling each time past freeAttempts and never exceeding maxLock.
+//
+// One statement, so two attempts racing cannot both read the same count and
+// write the same lock — which would let an attacker keep the backoff pinned at
+// its first step by running attempts in parallel. Computing the interval in
+// SQL is what buys that; a read-then-write in Go would need a transaction and
+// a row lock to be equally safe.
+func (r *Repository) RecordLoginFailure(ctx context.Context, key string, freeAttempts int, maxLock time.Duration) error {
+	return tx.From(ctx, r.db).WithContext(ctx).Exec(`
+		INSERT INTO user_svc.login_throttle AS t (email_hash, failures, locked_until, updated_at)
+		VALUES (?, 1, NULL, now())
+		ON CONFLICT (email_hash) DO UPDATE SET
+			failures = t.failures + 1,
+			locked_until = CASE
+				WHEN t.failures + 1 <= ? THEN NULL
+				ELSE now() + make_interval(secs => least(power(2, t.failures + 1 - ?), ?))
+			END,
+			updated_at = now()`,
+		key, freeAttempts, freeAttempts, maxLock.Seconds()).Error
+}
+
+// ClearLoginFailures drops the row on a successful login, so someone who
+// mistypes twice and then gets in starts clean rather than creeping toward a
+// lockout over weeks.
+func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
+	return tx.From(ctx, r.db).WithContext(ctx).
+		Where("email_hash = ?", key).
+		Delete(&model.LoginThrottle{}).Error
 }

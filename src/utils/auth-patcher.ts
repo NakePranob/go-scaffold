@@ -135,7 +135,7 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   ].join("\n");
   content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
 
-  const migrateLines = ["&usermodel.User{},", "&usermodel.Identity{},"];
+  const migrateLines = ["&usermodel.User{},", "&usermodel.Identity{},", "&usermodel.LoginThrottle{},"];
   // only the Postgres store has a table for AutoMigrate to create
   if (store === "postgres") migrateLines.push("&usermodel.AuthToken{},");
   for (const line of migrateLines) {

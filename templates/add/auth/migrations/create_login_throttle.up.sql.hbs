@@ -1,0 +1,10 @@
+-- Failed-attempt counter per account. Keyed on a hash of the submitted email
+-- so it works for addresses that have no account (otherwise throttling itself
+-- leaks which addresses are registered) and so this table is not a user list.
+-- See model/loginthrottle.go for why this exists separately from the rate limiter.
+CREATE TABLE user_svc.login_throttle (
+    email_hash   TEXT PRIMARY KEY,
+    failures     INTEGER NOT NULL DEFAULT 0,
+    locked_until TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
