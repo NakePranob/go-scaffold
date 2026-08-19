@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS {{schemaName}}.idx_{{tableName}}_{{fieldColumn}};
+ALTER TABLE {{schemaName}}.{{tableName}} DROP COLUMN IF EXISTS {{fieldColumn}};

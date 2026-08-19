@@ -87,4 +87,17 @@ func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// Count is the total the list endpoint needs to say "page 3 of 12" — see
+// pagination.ResponseWithTotal. Separate from FindAll because it costs a second
+// query: an endpoint that only ever scrolls shouldn't pay for a count nobody
+// reads.
+//
+// Apply the same WHERE clause here that FindAll uses once you add filtering,
+// or the total will describe a different set than the rows.
+func (r *Repository) Count(ctx context.Context) (int64, error) {
+	var total int64
+	err := tx.From(ctx, r.db).WithContext(ctx).Model(&model.{{pascalName}}{}).Count(&total).Error
+	return total, err
+}
+
 // go-scaffold:repository-methods

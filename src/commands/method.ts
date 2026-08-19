@@ -11,7 +11,8 @@ import {
 import { resolveProjectModuleNaming } from "../utils/module-location";
 import { MethodPatchPaths, markersPresent, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
-import { gofmtTree } from "../utils/template-renderer";
+import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
+import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import {
   promptGetMode,
@@ -189,6 +190,32 @@ export async function generateMethod(
   patchMethod(paths, naming, method, { type, getMode, field }, config.goModule);
   gofmtTree(projectDir);
   assertNoDrift(projectDir, checkBefore, config);
+
+  // A --field lookup queries a column the table doesn't have yet. GORM builds
+  // that SQL at runtime, so nothing before the first real request notices:
+  // the build passes, vet passes, the generated tests pass. Ship the column
+  // and its index with the code that needs them.
+  let fieldMigration = "";
+  if (field) {
+    const migrationsDir = path.join(projectDir, "migrations");
+    fieldMigration = newMigrationVersion(migrationsDir);
+    const fieldColumn = toDbName(field);
+    await applyTemplateEntries(
+      projectDir,
+      [
+        { template: "generate/module/field-column.up.sql.hbs", output: path.join("migrations", `${fieldMigration}_add_${naming.tableName}_${fieldColumn}.up.sql`) },
+        { template: "generate/module/field-column.down.sql.hbs", output: path.join("migrations", `${fieldMigration}_add_${naming.tableName}_${fieldColumn}.down.sql`) },
+      ],
+      { ...naming, pkg: naming.pkg, methodName: method.name, fieldColumn }
+    );
+  }
+
+  if (fieldMigration) {
+    console.log(
+      `migration: migrations/${fieldMigration}_add_${naming.tableName}_${toDbName(field!)}.{up,down}.sql ` +
+        `(adds the column the lookup queries, plus an index on it — check the type before applying)`
+    );
+  }
 
   if (docsRelativePath) {
     const docsPath = path.join(projectDir, "docs", docsRelativePath);

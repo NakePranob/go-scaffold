@@ -77,6 +77,13 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]roleListItem, 
 	if err != nil {
 		return nil, apperror.NewInternal()
 	}
+	// ponytail: one query per role, not a join. A system has a handful of
+	// roles, so this is a handful of round trips on an admin screen nobody
+	// loads in a loop — the join costs more to read than it saves.
+	//
+	// Do not copy this shape into a domain whose list is user-sized. There the
+	// upgrade is one query with a join (or an IN over the page's ids) and a
+	// group-by in Go; here it would be ceremony.
 	out := make([]roleListItem, len(roles))
 	for i, r := range roles {
 		perms, err := s.repo.PermissionCodes(ctx, r.Code)

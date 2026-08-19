@@ -1,0 +1,15 @@
+-- `generate method {{pkg}} {{methodName}} --field {{fieldColumn}}` generates a
+-- lookup that queries this column. GORM builds that SQL at runtime, so without
+-- the column the code compiles, the tests pass, and the endpoint fails on its
+-- first real request — which is why the migration is generated with it.
+--
+-- TODO: the type is a guess. Change it to whatever the field actually is, and
+-- drop NULL handling in if the column can be empty.
+ALTER TABLE {{schemaName}}.{{tableName}}
+    ADD COLUMN IF NOT EXISTS {{fieldColumn}} VARCHAR(255);
+
+-- The lookup fetches one row by this column on every call. Without an index
+-- that is a sequential scan of the whole table, which is invisible until the
+-- table is big enough for it to hurt.
+CREATE INDEX IF NOT EXISTS idx_{{tableName}}_{{fieldColumn}}
+    ON {{schemaName}}.{{tableName}} ({{fieldColumn}});
