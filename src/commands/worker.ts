@@ -8,6 +8,7 @@ import { patchCiForRedis, patchComposeForRedis, patchConfigForWorker, patchMainG
 import { QueueBackend } from "../types";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
+import { upgradeMailerToQueue } from "../utils/auth-patcher";
 
 // addWorker scaffolds async job processing: the backend-neutral queue
 // contract (platform/queue), one adapter for the chosen backing store, SMTP
@@ -42,6 +43,10 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
       ? ["github.com/riverqueue/river v0.43.0", "github.com/riverqueue/river/riverdriver/riverdatabasesql v0.43.0"]
       : ["github.com/hibiken/asynq v0.26.0", "github.com/redis/go-redis/v9 v9.22.0"]
   );
+  // auth added before the worker wired a synchronous mailer — now that there
+  // is a queue, move it onto it
+  upgradeMailerToQueue(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, backend);
+
   patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
   patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });
 

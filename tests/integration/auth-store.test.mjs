@@ -82,3 +82,38 @@ for (const store of ["postgres", "redis"]) {
     assert.ok(!main.includes(`${limiter}), authz)`), "authz landed outside the argument list");
   });
 }
+
+// `add auth` used to refuse without `add worker`, which meant a project that
+// only wanted login had to take a queue, a backend decision and a second
+// binary. Now it stands alone and sends inline — and `add worker` arriving
+// later has to actually move the mail onto the queue, or the message the CLI
+// prints when it wires the sync mailer is a lie.
+test("add auth stands alone, and a later add worker moves its mail onto the queue", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-solo-auth-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cli(dir, "create", "app", "--defaults", "--no-docker");
+  const app = path.join(dir, "app");
+
+  cli(app, "add", "auth"); // no worker anywhere
+
+  assert.ok(has(app, "internal/platform/mail/mail.go"), "the SMTP client has to come along");
+  assert.ok(!has(app, "internal/platform/queue"), "no queue was asked for");
+  assert.ok(!has(app, "cmd/worker"), "no second binary was asked for");
+  assert.match(read(app, "cmd/api/main.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
+  assert.match(read(app, ".env.example"), /^SMTP_HOST=/m, "auth has to bring the SMTP env block too");
+
+  cli(app, "add", "worker", "--queue", "postgres");
+
+  const main = read(app, "cmd/api/main.go");
+  assert.match(main, /mail\.NewAsyncClient\(q\)/, "the mailer must move onto the queue");
+  assert.doesNotMatch(main, /mail\.NewSyncClient/, "the synchronous mailer must be gone");
+  assert.match(main, /q, err := queue\.NewRiverEnqueuer\(db\)/, "the enqueuer has to be built");
+  assert.match(main, /q\.Close\(\)/, "and closed on shutdown");
+
+  // gofmt aligns struct fields into columns, so a sentinel written as
+  // "SMTPHost string" stops matching the moment the block lands — which had
+  // this exact sequence insert the SMTP config twice and stop compiling.
+  const config = read(app, "internal/shared/config/config.go");
+  assert.equal((config.match(/SMTPHost/g) ?? []).length, 2, "SMTP config was added twice");
+  assert.equal((config.match(/JWTSecret\s+string/g) ?? []).length, 1, "JWT config was added twice");
+});

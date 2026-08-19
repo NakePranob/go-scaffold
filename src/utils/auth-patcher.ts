@@ -36,7 +36,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     "GoogleClientSecret string",
     "GoogleRedirectURL string",
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret string");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
 
   const loadBlock = [
     'JWTSecret:     env("JWT_SECRET", "dev-secret-change-me"),',
@@ -55,7 +55,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     'GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),',
     'GoogleRedirectURL:  env("GOOGLE_REDIRECT_URL", ""),',
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'JWTSecret:     env("JWT_SECRET"');
+  content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');
 
   fs.writeFileSync(configGoPath, content);
 }
@@ -73,6 +73,8 @@ export interface AuthWiring {
   queueBackend: QueueBackend;
   /** which store `add auth` chose — decides the token store and the limiter */
   store: AuthStore;
+  /** whether the project has a queue to hand mail to */
+  worker: boolean;
 }
 
 // authWiringLines is the single source of truth for the two lines that differ
@@ -83,6 +85,9 @@ export function authWiringLines(w: AuthWiring) {
   return {
     tokenStore: postgres ? "user.NewPgTokenStore(db)" : "user.NewRedisTokenStore(rdb)",
     limiter: postgres ? "middleware.NewMemoryLimiter()" : "middleware.NewRedisLimiter(rdb)",
+    // with a queue the mail is enqueued and the request returns immediately;
+    // without one it goes out inline, which is the cost of not running a worker
+    mailer: w.worker ? "mail.NewAsyncClient(q)" : "mail.NewSyncClient(mail.Open(cfg))",
   };
 }
 
@@ -94,8 +99,10 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
   const modelImportLine = `usermodel "${goModule}/internal/app/user/model"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
-  const queueImportLine = `"${goModule}/internal/platform/queue"`;
-  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
+  if (w.worker) {
+    const queueImportLine = `"${goModule}/internal/platform/queue"`;
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
+  }
   const mailImportLine = `"${goModule}/internal/platform/mail"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, mailImportLine, mailImportLine);
 
@@ -123,9 +130,11 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   // The enqueuer is built from whatever backend `add worker` chose — the
   // constructor differs, everything downstream of it (mail.NewAsyncClient)
   // only sees the queue.Enqueuer interface and doesn't change.
-  const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
-  const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
-  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
+  if (w.worker) {
+    const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
+    const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
+    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
+  }
 
   const schemaBlock = [
     'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS user_svc").Error; err != nil {',
@@ -145,15 +154,46 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   // same two-line shape every generated module uses: a named service, then
   // the handler that registers it. `add rbac` extends both lines later, and a
   // human wiring another domain into user's service edits line one in place.
-  const { tokenStore, limiter } = authWiringLines(w);
-  const svcLine = `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, mail.NewAsyncClient(q), cfg)`;
+  const { tokenStore, limiter, mailer } = authWiringLines(w);
+  const svcLine = `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, ${mailer}, cfg)`;
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, svcLine, "userSvc :=");
   const routeLine = `user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, ${limiter}).Register(api)`;
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(/\n\t_ = api \/\/ dropped once `generate module` registers the first route\n/, "\n");
 
+  if (w.worker) {
+    const shutdownBlock = ["if err := q.Close(); err != nil {", '\tlogger.Error("close queue", "error", err)', "}"].join("\n");
+    content = insertBeforeMarkerOnce(content, SHUTDOWN_MARKER, shutdownBlock, "if err := q.Close()");
+  }
+
+  fs.writeFileSync(mainGoPath, content);
+}
+
+// upgradeMailerToQueue is `add worker` arriving after `add auth`. Auth wired a
+// synchronous mailer because there was no queue at the time; now there is one,
+// so the enqueuer gets built and the mailer swapped for the async client.
+//
+// Without this the printed "run `add worker` later to move it onto the queue"
+// would be a lie, and the project would keep blocking on SMTP with a perfectly
+// good queue sitting next to it.
+//
+// No-op on a project whose auth already had a worker, and on one with no auth
+// at all — both simply don't contain the line it looks for.
+export function upgradeMailerToQueue(mainGoPath: string, goModule: string, queueBackend: QueueBackend): void {
+  let content = fs.readFileSync(mainGoPath, "utf8");
+  const syncMailer = "mail.NewSyncClient(mail.Open(cfg))";
+  if (!content.includes(syncMailer)) return;
+
+  const queueImportLine = `"${goModule}/internal/platform/queue"`;
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
+
+  const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
+  const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
+  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
+
   const shutdownBlock = ["if err := q.Close(); err != nil {", '\tlogger.Error("close queue", "error", err)', "}"].join("\n");
   content = insertBeforeMarkerOnce(content, SHUTDOWN_MARKER, shutdownBlock, "if err := q.Close()");
 
+  content = content.replace(syncMailer, () => "mail.NewAsyncClient(q)");
   fs.writeFileSync(mainGoPath, content);
 }

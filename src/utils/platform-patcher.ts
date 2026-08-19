@@ -74,12 +74,12 @@ export function patchCiForRedis(ciPath: string): void {
 // when the queue lives in Postgres.
 export function patchConfigForRedis(configGoPath: string): void {
   let content = fs.readFileSync(configGoPath, "utf8");
-  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, "RedisURL string", "RedisURL string");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, "RedisURL string", "RedisURL");
   content = insertBeforeMarkerOnce(
     content,
     CONFIG_LOAD_MARKER,
     'RedisURL: env("REDIS_URL", "redis://localhost:6379/0"),',
-    'RedisURL: env("REDIS_URL"'
+    'env("REDIS_URL"'
   );
   fs.writeFileSync(configGoPath, content);
 }
@@ -91,11 +91,25 @@ export function patchConfigForRedis(configGoPath: string): void {
 // that is a real file a human may have already edited.
 export function patchConfigForWorker(configGoPath: string, opts: { redis: boolean }): void {
   if (opts.redis) patchConfigForRedis(configGoPath);
+  patchConfigForSMTP(configGoPath);
+}
 
+// Sentinels here match a bare identifier, never `Name string` or
+// `Name: env(...)`: gofmt aligns struct fields and map values into columns, so
+// the moment one of these blocks lands the literal spacing a sentinel was
+// written with no longer exists in the file. A sentinel that misses means the
+// block gets inserted a second time and the project stops compiling on a
+// redeclared field — which is exactly what `add auth` then `add worker` did.
+//
+// patchConfigForSMTP is split out because `add auth` needs these fields even
+// when there is no worker: without a queue it sends mail synchronously, and it
+// still has to know where to send it. Idempotent, so whichever command gets
+// here first wins and the second is a no-op.
+export function patchConfigForSMTP(configGoPath: string): void {
   let content = fs.readFileSync(configGoPath, "utf8");
 
   const fieldsBlock = ["SMTPHost string", "SMTPPort string", "SMTPUsername string", "SMTPPassword string", "SMTPFrom string"].join("\n");
-  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "SMTPHost string");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "SMTPHost");
 
   const loadBlock = [
     'SMTPHost:     env("SMTP_HOST", ""),',
@@ -104,7 +118,7 @@ export function patchConfigForWorker(configGoPath: string, opts: { redis: boolea
     'SMTPPassword: env("SMTP_PASSWORD", ""),',
     'SMTPFrom:     env("SMTP_FROM", "no-reply@example.local"),',
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'SMTPHost:     env("SMTP_HOST"');
+  content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("SMTP_HOST"');
 
   fs.writeFileSync(configGoPath, content);
 }

@@ -84,12 +84,12 @@ export function patchDatabaseGoForObservability(databaseGoPath: string, goModule
 // env() load — the same marker-based approach patchConfigForWorker uses.
 export function patchConfigForObservability(configGoPath: string): void {
   let content = fs.readFileSync(configGoPath, "utf8");
-  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, "OTELExporterEndpoint string", "OTELExporterEndpoint string");
+  content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, "OTELExporterEndpoint string", "OTELExporterEndpoint");
   content = insertBeforeMarkerOnce(
     content,
     CONFIG_LOAD_MARKER,
     'OTELExporterEndpoint: env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),',
-    'OTELExporterEndpoint: env("OTEL_EXPORTER_OTLP_ENDPOINT"'
+    'env("OTEL_EXPORTER_OTLP_ENDPOINT"'
   );
   fs.writeFileSync(configGoPath, content);
 }

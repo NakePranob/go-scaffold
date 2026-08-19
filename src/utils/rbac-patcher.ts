@@ -263,7 +263,7 @@ export function patchUserErrorsForRbac(errorsGoPath: string): void {
 // isn't enough — REPLACES the `add auth` PR's user.NewHandler(...) call with
 // a version that also builds roleSvc/authz and passes them through, plus
 // registers role's own routes right after it.
-export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: AuthStore): void {
+export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: AuthStore, worker: boolean): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
 
   const importLine = `"${goModule}/internal/app/role"`;
@@ -289,7 +289,7 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
   // appending at the marker (which would land below it).
   // Rebuilt from the same helper `add auth` used, so a project on either store
   // gets its own line matched rather than a hardcoded guess at one of them.
-  const { tokenStore, limiter } = authWiringLines({ goModule, queueBackend: "river", store });
+  const { tokenStore, limiter } = authWiringLines({ goModule, queueBackend: "river", store, worker });
   const userSvcLine = `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, mail.NewAsyncClient(q), cfg)`;
   // Throw rather than skip: the roleSvc/authz declarations this rewrite adds
   // are what the unconditional patches below refer to. Skipping quietly still

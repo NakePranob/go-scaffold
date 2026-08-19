@@ -6,7 +6,8 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { authFiles } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
 import { AuthStore } from "../types";
-import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchConfigForSMTP, patchMainGoForWorker } from "../utils/platform-patcher";
+import { MAIL_CLIENT_ONLY } from "../templates/worker-manifest";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
@@ -40,9 +41,11 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 export async function addAuth(store: AuthStore = "postgres", projectDir: string = process.cwd()): Promise<void> {
   const config = readConfig(projectDir);
 
-  if (!config.features.worker) {
-    throw new Error("`go-scaffold add auth` requires `go-scaffold add worker` first — verification and password-reset emails are sent through the queue");
-  }
+  // No longer a prerequisite. Without a worker the verification and reset mail
+  // goes out inline instead of through a queue — a real trade (those two
+  // endpoints then block on SMTP), but not one worth forcing a second binary
+  // and a queue-backend decision on someone who only wanted login.
+  const worker = config.features.worker ?? false;
 
   const userDir = path.join(projectDir, "internal", "app", "user");
   if (fs.existsSync(userDir)) {
@@ -54,6 +57,13 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
   // Only `--store redis` needs Redis. With `--store postgres` (the default)
   // auth adds no service at all — which is the whole point of the option.
   if (store === "redis") await ensureRedis(projectDir, config.goModule);
+
+  // the SMTP client, and the config it reads, normally arrive with `add worker`
+  if (!worker) {
+    await applyTemplateEntries(projectDir, MAIL_CLIENT_ONLY, { goModule: config.goModule });
+    patchConfigForSMTP(path.join(projectDir, "internal", "shared", "config", "config.go"));
+    patchEnvExampleForSMTP(path.join(projectDir, ".env.example"));
+  }
 
   await applyTemplateEntries(projectDir, authFiles(store), { goModule: config.goModule });
 
@@ -112,6 +122,7 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
     goModule: config.goModule,
     queueBackend: config.features.queue ?? "asynq",
     store,
+    worker,
   });
   patchGoModRequires(path.join(projectDir, "go.mod"), [
     "github.com/golang-jwt/jwt/v5 v5.3.1",
@@ -146,6 +157,11 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
   writeConfig(projectDir, { ...config, features: { ...config.features, auth: true, authStore: store } });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
+  console.log(
+    worker
+      ? "verification + password-reset mail goes through the queue"
+      : "verification + password-reset mail is sent inline (no worker) — run `add worker` later to move it onto the queue"
+  );
   console.log(
     store === "postgres"
       ? "tokens + rate-limit counters: Postgres (user_svc.auth_tokens) and in-process — no Redis"
@@ -243,4 +259,23 @@ async function ensureRedis(projectDir: string, goModule: string): Promise<void> 
       fs.writeFileSync(envExamplePath, content.replace(/\n?$/, "\n") + "\n# refresh-token store\nREDIS_URL=redis://localhost:6379/0\n");
     }
   }
+}
+
+// patchEnvExampleForSMTP mirrors `add worker`'s own SMTP block, for the case
+// where auth installed the mail client without a worker. Same append-once
+// shape as every other env patcher.
+function patchEnvExampleForSMTP(envExamplePath: string): void {
+  if (!fs.existsSync(envExamplePath)) return;
+  const content = fs.readFileSync(envExamplePath, "utf8");
+  if (content.includes("SMTP_HOST")) return;
+  fs.writeFileSync(
+    envExamplePath,
+    content.replace(/\n?$/, "\n") +
+      "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
+      "SMTP_HOST=\n" +
+      "SMTP_PORT=587\n" +
+      "SMTP_USERNAME=\n" +
+      "SMTP_PASSWORD=\n" +
+      "SMTP_FROM=no-reply@example.local\n"
+  );
 }

@@ -3,9 +3,16 @@ import { QueueBackend } from "../types";
 // output paths are relative to the project root
 type Entry = { template: string; output: string };
 
+// The SMTP client on its own. `add auth` installs just this when the project
+// has no worker: mail/task.go is the piece that knows about the queue, and
+// pulling it in would drag platform/queue along with it.
+export const MAIL_CLIENT_ONLY: Entry[] = [
+  { template: "add/worker/internal/platform/mail/mail.go.hbs", output: "internal/platform/mail/mail.go" },
+];
+
 const SHARED: Entry[] = [
   { template: "add/worker/internal/platform/queue/queue.go.hbs", output: "internal/platform/queue/queue.go" },
-  { template: "add/worker/internal/platform/mail/mail.go.hbs", output: "internal/platform/mail/mail.go" },
+  ...MAIL_CLIENT_ONLY,
   { template: "add/worker/internal/platform/mail/task.go.hbs", output: "internal/platform/mail/task.go" },
   { template: "add/worker/cmd/worker/main.go.hbs", output: "cmd/worker/main.go" },
 ];

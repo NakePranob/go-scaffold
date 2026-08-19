@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/smtp"
@@ -45,4 +46,24 @@ func (c *Client) Send(to, subject, body string) error {
 		auth = smtp.PlainAuth("", c.username, c.password, c.host)
 	}
 	return smtp.SendMail(c.host+":"+c.port, auth, c.from, []string{to}, []byte(msg))
+}
+
+// SyncClient sends in the caller's goroutine, satisfying the same mailer
+// interface AsyncClient does. It exists so `add auth` can stand on its own:
+// a project that hasn't asked for a queue shouldn't be made to run a second
+// binary just to send a verification email.
+//
+// The trade is real — /auth/register and /auth/forgot-password block until
+// SMTP answers, where the async client returns as soon as the job is written.
+// Add a worker later and the wiring in cmd/api/main.go switches to
+// AsyncClient; nothing in the user service changes.
+type SyncClient struct{ c *Client }
+
+func NewSyncClient(c *Client) *SyncClient { return &SyncClient{c: c} }
+
+// Send ignores ctx: there is no queue here to join a transaction, so the mail
+// goes out whether or not the caller's transaction ends up committing. That is
+// the guarantee the Postgres-backed queue exists to give you.
+func (c *SyncClient) Send(_ context.Context, to, subject, body string) error {
+	return c.c.Send(to, subject, body)
 }

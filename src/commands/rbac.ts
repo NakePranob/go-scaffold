@@ -83,7 +83,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "role");
   // projects scaffolded before --store existed are all Redis-backed
-  patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.authStore ?? "redis");
+  patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.authStore ?? "redis", config.features.worker ?? true);
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
   patchEnvExample(path.join(projectDir, ".env.example"));
 
