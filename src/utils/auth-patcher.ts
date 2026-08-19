@@ -1,6 +1,6 @@
 import fs from "fs-extra";
 import { insertBeforeMarkerOnce } from "./marker-patch";
-import { QueueBackend } from "../types";
+import { AuthStore, QueueBackend } from "../types";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
@@ -67,7 +67,27 @@ export function patchConfigForAuth(configGoPath: string): void {
 // registration (the domain's own Handler.Register splits /auth public vs
 // /users protected — main.go doesn't need to know that split, same
 // convention as every other module).
-export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBackend: QueueBackend): void {
+export interface AuthWiring {
+  goModule: string;
+  /** which adapter `add worker` chose — decides how the enqueuer is built */
+  queueBackend: QueueBackend;
+  /** which store `add auth` chose — decides the token store and the limiter */
+  store: AuthStore;
+}
+
+// authWiringLines is the single source of truth for the two lines that differ
+// between stores, so patchMainGoForAuth and `add rbac`'s rewrite of the same
+// lines can never drift apart.
+export function authWiringLines(w: AuthWiring) {
+  const postgres = w.store === "postgres";
+  return {
+    tokenStore: postgres ? "user.NewPgTokenStore(db)" : "user.NewRedisTokenStore(rdb)",
+    limiter: postgres ? "middleware.NewMemoryLimiter()" : "middleware.NewRedisLimiter(rdb)",
+  };
+}
+
+export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
+  const { goModule, queueBackend, store } = w;
   let content = fs.readFileSync(mainGoPath, "utf8");
 
   const importLine = `"${goModule}/internal/app/user"`;
@@ -115,17 +135,20 @@ export function patchMainGoForAuth(mainGoPath: string, goModule: string, queueBa
   ].join("\n");
   content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
 
-  const migrateLine1 = "&usermodel.User{},";
-  const migrateLine2 = "&usermodel.Identity{},";
-  content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine1, migrateLine1);
-  content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine2, migrateLine2);
+  const migrateLines = ["&usermodel.User{},", "&usermodel.Identity{},"];
+  // only the Postgres store has a table for AutoMigrate to create
+  if (store === "postgres") migrateLines.push("&usermodel.AuthToken{},");
+  for (const line of migrateLines) {
+    content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
+  }
 
   // same two-line shape every generated module uses: a named service, then
   // the handler that registers it. `add rbac` extends both lines later, and a
   // human wiring another domain into user's service edits line one in place.
-  const svcLine = "userSvc := user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg)";
+  const { tokenStore, limiter } = authWiringLines(w);
+  const svcLine = `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, mail.NewAsyncClient(q), cfg)`;
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, svcLine, "userSvc :=");
-  const routeLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, rdb).Register(api)";
+  const routeLine = `user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, ${limiter}).Register(api)`;
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(/\n\t_ = api \/\/ dropped once `generate module` registers the first route\n/, "\n");
 

@@ -1,0 +1,32 @@
+package middleware
+
+import (
+	"context"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// RedisLimiter shares one counter across every replica, so `limit` means the
+// same thing whether you run one pod or ten. It ships alongside the Redis
+// token store (`add auth --store redis`).
+type RedisLimiter struct {
+	rdb *redis.Client
+}
+
+func NewRedisLimiter(rdb *redis.Client) *RedisLimiter { return &RedisLimiter{rdb: rdb} }
+
+func (r *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) bool {
+	redisKey := "ratelimit:" + key
+
+	count, err := r.rdb.Incr(ctx, redisKey).Result()
+	if err != nil {
+		// fail open: a Redis blip shouldn't take down login/register entirely
+		// — the endpoint's own logic is still the real guard.
+		return true
+	}
+	if count == 1 {
+		r.rdb.Expire(ctx, redisKey, window)
+	}
+	return count <= int64(limit)
+}

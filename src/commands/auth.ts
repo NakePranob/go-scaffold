@@ -3,8 +3,9 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
-import { AUTH_FILES } from "../templates/auth-manifest";
+import { authFiles } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
+import { AuthStore } from "../types";
 import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchMainGoForWorker } from "../utils/platform-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
@@ -36,7 +37,7 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 // (no roles/permissions) — that's a separate opt-in on top of this, since
 // most projects need "is this caller logged in" long before they need "can
 // this caller do X".
-export async function addAuth(projectDir: string = process.cwd()): Promise<void> {
+export async function addAuth(store: AuthStore = "postgres", projectDir: string = process.cwd()): Promise<void> {
   const config = readConfig(projectDir);
 
   if (!config.features.worker) {
@@ -48,14 +49,13 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
     throw new Error(`${userDir} already exists — auth looks like it's already been added`);
   }
 
-  // The refresh-token store needs Redis regardless of where jobs live. With
-  // the Postgres-backed queue the project has no Redis yet, so add it here
-  // rather than forcing a queue backend nobody asked for.
   const parsedBefore = parseChecks(projectDir);
 
-  await ensureRedis(projectDir, config.goModule);
+  // Only `--store redis` needs Redis. With `--store postgres` (the default)
+  // auth adds no service at all — which is the whole point of the option.
+  if (store === "redis") await ensureRedis(projectDir, config.goModule);
 
-  await applyTemplateEntries(projectDir, AUTH_FILES, { goModule: config.goModule });
+  await applyTemplateEntries(projectDir, authFiles(store), { goModule: config.goModule });
 
   const migrationsDir = path.join(projectDir, "migrations");
   fs.ensureDirSync(migrationsDir);
@@ -82,14 +82,31 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
     {}
   );
 
+  if (store === "postgres") {
+    const authTokensVersion = newMigrationVersion(migrationsDir);
+    await applyTemplateEntries(
+      projectDir,
+      [
+        { template: "add/auth/migrations/create_auth_tokens.up.sql.hbs", output: path.join("migrations", `${authTokensVersion}_create_auth_tokens.up.sql`) },
+        { template: "add/auth/migrations/create_auth_tokens.down.sql.hbs", output: path.join("migrations", `${authTokensVersion}_create_auth_tokens.down.sql`) },
+      ],
+      {}
+    );
+  }
+
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
-  patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.queue ?? "asynq");
+  patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), {
+    goModule: config.goModule,
+    queueBackend: config.features.queue ?? "asynq",
+    store,
+  });
   patchGoModRequires(path.join(projectDir, "go.mod"), [
     "github.com/golang-jwt/jwt/v5 v5.3.1",
-    "github.com/redis/go-redis/v9 v9.22.0",
     "golang.org/x/crypto v0.52.0",
     "golang.org/x/oauth2 v0.36.0",
+    // go-redis only when something in this project actually constructs a client
+    ...(store === "redis" ? ["github.com/redis/go-redis/v9 v9.22.0"] : []),
   ]);
   patchEnvExample(path.join(projectDir, ".env.example"));
   patchMakefile(path.join(projectDir, "Makefile"));
@@ -114,9 +131,14 @@ export async function addAuth(projectDir: string = process.cwd()): Promise<void>
   // printed below, so `go vet` can't be the gate here.
   assertStillParses(projectDir, parsedBefore, "added auth");
 
-  writeConfig(projectDir, { ...config, features: { ...config.features, auth: true } });
+  writeConfig(projectDir, { ...config, features: { ...config.features, auth: true, authStore: store } });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
+  console.log(
+    store === "postgres"
+      ? "tokens + rate-limit counters: Postgres (user_svc.auth_tokens) and in-process — no Redis"
+      : "tokens + rate-limit counters: Redis"
+  );
   console.log(
     "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/google/{login,callback}, GET /users/me, and " +

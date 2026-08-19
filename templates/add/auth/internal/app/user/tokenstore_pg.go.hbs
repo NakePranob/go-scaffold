@@ -1,0 +1,144 @@
+// Postgres-backed tokenStore — installed by `add auth --store postgres` (the
+// default). The Redis-backed alternative lives in tokenstore_redis.go; only
+// one of the two is ever written into a project.
+//
+// Everything Redis needed two keys for collapses into one table here: the
+// per-user session set is just a WHERE clause, and expiry is a column every
+// read filters on rather than a TTL the store enforces. What that costs is a
+// sweep to keep the table from growing — see DeleteExpired.
+package user
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+const (
+	kindRefresh     = "refresh"
+	kindRefreshUsed = "refresh_used"
+	kindPasswordSet = "pwreset"
+	kindEmailVerify = "emailverify"
+)
+
+type pgTokenStore struct {
+	db *gorm.DB
+}
+
+func NewPgTokenStore(db *gorm.DB) *pgTokenStore { return &pgTokenStore{db: db} }
+
+// put writes a token row, replacing any row that already carries the same
+// hash — a collision is astronomically unlikely, but "upsert" is the right
+// semantic for "this hash now means this" either way.
+func (s *pgTokenStore) put(ctx context.Context, hash, kind string, userID uuid.UUID, ttl time.Duration) error {
+	row := model.AuthToken{TokenHash: hash, UserID: userID, Kind: kind, ExpiresAt: time.Now().Add(ttl)}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ?", hash).
+		Assign(map[string]any{"user_id": userID, "kind": kind, "expires_at": row.ExpiresAt}).
+		FirstOrCreate(&row).Error
+}
+
+// lookup finds a live token of the given kind. Expiry is enforced here rather
+// than by a sweep, so a row that outlived its TTL is already invisible.
+func (s *pgTokenStore) lookup(ctx context.Context, hash, kind string) (uuid.UUID, bool, error) {
+	var row model.AuthToken
+	err := tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ? AND kind = ? AND expires_at > now()", hash, kind).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return row.UserID, true, nil
+}
+
+// consume deletes and returns in one statement, which is what makes a
+// one-time token actually one-time: two requests racing on the same token
+// cannot both come away with a user id.
+func (s *pgTokenStore) consume(ctx context.Context, hash, kind string) (uuid.UUID, bool, error) {
+	var userID uuid.UUID
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`DELETE FROM user_svc.auth_tokens
+		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+		 RETURNING user_id`, hash, kind).Row().Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return userID, true, nil
+}
+
+func (s *pgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindRefresh, userID, ttl)
+}
+
+func (s *pgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.lookup(ctx, tokenHash, kindRefresh)
+}
+
+// DeleteRefreshToken removes the row outright and leaves nothing behind — see
+// the AuthToken doc comment for why logout must not leave a tombstone.
+func (s *pgTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string, _ uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ? AND kind = ?", tokenHash, kindRefresh).
+		Delete(&model.AuthToken{}).Error
+}
+
+// RevokeAllRefreshTokens is one statement here because Postgres can query by
+// value — the Redis store has to keep a separate per-user set to answer this,
+// and that set accumulates stale members its own comment calls out.
+// Tombstones are left in place so reuse detection still works afterwards.
+func (s *pgTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND kind = ?", userID, kindRefresh).
+		Delete(&model.AuthToken{}).Error
+}
+
+func (s *pgTokenStore) MarkRefreshTokenUsed(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindRefreshUsed, userID, ttl)
+}
+
+func (s *pgTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.lookup(ctx, tokenHash, kindRefreshUsed)
+}
+
+func (s *pgTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
+}
+
+func (s *pgTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.consume(ctx, tokenHash, kindPasswordSet)
+}
+
+func (s *pgTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindEmailVerify, userID, ttl)
+}
+
+func (s *pgTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.consume(ctx, tokenHash, kindEmailVerify)
+}
+
+// DeleteExpired drops rows nothing can use any more. Correctness never depends
+// on it — every read already filters on expires_at — so it is purely about
+// table size, and calling it on a timer from cmd/worker (or a cron) is enough.
+//
+// ponytail: not scheduled for you. Wire it up the day the table is big enough
+// to notice; a scaffold that silently runs background sweeps nobody asked for
+// is harder to reason about than one line you add when it matters.
+func (s *pgTokenStore) DeleteExpired(ctx context.Context) (int64, error) {
+	res := tx.From(ctx, s.db).WithContext(ctx).
+		Where("expires_at <= now()").
+		Delete(&model.AuthToken{})
+	return res.RowsAffected, res.Error
+}

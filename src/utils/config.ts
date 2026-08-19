@@ -70,6 +70,15 @@ function detectConfig(projectDir: string): ProjectConfig {
       // which adapter file is present is what `add worker --queue` decided
       queue: !worker ? undefined : has("internal", "platform", "queue", "asynq.go") ? "asynq" : "river",
       auth: has("internal", "app", "user"),
+      // which store `add auth` chose is readable from which implementation
+      // file it wrote — same trick as the queue adapter above. Projects from
+      // before the option existed have neither name and read as "redis",
+      // which is what they in fact are.
+      authStore: !has("internal", "app", "user")
+        ? undefined
+        : has("internal", "app", "user", "tokenstore_pg.go")
+          ? "postgres"
+          : "redis",
       rbac: has("internal", "app", "role"),
       observability: has("internal", "platform", "telemetry"),
     },

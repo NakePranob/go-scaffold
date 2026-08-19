@@ -28,7 +28,7 @@ function scaffold(t) {
 const PINS = {
   river: ["github.com/riverqueue/river", "github.com/riverqueue/river/riverdriver/riverdatabasesql"],
   asynq: ["github.com/hibiken/asynq", "github.com/redis/go-redis/v9"],
-  auth: ["github.com/golang-jwt/jwt/v5", "github.com/redis/go-redis/v9", "golang.org/x/crypto", "golang.org/x/oauth2"],
+  auth: ["github.com/golang-jwt/jwt/v5", "golang.org/x/crypto", "golang.org/x/oauth2"],
   observability: [
     "github.com/prometheus/client_golang",
     "go.opentelemetry.io/otel",
@@ -72,6 +72,10 @@ test("add auth and add observability pin their own dependencies", (t) => {
   cli(app, "add", "worker", "--defaults");
   cli(app, "add", "auth");
   assertPinned(app, PINS.auth);
+  // the default store is Postgres, and nothing in the project constructs a
+  // Redis client — pinning go-redis anyway would put a dependency in go.mod
+  // for a file that was never written
+  assert.ok(!pinnedModules(app).has("github.com/redis/go-redis/v9"), "go-redis must not come along with --store postgres");
 
   cli(app, "add", "observability");
   assertPinned(app, PINS.observability);
@@ -79,11 +83,18 @@ test("add auth and add observability pin their own dependencies", (t) => {
   assertPinned(app, PINS.auth);
 });
 
+test("add auth --store redis pins go-redis, and only then", (t) => {
+  const app = scaffold(t);
+  cli(app, "add", "worker", "--defaults"); // River — no Redis yet
+  cli(app, "add", "auth", "--store", "redis");
+  assertPinned(app, [...PINS.auth, "github.com/redis/go-redis/v9"]);
+});
+
 // One require line per module, whatever order the features were added in.
 test("no duplicate require lines when features share a dependency", (t) => {
   const app = scaffold(t);
   cli(app, "add", "worker", "--queue", "redis"); // pins go-redis
-  cli(app, "add", "auth"); // wants go-redis too
+  cli(app, "add", "auth", "--store", "redis"); // wants go-redis too
 
   const lines = readFileSync(path.join(app, "go.mod"), "utf8")
     .split("\n")

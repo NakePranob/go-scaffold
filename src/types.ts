@@ -8,6 +8,17 @@
  */
 export type QueueBackend = "river" | "asynq";
 
+/**
+ * Where `add auth` keeps refresh/reset/verify tokens and its rate-limit
+ * counters. The two travel together on purpose — picking Redis is one
+ * decision ("I want this exact across pods"), not two.
+ * - "postgres": rows in the project's own database, rate limiting in-process.
+ *   No service beyond Postgres. The default.
+ * - "redis": what every project before this option got. Exact across replicas,
+ *   at the cost of running Redis.
+ */
+export type AuthStore = "postgres" | "redis";
+
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;
@@ -17,6 +28,8 @@ export interface ProjectFeatures {
   queue?: QueueBackend;
   /** set by `go-scaffold add auth` — internal/app/user + auth middleware exist */
   auth?: boolean;
+  /** which backing store `add auth` chose for tokens + rate limiting */
+  authStore?: AuthStore;
   /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */
   rbac?: boolean;
   /** chosen at `create` time — Prometheus /metrics + OpenTelemetry tracing (Gin + GORM) */

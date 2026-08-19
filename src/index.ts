@@ -191,10 +191,18 @@ async function resolveQueueBackend(opts: { queue?: string; defaults?: boolean })
 
 add
   .command("auth")
-  .description("add email/password auth: JWT access tokens, Redis-backed refresh token rotation, register/login/refresh/logout/me (requires `add worker` first)")
-  .action(async () => {
+  .description("add email/password auth: JWT access tokens, refresh token rotation, register/login/refresh/logout/me (requires `add worker` first)")
+  .option(
+    "--store <store>",
+    'where tokens and rate-limit counters live: "postgres" (default, no extra service) or "redis" (exact across replicas)'
+  )
+  .action(async (opts: { store?: string }) => {
     try {
-      await addAuth();
+      const store = (opts.store ?? "postgres").trim().toLowerCase();
+      if (store !== "postgres" && store !== "redis") {
+        throw new Error(`unknown --store ${opts.store} — use "postgres" or "redis"`);
+      }
+      await addAuth(store);
     } catch (err) {
       fail(err);
     }

@@ -1,0 +1,39 @@
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// AuthToken is one short-lived token — the Postgres equivalent of the keys the
+// Redis store would hold. Only the SHA-256 hash of the raw token is stored, so
+// a database dump never yields a usable token.
+//
+// `Kind` mirrors the Redis key prefixes one-for-one, deliberately:
+//
+//	refresh       an active refresh token
+//	refresh_used  a tombstone left by rotation, so replaying a rotated-out
+//	              token is detectable as reuse rather than merely unknown
+//	pwreset       password reset, consumed once
+//	emailverify   email verification, consumed once
+//
+// Keeping the tombstone a separate row (rather than a used_at column on the
+// refresh row) is what preserves logout's semantics: logout deletes the row
+// outright and leaves no tombstone, so someone replaying a logged-out token
+// gets a plain rejection instead of tripping reuse detection and nuking every
+// session the user has.
+//
+// No foreign key to users on purpose: GORM's AutoMigrate (dev) wouldn't create
+// one from these tags, and a constraint that exists in production but not in
+// development is the exact mismatch that stops the app booting. A token whose
+// user is gone simply fails the lookup that follows.
+type AuthToken struct {
+	TokenHash string    `gorm:"primaryKey;type:text"`
+	UserID    uuid.UUID `gorm:"type:uuid;not null;index:idx_auth_tokens_user_kind,priority:1"`
+	Kind      string    `gorm:"type:varchar(20);not null;index:idx_auth_tokens_user_kind,priority:2"`
+	ExpiresAt time.Time `gorm:"not null;index:idx_auth_tokens_expires_at"`
+	CreatedAt time.Time
+}
+
+func (AuthToken) TableName() string { return "user_svc.auth_tokens" }

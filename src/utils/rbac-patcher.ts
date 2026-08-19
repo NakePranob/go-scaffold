@@ -1,4 +1,6 @@
+import { AuthStore } from "../types";
 import fs from "fs-extra";
+import { authWiringLines } from "./auth-patcher";
 import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
@@ -261,7 +263,7 @@ export function patchUserErrorsForRbac(errorsGoPath: string): void {
 // isn't enough — REPLACES the `add auth` PR's user.NewHandler(...) call with
 // a version that also builds roleSvc/authz and passes them through, plus
 // registers role's own routes right after it.
-export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
+export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: AuthStore): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
 
   const importLine = `"${goModule}/internal/app/role"`;
@@ -285,7 +287,10 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
   // roleSvc and authz have to be declared *above* userSvc, which now takes
   // roleSvc — so this rewrites the service line in place rather than
   // appending at the marker (which would land below it).
-  const userSvcLine = "userSvc := user.NewService(user.NewRepository(db), user.NewRedisTokenStore(rdb), mail.NewAsyncClient(q), cfg)";
+  // Rebuilt from the same helper `add auth` used, so a project on either store
+  // gets its own line matched rather than a hardcoded guess at one of them.
+  const { tokenStore, limiter } = authWiringLines({ goModule, queueBackend: "river", store });
+  const userSvcLine = `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, mail.NewAsyncClient(q), cfg)`;
   // Throw rather than skip: the roleSvc/authz declarations this rewrite adds
   // are what the unconditional patches below refer to. Skipping quietly still
   // emits `roleSvc`/`authz` references with nothing declaring them, so the
@@ -309,8 +314,11 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string): void {
     ].join("\n")
   );
 
-  const userRouteLine = "user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, rdb).Register(api)";
-  content = content.replace(userRouteLine, userRouteLine.replace("rdb)", "rdb, authz)"));
+  const userRouteLine = `user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, ${limiter}).Register(api)`;
+  // strip the trailing `).Register(api)` — not just `.Register(api)` — so authz
+  // lands inside NewHandler's argument list rather than after its closing paren
+  const tail = ").Register(api)";
+  content = content.replace(userRouteLine, `${userRouteLine.slice(0, -tail.length)}, authz${tail}`);
 
   const roleRouteLine = "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)";
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, roleRouteLine, roleRouteLine);

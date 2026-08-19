@@ -1,0 +1,63 @@
+package middleware
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+// MemoryLimiter keeps the counters in this process. It is the limiter that
+// ships alongside the Postgres token store, so a project can run auth with no
+// service beyond its own database.
+//
+// ponytail: per-process budget. Behind N replicas a client effectively gets
+// N x limit, because nothing is shared. That is a deliberate trade: this layer
+// only damps casual abuse, and the control that has to be exact — failed-login
+// lockout — lives in Postgres where every replica sees the same counter.
+// Switch to `add auth --store redis` if you need this layer exact too.
+//
+// Deliberately a fixed-window counter written by hand rather than
+// golang.org/x/time/rate: the Redis limiter is a fixed window, and keeping the
+// two identical means changing --store never changes what a client observes.
+// A token bucket would have been fewer lines and different behaviour.
+type MemoryLimiter struct {
+	mu        sync.Mutex
+	windows   map[string]*rateWindow
+	lastSweep time.Time
+}
+
+type rateWindow struct {
+	count   int
+	resetAt time.Time
+}
+
+func NewMemoryLimiter() *MemoryLimiter {
+	return &MemoryLimiter{windows: map[string]*rateWindow{}, lastSweep: time.Now()}
+}
+
+func (m *MemoryLimiter) Allow(_ context.Context, key string, limit int, window time.Duration) bool {
+	now := time.Now()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Sweep at most once per window: every entry is dead within one window of
+	// its last use, so this is enough to stop the map growing with every
+	// distinct client IP, without paying an O(n) walk on each request.
+	if now.Sub(m.lastSweep) > window {
+		for k, w := range m.windows {
+			if now.After(w.resetAt) {
+				delete(m.windows, k)
+			}
+		}
+		m.lastSweep = now
+	}
+
+	w, ok := m.windows[key]
+	if !ok || now.After(w.resetAt) {
+		m.windows[key] = &rateWindow{count: 1, resetAt: now.Add(window)}
+		return true
+	}
+	w.count++
+	return w.count <= limit
+}

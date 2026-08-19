@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// fakeTokenStore = in-memory mock of tokenStore, mirroring redisTokenStore's
+// fakeTokenStore = in-memory mock of tokenStore, mirroring the real store's
 // three-map shape (active / used-tombstone / per-user session set) closely
 // enough to exercise rotation + reuse-detection without a real Redis.
 type fakeTokenStore struct {

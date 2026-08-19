@@ -909,10 +909,11 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   runMake(["db-drop"], fullApp);
   runMake(["db-create"], fullApp);
 
-  const authApi = startApi(fullApp, "auth-api", fullDb, {
+  // held in a ref because the rate-limit assertions below restart it
+  const authApiRef = { api: startApi(fullApp, "auth-api", fullDb, {
     REDIS_URL: sharedRedisUrl,
     AUTO_MIGRATE: "true",
-  });
+  }) };
   execFileSync("sleep", ["3"]);
 
   const B = `${smoke.baseURL}/v1`;
@@ -1064,15 +1065,24 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   if (status(refreshAfterLogout) !== "401") throw new Error(`expected 401 refreshing after logout, got:\n${refreshAfterLogout}`);
 
   // Rate limiting: register/login/forgot-password/reset-password are each
-  // throttled per-IP via Redis (middleware.RateLimit). Flush the shared
-  // Redis first so this doesn't depend on how many times the assertions
-  // above already spent the budget (also sidesteps having to guess whether
-  // curl-to-localhost counts as client IP 127.0.0.1 or ::1), and flush again
-  // after so a budget this test deliberately exhausts doesn't bleed into a
-  // later step that shares the same container (e.g. "add rbac"'s own
-  // /auth/register call). Safe to nuke everything here — this is the last
-  // thing this step does before the server gets killed.
-  const resetRateLimits = () => run("docker", ["exec", sharedRedisContainerId, "redis-cli", "FLUSHDB"]);
+  // throttled per-IP (middleware.RateLimit). Start the burst from a known
+  // zero rather than depending on how many times the assertions above already
+  // spent the budget (which also sidesteps guessing whether curl-to-localhost
+  // counts as client IP 127.0.0.1 or ::1).
+  //
+  // Restarting the server is how, deliberately: `add auth --store postgres`
+  // (the default here) counts in this process's own memory, so there is no
+  // external store to flush. Flushing Redis would silently reset nothing and
+  // the burst below would start mid-window. A restart is the one reset that
+  // works whichever store the project was scaffolded with.
+  const resetRateLimits = () => {
+    stopApi(authApiRef.api);
+    authApiRef.api = startApi(fullApp, "auth-api-ratelimit", fullDb, {
+      REDIS_URL: sharedRedisUrl,
+      AUTO_MIGRATE: "true",
+    });
+    execFileSync("sleep", ["3"]);
+  };
   resetRateLimits();
 
   // register is capped at 5/min — fire 6 back-to-back and expect only the 6th to 429.
@@ -1108,9 +1118,9 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const loginStillWorks = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"burst1@example.com","password":"correcthorsebattery"}']);
   if (status(loginStillWorks) !== "200") throw new Error(`expected /auth/login to be unaffected by /auth/register's exhausted rate limit, got:\n${loginStillWorks}`);
 
-  resetRateLimits();
-
-  stopApi(authApi);
+  // no reset needed on the way out: the budget lives in this process, so
+  // killing it is the reset, and every later step starts its own server.
+  stopApi(authApiRef.api);
 
   // cmd/seed talks to Postgres directly (config.Load() + database.Open, same
   // as cmd/api) — no server, no Redis, run it as a plain one-shot process.
