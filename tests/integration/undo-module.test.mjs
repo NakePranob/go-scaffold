@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -87,6 +88,64 @@ test("undo module refuses, and destroys nothing, once the migrations are committ
     assert.equal(existsSync(path.join(project, "internal", "app", "widget")), true);
     assert.deepEqual(createMigrations(project, "widgets"), migrations);
     assert.match(readFileSync(path.join(project, "cmd", "api", "main.go"), "utf8"), /internal\/app\/widget/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// findDependents dropped the closing quote so it would also catch the /model
+// subpackage — which made it match on a bare prefix, and `undo module order`
+// was then refused by every module whose name merely starts with "order".
+// internal/app/orderitem imports nothing from internal/app/order; the second
+// path just contains the first.
+test("undo module is not blocked by a module whose name only shares a prefix", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-undo-prefix-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    runCLI(project, "generate", "module", "orders", "--full");
+    runCLI(project, "generate", "module", "order-items", "--full");
+
+    runCLI(project, "undo", "module", "order", "--yes");
+
+    assert.equal(existsSync(path.join(project, "internal", "app", "order")), false);
+    assert.ok(
+      existsSync(path.join(project, "internal", "app", "orderitem")),
+      "the module that merely shares a prefix must survive"
+    );
+    const mainGo = readFileSync(path.join(project, "cmd", "api", "main.go"), "utf8");
+    assert.doesNotMatch(mainGo, /app\/order"/, "order's own import must be gone");
+    assert.match(mainGo, /app\/orderitem"/, "orderitem's wiring must be untouched");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// ...and the guard still has to fire for a real dependency, or loosening the
+// match would have traded a false positive for a project that stops compiling.
+test("undo module still refuses when another domain genuinely imports it", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-undo-realdep-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    runCLI(project, "generate", "module", "orders", "--full");
+    runCLI(project, "generate", "module", "invoices", "--full");
+
+    const servicePath = path.join(project, "internal", "app", "invoice", "service.go");
+    writeFileSync(
+      servicePath,
+      readFileSync(servicePath, "utf8").replace(
+        "import (",
+        'import (\n\tordermodel "sample/internal/app/order/model"'
+      )
+    );
+
+    assert.throws(
+      () => runCLI(project, "undo", "module", "order", "--yes"),
+      /still used by/,
+      "a genuine cross-domain import must still block the undo"
+    );
+    assert.ok(existsSync(path.join(project, "internal", "app", "order")), "nothing may be deleted");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

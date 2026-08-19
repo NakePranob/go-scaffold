@@ -342,14 +342,21 @@ function dsnFromEnvFile(projectDir: string): string | undefined {
 // of strings and comments, but only an import of
 // "<goModule>/internal/app/orders" is a real compile-time dependency.
 function findDependents(projectDir: string, goModule: string, modulePath: string): string[] {
-  const needle = `"${goModule}/internal/app/${modulePath}`; // no closing quote: also catches the /model subpackage
+  // The package itself, or one of its subpackages — and nothing else. Dropping
+  // the closing quote to catch `/model` was matching on a bare prefix too, so
+  // `undo module order` was refused by every module whose name merely starts
+  // with it: internal/app/orderitem imports nothing from internal/app/order,
+  // but the second path contains the first.
+  const base = `"${goModule}/internal/app/${modulePath}`;
+  const importsIt = (src: string) => src.includes(`${base}"`) || src.includes(`${base}/`);
+
   const appDir = path.join(projectDir, "internal", "app");
   const hits: string[] = [];
 
   for (const pkg of existingModulePackages(projectDir)) {
     if (pkg === modulePath) continue;
     for (const file of goFilesIn(path.join(appDir, pkg))) {
-      if (fs.readFileSync(file, "utf8").includes(needle)) {
+      if (importsIt(fs.readFileSync(file, "utf8"))) {
         hits.push(path.relative(projectDir, file));
       }
     }
