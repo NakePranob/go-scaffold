@@ -278,7 +278,7 @@ export function assertRbacPatchable(mainGoPath: string, goModule: string, store:
   const expected = userSvcLineFor(goModule, store, worker);
   if (fs.readFileSync(mainGoPath, "utf8").includes(expected)) return;
   throw new Error(
-    "cmd/api/main.go's userSvc line doesn't match what `add auth` wrote, so `add rbac` can't extend it.\n" +
+    "cmd/api/wiring.go's userSvc line doesn't match what `add auth` wrote, so `add rbac` can't extend it.\n" +
       `Expected to find:\n  ${expected}\n\n` +
       "It was probably hand-edited. Restore that line and re-run — nothing has been changed yet."
   );
@@ -294,8 +294,7 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
 
   const schemaBlock = [
     'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS role_svc").Error; err != nil {',
-    '\tlogger.Error("create schema", "error", err)',
-    "\tos.Exit(1)",
+    '\treturn fmt.Errorf("create schema role_svc: %w", err)',
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS role_svc");
@@ -318,7 +317,7 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
   // command reports success over a main.go that doesn't compile.
   if (!content.includes(userSvcLine)) {
     throw new Error(
-      `cmd/api/main.go's userSvc line doesn't match what \`add auth\` wrote, so \`add rbac\` can't extend it.\n` +
+      `cmd/api/wiring.go's userSvc line doesn't match what \`add auth\` wrote, so \`add rbac\` can't extend it.\n` +
         `Expected to find:\n  ${userSvcLine}\n\n` +
         `It was probably hand-edited. Restore that line (add rbac will re-extend it), or apply the rbac wiring by hand:\n` +
         `  roleSvc := role.NewService(role.NewRepository(db))\n` +

@@ -223,7 +223,7 @@ const add = program
       } else {
         await confirmAdd([
           "add Prometheus /metrics + OpenTelemetry tracing",
-          "patch cmd/api/main.go and internal/platform/database to wire it in",
+          "patch cmd/api/wiring.go and internal/platform/database to wire it in",
         ]);
         await addObservability();
       }

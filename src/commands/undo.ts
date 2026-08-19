@@ -59,7 +59,7 @@ export async function undoModule(
   if (owner && config.features[owner]) {
     throw new Error(
       `"${modulePath}" belongs to \`go-scaffold add ${owner}\`, not to \`generate module\` — refusing to undo it.\n` +
-        `Its wiring in cmd/api/main.go (and cmd/seed, docs/openapi.yaml) doesn't match what this command knows how to reverse,\n` +
+        `Its wiring in cmd/api/wiring.go (and cmd/seed, docs/openapi.yaml) doesn't match what this command knows how to reverse,\n` +
         `so removing it would leave the project un-compilable. Undo \`add ${owner}\` by hand, or start from a fresh scaffold.`
     );
   }
@@ -73,7 +73,7 @@ export async function undoModule(
       message:
         `Undo module "${naming.pkg}"? Deletes internal/app/${modulePath}/, its docs, ` +
         `${migrations.length ? `${migrations.length} migration file(s), ` : ""}` +
-        `and un-wires main.go/openapi.yaml. The ${naming.tableName} table itself is not dropped.`,
+        `and un-wires wiring.go/openapi.yaml. The ${naming.tableName} table itself is not dropped.`,
       default: false,
     });
     if (!ok) throw new Error("undo cancelled");
@@ -105,14 +105,14 @@ export async function undoModule(
   const before = typeChecks(projectDir);
 
   // Un-wire before deleting, not after. Every step below can throw — a
-  // hand-edited main.go with the routes marker gone is enough — and if the
+  // hand-edited wiring.go with the routes marker gone is enough — and if the
   // package is already gone by then, the user's own code inside it is
   // unrecoverable outside of git. This order fails the other way round: a
   // still-present package with its wiring removed, which `generate module`
   // re-wires idempotently.
 
-  // 1. main.go wiring
-  unpatchMainGo(path.join(projectDir, "cmd", "api", "main.go"), {
+  // 1. wiring.go
+  unpatchMainGo(path.join(projectDir, "cmd", "api", "wiring.go"), {
     goModule: config.goModule,
     modulePath,
     pkg: naming.pkg,
@@ -141,12 +141,12 @@ export async function undoModule(
   gofmtTree(projectDir);
   assertNoDrift(projectDir, before, config, {
     didWhat: `undid module "${naming.pkg}"`,
-    recover: `internal/app/${modulePath}/ is gone; re-run \`go-scaffold generate module ${naming.pkg}\` to put it\nback, then reconcile cmd/api/main.go by hand.`,
+    recover: `internal/app/${modulePath}/ is gone; re-run \`go-scaffold generate module ${naming.pkg}\` to put it\nback, then reconcile cmd/api/wiring.go by hand.`,
   });
 
   console.log(pc.green(`\nundid module "${naming.pkg}"`));
   console.log(`  deleted internal/app/${modulePath}/`);
-  console.log(`  un-wired cmd/api/main.go`);
+  console.log(`  un-wired cmd/api/wiring.go`);
   if (fs.existsSync(openapiPath)) console.log(`  un-wired docs/openapi.yaml + deleted docs/${naming.plural}/`);
   if (migrations.length) console.log(`  deleted migrations/${migrations.join(", migrations/")}`);
   if (migrations.length && !checkedDatabase) {

@@ -64,7 +64,7 @@ wouldn't compile: starting with a digit, or a Go keyword / predeclared type
 ### `generate module <name>`
 
 **Minimal is the default** — the module is created with no endpoints, and
-what lands in `cmd/api/main.go` is an *empty route group* under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
+what lands in `cmd/api/wiring.go` is an *empty route group* under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
 waiting for `generate method`. You still get every file:
 `internal/app/<pkg>/{model/,dto,errors,repository,service,handler,service_test,handler_test,repository_test}.go`
 — the full data-access surface exists (the repository and its interface are
@@ -112,7 +112,7 @@ column, an index, a foreign key, a backfill, a drop.
 For a `generate module` that shouldn't have happened — a typo'd name, a
 domain decided against. Deletes `internal/app/<pkg>/`, the module's
 `migrations/<version>_create_<plural>.{up,down}.sql` pair, and reverses
-everything `generate module` wired up in `cmd/api/main.go` (and in
+everything `generate module` wired up in `cmd/api/wiring.go` (and in
 `docs/openapi.yaml` + `docs/<plural>/` when OpenAPI is enabled). `-y` skips
 the confirmation prompt.
 

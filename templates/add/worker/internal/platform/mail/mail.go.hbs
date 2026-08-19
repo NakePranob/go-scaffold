@@ -55,7 +55,7 @@ func (c *Client) Send(to, subject, body string) error {
 //
 // The trade is real — /auth/register and /auth/forgot-password block until
 // SMTP answers, where the async client returns as soon as the job is written.
-// Add a worker later and the wiring in cmd/api/main.go switches to
+// Add a worker later and the wiring in cmd/api/wiring.go switches to
 // AsyncClient; nothing in the user service changes.
 type SyncClient struct{ c *Client }
 

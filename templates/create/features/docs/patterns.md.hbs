@@ -29,12 +29,12 @@ internal/app/<domain>/
 - A folder, not a single file, so a domain with more than one table (e.g.
   `order` + `order_item`) adds one file per table instead of growing a single
   file — `generate module` only ever creates the first one
-- Every consumer inside `cmd/api/main.go` imports each domain's `model`
+- Every consumer inside `cmd/api/wiring.go` imports each domain's `model`
   package under an alias (`ordermodel`, `usermodel`, ...) since they all share
   the package name `model`
 - `TableName()` returns a schema-qualified name (`order_svc.orders`, not
   `orders`) — every domain gets its own Postgres schema, created by its own
-  migration (`CREATE SCHEMA IF NOT EXISTS`) and by `cmd/api/main.go` before
+  migration (`CREATE SCHEMA IF NOT EXISTS`) and by `cmd/api/wiring.go` before
   `AutoMigrate` runs in dev (AutoMigrate creates tables, never the schema they
   live in). A cross-domain FK is still fine — see the FK rules below — this
   only stops one domain's table from silently colliding with another's, or a
@@ -148,7 +148,7 @@ type userLookup interface {
 }
 ```
 
-`cmd/api/main.go` is the one place that knows both domains, so the adapter
+`cmd/api/wiring.go` is the one place that knows both domains, so the adapter
 lives there — a func literal, not a type:
 
 ```go

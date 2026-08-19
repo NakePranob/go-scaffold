@@ -61,7 +61,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   // one rbac cannot construct on its own — check it first so a mismatch costs
   // an error message rather than a half-patched project.
   assertRbacPatchable(
-    path.join(projectDir, "cmd", "api", "main.go"),
+    path.join(projectDir, "cmd", "api", "wiring.go"),
     config.goModule,
     config.features.authStore ?? "redis",
     config.features.worker ?? false
@@ -94,7 +94,7 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "role");
   // projects scaffolded before --store existed are all Redis-backed
-  patchMainGoForRbac(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.features.authStore ?? "redis", config.features.worker ?? false);
+  patchMainGoForRbac(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, config.features.authStore ?? "redis", config.features.worker ?? false);
   patchCmdSeedForRbac(path.join(projectDir, "cmd", "seed", "main.go"), config.goModule);
   patchEnvExample(path.join(projectDir, ".env.example"));
 
@@ -120,14 +120,14 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   // this can hold the stronger line: the project has to still type-check.
   assertNoDrift(projectDir, before, config, {
     didWhat: "added RBAC",
-    recover: "internal/app/role/ and the rbac patches were left in place — reconcile cmd/api/main.go by hand.",
+    recover: "internal/app/role/ and the rbac patches were left in place — reconcile cmd/api/wiring.go by hand.",
   });
 
   writeConfig(projectDir, { ...config, features: { ...config.features, rbac: true } });
 
   console.log(pc.green("\nadded internal/app/role/ and internal/shared/middleware/authz.go"));
   console.log(
-    "registered GET /users, GET /users/:id, PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/main.go" + docsMessage
+    "registered GET /users, GET /users/:id, PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/wiring.go" + docsMessage
   );
   console.log(
     pc.yellow(

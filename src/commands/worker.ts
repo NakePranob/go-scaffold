@@ -31,7 +31,7 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
 
   patchConfigForWorker(path.join(projectDir, "internal", "shared", "config", "config.go"), { redis: !riverQueue });
   if (!riverQueue) {
-    patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), config.goModule);
+    patchMainGoForWorker(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule);
     patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
     patchCiForRedis(path.join(projectDir, ".github", "workflows", "ci.yml"));
   }
@@ -45,7 +45,7 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   );
   // auth added before the worker wired a synchronous mailer — now that there
   // is a queue, move it onto it
-  upgradeMailerToQueue(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, backend);
+  upgradeMailerToQueue(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, backend);
 
   patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
   patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });

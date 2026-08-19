@@ -135,7 +135,7 @@ export function patchMainGoForWorker(mainGoPath: string, goModule: string): void
   const cacheImport = `"${goModule}/internal/platform/cache"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, cacheImport, cacheImport);
 
-  const initBlock = ["rdb, err := cache.Open(cfg)", "if err != nil {", '\tlogger.Error("open redis", "error", err)', "\tos.Exit(1)", "}"].join("\n");
+  const initBlock = ["rdb, err := cache.Open(cfg)", "if err != nil {", '\treturn fmt.Errorf("open redis: %w", err)', "}"].join("\n");
   content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, initBlock, "rdb, err := cache.Open(cfg)");
 
   const readyzBlock = [

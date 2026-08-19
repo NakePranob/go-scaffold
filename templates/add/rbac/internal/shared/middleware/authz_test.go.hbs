@@ -57,7 +57,7 @@ func TestAuthz_Require_ForbidsMissingPermission(t *testing.T) {
 	r := gin.New()
 	// Require only records a *apperror.AppError via c.Error — Error(true) is
 	// what actually translates that into the response status code, same as
-	// the real router (see cmd/api/main.go).
+	// the real router (see cmd/api/wiring.go).
 	r.Use(Error(true))
 	r.GET("/x", func(c *gin.Context) { c.Set(RoleKey, "staff") }, a.Require("role:manage"), func(c *gin.Context) {
 		c.Status(http.StatusOK)

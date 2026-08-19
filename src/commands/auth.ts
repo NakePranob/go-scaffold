@@ -118,7 +118,7 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
 
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
-  patchMainGoForAuth(path.join(projectDir, "cmd", "api", "main.go"), {
+  patchMainGoForAuth(path.join(projectDir, "cmd", "api", "wiring.go"), {
     goModule: config.goModule,
     queueBackend: config.features.queue ?? "asynq",
     store,
@@ -170,7 +170,7 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
   console.log(
     "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/google/{login,callback}, GET /users/me, and " +
-      "POST /users/me/{resend-verification,logout-all} in cmd/api/main.go" +
+      "POST /users/me/{resend-verification,logout-all} in cmd/api/wiring.go" +
       docsMessage
   );
   console.log(
@@ -248,7 +248,7 @@ async function ensureRedis(projectDir: string, goModule: string): Promise<void> 
     { goModule }
   );
   patchConfigForRedis(path.join(projectDir, "internal", "shared", "config", "config.go"));
-  patchMainGoForWorker(path.join(projectDir, "cmd", "api", "main.go"), goModule);
+  patchMainGoForWorker(path.join(projectDir, "cmd", "api", "wiring.go"), goModule);
   patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
   patchCiForRedis(path.join(projectDir, ".github", "workflows", "ci.yml"));
 

@@ -39,10 +39,10 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
   assert.ok(!has(app, "internal/app/user/tokenstore_redis.go"), "the Redis store must not be written");
   assert.ok(!has(app, "internal/platform/cache/redis.go"), "no Redis client is needed");
 
-  const main = read(app, "cmd/api/main.go");
+  const main = read(app, "cmd/api/wiring.go");
   assert.match(main, /user\.NewPgTokenStore\(db\)/);
   assert.match(main, /middleware\.NewMemoryLimiter\(\)/);
-  assert.doesNotMatch(main, /rdb/, "main.go must not reference a Redis client");
+  assert.doesNotMatch(main, /rdb/, "wiring.go must not reference a Redis client");
   // the table AutoMigrate needs in dev, and the migration prod uses
   assert.match(main, /&usermodel\.AuthToken\{\},/);
   assert.ok(
@@ -60,7 +60,7 @@ test("--store redis keeps the previous wiring", (t) => {
   assert.ok(!has(app, "internal/app/user/tokenstore_pg.go"), "the Postgres store must not be written");
   assert.ok(has(app, "internal/platform/cache/redis.go"), "add auth pulls Redis in on this path");
 
-  const main = read(app, "cmd/api/main.go");
+  const main = read(app, "cmd/api/wiring.go");
   assert.match(main, /user\.NewRedisTokenStore\(rdb\)/);
   assert.match(main, /middleware\.NewRedisLimiter\(rdb\)/);
   assert.doesNotMatch(main, /&usermodel\.AuthToken\{\},/, "no auth_tokens table on this path");
@@ -73,7 +73,7 @@ for (const store of ["postgres", "redis"]) {
     const app = project(t, store);
     cli(app, "add", "rbac");
 
-    const main = read(app, "cmd/api/main.go");
+    const main = read(app, "cmd/api/wiring.go");
     const limiter = store === "postgres" ? "middleware.NewMemoryLimiter()" : "middleware.NewRedisLimiter(rdb)";
     assert.ok(
       main.includes(`cfg.CookieSameSite, ${limiter}, authz).Register(api)`),
@@ -99,12 +99,12 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   assert.ok(has(app, "internal/platform/mail/mail.go"), "the SMTP client has to come along");
   assert.ok(!has(app, "internal/platform/queue"), "no queue was asked for");
   assert.ok(!has(app, "cmd/worker"), "no second binary was asked for");
-  assert.match(read(app, "cmd/api/main.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
+  assert.match(read(app, "cmd/api/wiring.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
   assert.match(read(app, ".env.example"), /^SMTP_HOST=/m, "auth has to bring the SMTP env block too");
 
   cli(app, "add", "worker", "--queue", "postgres");
 
-  const main = read(app, "cmd/api/main.go");
+  const main = read(app, "cmd/api/wiring.go");
   assert.match(main, /mail\.NewAsyncClient\(q\)/, "the mailer must move onto the queue");
   assert.doesNotMatch(main, /mail\.NewSyncClient/, "the synchronous mailer must be gone");
   assert.match(main, /q, err := queue\.NewRiverEnqueuer\(db\)/, "the enqueuer has to be built");
@@ -132,7 +132,7 @@ test("add rbac extends the userSvc line on a project that never ran add worker",
   cli(app, "add", "auth");
   cli(app, "add", "rbac");
 
-  const main = read(app, "cmd/api/main.go");
+  const main = read(app, "cmd/api/wiring.go");
   assert.match(
     main,
     /mail\.NewSyncClient\(mail\.Open\(cfg\)\), cfg, roleSvc\)/,
@@ -145,14 +145,14 @@ test("add rbac extends the userSvc line on a project that never ran add worker",
 // to land after user.NewService had already grown a roleChecker parameter —
 // a project that no longer compiled, and an error telling you to restore a
 // line that wouldn't have fixed it.
-test("add rbac checks main.go before it edits anything else", (t) => {
+test("add rbac checks wiring.go before it edits anything else", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-rbac-preflight-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cli(dir, "create", "app", "--defaults", "--no-docker");
   const app = path.join(dir, "app");
   cli(app, "add", "auth");
 
-  const mainPath = path.join(app, "cmd", "api", "main.go");
+  const mainPath = path.join(app, "cmd", "api", "wiring.go");
   writeFileSync(
     mainPath,
     readFileSync(mainPath, "utf8").replace("userSvc := user.NewService(", "userSvc := user.NewService( /* hand edited */ ")

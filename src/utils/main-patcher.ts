@@ -49,8 +49,7 @@ function mainGoLines(patch: RoutePatch) {
     // ever produce one line (not expected today, but cheap to keep safe).
     schemaLines: [
       `if err := db.Exec("CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}").Error; err != nil {`,
-      `\tlogger.Error("create schema", "error", err)`,
-      `\tos.Exit(1)`,
+      `\treturn fmt.Errorf("create schema ${patch.schemaName}: %w", err)`,
       `}`,
     ].join("\n"),
     schemaSentinel: `CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}`,
@@ -80,7 +79,7 @@ export function assertMainGoPatchable(mainGoPath: string): void {
   const missing = [IMPORT_MARKER, SCHEMA_MARKER, MODEL_MARKER, ROUTE_MARKER].filter((m) => !hasMarker(content, m));
   if (missing.length) {
     throw new Error(
-      `cmd/api/main.go is missing the marker comment${missing.length > 1 ? "s" : ""} this command patches at:\n` +
+      `cmd/api/wiring.go is missing the marker comment${missing.length > 1 ? "s" : ""} this command patches at:\n` +
         missing.map((m) => `  ${m}`).join("\n") +
         `\n\nEither the file was hand-edited, or it was scaffolded by an older go-scaffold that\n` +
         `didn't emit ${missing.length > 1 ? "them" : "it"} yet. Add the marker${missing.length > 1 ? "s" : ""} back where the generated code should go, or\n` +
@@ -89,7 +88,7 @@ export function assertMainGoPatchable(mainGoPath: string): void {
   }
 }
 
-// patchMainGo wires a newly generated module into cmd/api/main.go: its
+// patchMainGo wires a newly generated module into cmd/api/wiring.go: its
 // import, its model in the AutoMigrate call, and its route registration —
 // via marker comments rather than a Go AST rewrite (ponytail: text insertion
 // at a fixed marker is enough here; reach for go/ast if main.go ever needs

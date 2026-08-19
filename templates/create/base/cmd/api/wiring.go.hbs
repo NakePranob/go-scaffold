@@ -1,0 +1,161 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"{{goModule}}/internal/platform/database"
+	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/internal/shared/middleware"
+	// go-scaffold:imports
+
+	"github.com/gin-gonic/gin"
+)
+
+// run is this binary's composition root — the only function that sees every
+// module and wires them to each other. Modules never import one another; a
+// domain that needs another's behaviour declares a narrow interface and gets
+// the concrete service from here (see docs/architect/patterns.md).
+//
+// It returns an error rather than calling os.Exit, so every defer below runs
+// on the way out and main() holds the only exit in the binary.
+//
+// This is the file `go-scaffold generate module` and `go-scaffold add *` patch,
+// at the // go-scaffold: markers. It grows with the system, which is what a
+// composition root is for.
+func run() error {
+	cfg := config.Load()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
+	slog.SetDefault(logger)
+	// go-scaffold:config-checks
+
+	db, err := database.Open(cfg)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("db handle: %w", err)
+	}
+	// go-scaffold:platform-init
+
+	// AutoMigrate creates tables but never the schema they live in — each
+	// domain gets its own (see model.go's TableName), so it has to exist
+	// before AutoMigrate runs. The versioned SQL migrations create the same
+	// schemas with CREATE SCHEMA IF NOT EXISTS, so this only matters for dev.
+	// go-scaffold:schemas
+
+	if cfg.AutoMigrate {
+		// ponytail: AutoMigrate is for dev only (add-only, locks the table once data grows)
+		// prod: set AUTO_MIGRATE=false and run golang-migrate as versioned SQL instead
+		if err := db.AutoMigrate(
+			// go-scaffold:models
+		); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+	} else if err := database.CheckMigrationVersion(db); err != nil {
+		return fmt.Errorf("migration version check: %w", err)
+	}
+
+	r := gin.New()
+	// gin trusts every proxy by default, which makes c.ClientIP() — and so
+	// anything keyed on it, like the auth rate limiter — whatever
+	// X-Forwarded-For the caller felt like sending. Empty TRUSTED_PROXIES
+	// means trust nobody and use the peer address; set it to your load
+	// balancer's CIDRs when you actually run behind one.
+	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return fmt.Errorf("trusted proxies: %w", err)
+	}
+	r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))
+
+	// liveness = is the process up / readiness = ready for traffic (can it reach the DB)
+	r.GET("/livez", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	r.GET("/readyz", func(c *gin.Context) {
+		if err := sqlDB.PingContext(c.Request.Context()); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
+			return
+		}
+		// go-scaffold:readyz-checks
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	// go-scaffold:extra-routes
+{{#if openapiDocs}}
+	// hand-written spec at docs/openapi.yaml, split across sibling files (common/, health/,
+	// <domain>/) via relative $ref — serve the whole tree under one prefix so a client that
+	// resolves $ref over HTTP (Scalar, Swagger UI, Redoc, Hey API pointed at a URL) can reach
+	// them too; StaticFile on just the index file would 404 on every $ref it follows.
+	//
+	// Not in production: this serves your whole API surface — every path,
+	// parameter and schema — to anyone who asks. Publish the spec deliberately
+	// (`make openapi-bundle`) rather than by leaving this on.
+	if !cfg.IsProd() {
+		r.Static("/docs", "./docs")
+	}
+{{/if}}
+
+	api := r.Group("/{{apiPrefix}}")
+	// go-scaffold:routes
+	_ = api // dropped once `generate module` registers the first route
+
+	srv := &http.Server{
+		Addr:         ":" + cfg.Port,
+		Handler:      r,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// graceful shutdown: catch SIGINT/SIGTERM, let in-flight requests finish before closing
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Buffered: if ListenAndServe fails before anything reads this, the
+	// goroutine still exits instead of blocking forever on an unread channel.
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info("listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	// A port already in use used to kill the process from inside that
+	// goroutine, skipping every defer on the way out. Now it comes back here.
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("server: %w", err)
+	case <-ctx.Done():
+	}
+	logger.Info("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown", "error", err)
+	}
+	// go-scaffold:shutdown
+	logger.Info("stopped")
+	return nil
+}
+
+func parseLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

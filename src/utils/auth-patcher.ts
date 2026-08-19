@@ -108,8 +108,7 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
 
   const checkBlock = [
     'if cfg.IsProd() && cfg.JWTSecret == "dev-secret-change-me" {',
-    '\tlogger.Error("JWT_SECRET is still the dev default — set a real secret before deploying with APP_ENV=production")',
-    "\tos.Exit(1)",
+    '\treturn errors.New("JWT_SECRET is still the dev default — set a real secret before deploying with APP_ENV=production")',
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
@@ -121,8 +120,7 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   // never went anywhere.
   const smtpCheckBlock = [
     'if cfg.IsProd() && cfg.SMTPHost == "" {',
-    '\tlogger.Error("SMTP_HOST is unset — password reset and email verification links would be written to the log instead of sent")',
-    "\tos.Exit(1)",
+    '\treturn errors.New("SMTP_HOST is unset — password reset and email verification links would be written to the log instead of sent")',
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, smtpCheckBlock, "SMTP_HOST is unset");
@@ -132,14 +130,13 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   // only sees the queue.Enqueuer interface and doesn't change.
   if (w.worker) {
     const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
-    const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
+    const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\treturn fmt.Errorf("open queue: %w", err)', "}"].join("\n");
     content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
   }
 
   const schemaBlock = [
     'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS user_svc").Error; err != nil {',
-    '\tlogger.Error("create schema", "error", err)',
-    "\tos.Exit(1)",
+    '\treturn fmt.Errorf("create schema user_svc: %w", err)',
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
@@ -188,7 +185,7 @@ export function upgradeMailerToQueue(mainGoPath: string, goModule: string, queue
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
 
   const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
-  const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\tlogger.Error("open queue", "error", err)', "\tos.Exit(1)", "}"].join("\n");
+  const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\treturn fmt.Errorf("open queue: %w", err)', "}"].join("\n");
   content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
 
   const shutdownBlock = ["if err := q.Close(); err != nil {", '\tlogger.Error("close queue", "error", err)', "}"].join("\n");

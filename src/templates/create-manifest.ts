@@ -17,6 +17,7 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: ".claude/skills/go-scaffold/SKILL.md",
   },
   { template: "create/base/cmd/api/main.go.hbs", output: "cmd/api/main.go" },
+  { template: "create/base/cmd/api/wiring.go.hbs", output: "cmd/api/wiring.go" },
   {
     template: "create/base/internal/platform/database/database.go.hbs",
     output: "internal/platform/database/database.go",

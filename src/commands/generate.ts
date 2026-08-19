@@ -57,7 +57,7 @@ export async function generateModule(
   // Every marker this command patches has to be there before the first file
   // is written — a failure after the module folder and its migration exist is
   // a dead end, since the retry trips the "already exists" guard above.
-  const mainGoPath = path.join(projectDir, "cmd", "api", "main.go");
+  const mainGoPath = path.join(projectDir, "cmd", "api", "wiring.go");
   assertMainGoPatchable(mainGoPath);
 
   // snapshot before writing anything, so assertNoDrift below can tell "we broke
@@ -156,10 +156,10 @@ export async function generateModule(
   const routePath = config.apiPrefix ? `/${config.apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   console.log(pc.green(`\ngenerated internal/app/${modulePath}/`));
   if (opts.full) {
-    console.log(`registered route ${routePath} in cmd/api/main.go`);
+    console.log(`registered route ${routePath} in cmd/api/wiring.go`);
   } else {
     console.log(
-      `registered empty route group ${routePath} in cmd/api/main.go — ` +
+      `registered empty route group ${routePath} in cmd/api/wiring.go — ` +
         `add endpoints with \`go-scaffold generate method ${naming.pkg} <name> --type ...\``
     );
   }

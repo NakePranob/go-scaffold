@@ -52,7 +52,7 @@ function convertToLegacyPluralModule(project) {
       .replace('Group("/orders"', 'Group("/orderses"')
   );
 
-  const mainPath = path.join(project, "cmd", "api", "main.go");
+  const mainPath = path.join(project, "cmd", "api", "wiring.go");
   const legacyMain = readFileSync(mainPath, "utf8")
     .replaceAll("sample/internal/app/order", "sample/internal/app/orders")
     .replaceAll("ordermodel.Order", "ordersmodel.Orders")
@@ -134,7 +134,7 @@ test("undo module locates legacy plural packages and deletes their migrations", 
     // undo has to find them under that name too — a miss here is the leftover
     // migration this command exists to stop
     for (const name of migrationsBefore) assert.equal(existsSync(path.join(migrationsDir, name)), false);
-    assert.doesNotMatch(readFileSync(path.join(project, "cmd", "api", "main.go"), "utf8"), /internal\/app\/orders/);
+    assert.doesNotMatch(readFileSync(path.join(project, "cmd", "api", "wiring.go"), "utf8"), /internal\/app\/orders/);
     assert.doesNotMatch(readFileSync(path.join(project, "docs", "openapi.yaml"), "utf8"), /orderses/);
     assert.match(output, /deleted migrations\//);
   } finally {

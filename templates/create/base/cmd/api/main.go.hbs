@@ -1,145 +1,28 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
-	"{{goModule}}/internal/platform/database"
-	"{{goModule}}/internal/shared/config"
-	"{{goModule}}/internal/shared/middleware"
-	// go-scaffold:imports
-
-	"github.com/gin-gonic/gin"
 )
 
+// main decides the exit code and nothing else. Everything it used to do lives
+// in run() — see wiring.go, which is this binary's composition root: the one
+// place that sees every module and hands them what they need.
+//
+// Two things that split buys. Deferred cleanup actually runs, because os.Exit
+// skips defers and this doesn't call it until run has returned — telemetry
+// shutdown and the signal handler used to be silently abandoned on a startup
+// error. And run() is an ordinary function returning an ordinary error, so a
+// test can call it.
+//
+// wiring.go is also the file `go-scaffold` patches. Keeping it out of main.go
+// means the first file you open to understand this binary is not the one that
+// grows a line every time a module is added.
 func main() {
-	cfg := config.Load()
-
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}))
-	slog.SetDefault(logger)
-	// go-scaffold:config-checks
-
-	db, err := database.Open(cfg)
-	if err != nil {
-		logger.Error("open db", "error", err)
+	if err := run(); err != nil {
+		// Correct before and after run() sets the JSON handler: slog's default
+		// writes to stderr, so a failure this early is still reported.
+		slog.Error("startup failed", "error", err)
 		os.Exit(1)
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		logger.Error("db handle", "error", err)
-		os.Exit(1)
-	}
-	// go-scaffold:platform-init
-
-	// AutoMigrate creates tables but never the schema they live in — each
-	// domain gets its own (see model.go's TableName), so it has to exist
-	// before AutoMigrate runs. The versioned SQL migrations create the same
-	// schemas with CREATE SCHEMA IF NOT EXISTS, so this only matters for dev.
-	// go-scaffold:schemas
-
-	if cfg.AutoMigrate {
-		// ponytail: AutoMigrate is for dev only (add-only, locks the table once data grows)
-		// prod: set AUTO_MIGRATE=false and run golang-migrate as versioned SQL instead
-		if err := db.AutoMigrate(
-			// go-scaffold:models
-		); err != nil {
-			logger.Error("migrate", "error", err)
-			os.Exit(1)
-		}
-	} else if err := database.CheckMigrationVersion(db); err != nil {
-		logger.Error("migration version check", "error", err)
-		os.Exit(1)
-	}
-
-	r := gin.New()
-	// gin trusts every proxy by default, which makes c.ClientIP() — and so
-	// anything keyed on it, like the auth rate limiter — whatever
-	// X-Forwarded-For the caller felt like sending. Empty TRUSTED_PROXIES
-	// means trust nobody and use the peer address; set it to your load
-	// balancer's CIDRs when you actually run behind one.
-	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
-		logger.Error("trusted proxies", "error", err)
-		os.Exit(1)
-	}
-	r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))
-
-	// liveness = is the process up / readiness = ready for traffic (can it reach the DB)
-	r.GET("/livez", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
-	r.GET("/readyz", func(c *gin.Context) {
-		if err := sqlDB.PingContext(c.Request.Context()); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
-			return
-		}
-		// go-scaffold:readyz-checks
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-	// go-scaffold:extra-routes
-{{#if openapiDocs}}
-	// hand-written spec at docs/openapi.yaml, split across sibling files (common/, health/,
-	// <domain>/) via relative $ref — serve the whole tree under one prefix so a client that
-	// resolves $ref over HTTP (Scalar, Swagger UI, Redoc, Hey API pointed at a URL) can reach
-	// them too; StaticFile on just the index file would 404 on every $ref it follows.
-	//
-	// Not in production: this serves your whole API surface — every path,
-	// parameter and schema — to anyone who asks. Publish the spec deliberately
-	// (`make openapi-bundle`) rather than by leaving this on.
-	if !cfg.IsProd() {
-		r.Static("/docs", "./docs")
-	}
-{{/if}}
-
-	api := r.Group("/{{apiPrefix}}")
-	// go-scaffold:routes
-	_ = api // dropped once `generate module` registers the first route
-
-	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	// graceful shutdown: catch SIGINT/SIGTERM, let in-flight requests finish before closing
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	go func() {
-		logger.Info("listening", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	<-ctx.Done()
-	logger.Info("shutting down")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown", "error", err)
-	}
-	// go-scaffold:shutdown
-	logger.Info("stopped")
-}
-
-func parseLevel(s string) slog.Level {
-	switch s {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
 	}
 }

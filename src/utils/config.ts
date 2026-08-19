@@ -44,10 +44,16 @@ function detectConfig(projectDir: string): ProjectConfig {
   const moduleMatch = goMod.match(/^module\s+(\S+)/m);
   const goModule = moduleMatch ? moduleMatch[1] : path.basename(projectDir);
 
-  // parse the chosen prefix back out of `api := r.Group("/v1")` in main.go;
-  // an empty group (`r.Group("")`) or no match at all means no prefix.
+  // parse the chosen prefix back out of `api := r.Group("/v1")`; an empty
+  // group (`r.Group("")`) or no match at all means no prefix.
+  //
+  // Read from cmd/api/wiring.go where the composition root lives now, falling
+  // back to main.go for projects scaffolded before it was split out — this is
+  // the config-less path, so it is exactly the old projects that reach it.
+  const wiringGoPath = path.join(projectDir, "cmd", "api", "wiring.go");
+  const compositionRoot = fs.existsSync(wiringGoPath) ? wiringGoPath : mainGoPath;
   let apiPrefix = "";
-  const groupMatch = fs.readFileSync(mainGoPath, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9/]*)"\)/);
+  const groupMatch = fs.readFileSync(compositionRoot, "utf8").match(/api\s*:=\s*r\.Group\("\/?([a-z0-9/]*)"\)/);
   if (groupMatch) apiPrefix = groupMatch[1];
 
   // Every feature is detectable from the tree each `add` command creates, so

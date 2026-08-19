@@ -15,7 +15,7 @@ const USE_LINE =
   "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))";
 
 // patchMainGoForObservability wires telemetry init, the tracing/metrics
-// middleware, and the /metrics route into cmd/api/main.go — the same
+// middleware, and the /metrics route into cmd/api/wiring.go — the same
 // text-marker approach every other `add` command uses, since main.go is a
 // real file a human may have already edited by the time this runs, not a
 // template rendered fresh.
@@ -34,8 +34,7 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   const initBlock = [
     `shutdownTelemetry, err := telemetry.Init(context.Background(), "${projectName}", cfg.OTELExporterEndpoint)`,
     "if err != nil {",
-    '\tlogger.Error("init telemetry", "error", err)',
-    "\tos.Exit(1)",
+    '\treturn fmt.Errorf("init telemetry: %w", err)',
     "}",
     "defer func() { _ = shutdownTelemetry(context.Background()) }()",
   ].join("\n");
@@ -43,7 +42,7 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
 
   if (!content.includes(USE_LINE)) {
     throw new Error(
-      "cmd/api/main.go's r.Use(...) call doesn't match the text this command expects — " +
+      "cmd/api/wiring.go's r.Use(...) call doesn't match the text this command expects — " +
         "it looks like it's been hand-edited. Add middleware.Metrics() and middleware.Tracing(\"<project>\") to it yourself."
     );
   }

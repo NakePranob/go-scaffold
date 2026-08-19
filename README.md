@@ -4,7 +4,7 @@ A CLI that scaffolds a Gin + GORM + PostgreSQL Go backend, then keeps
 generating consistent domain modules into that project as it grows — the Go
 counterpart to nest-scaffold.
 
-You don't hand-wire a new domain into `cmd/api/main.go`, write the
+You don't hand-wire a new domain into `cmd/api/wiring.go`, write the
 handler/service/repository boilerplate, or decide error-handling conventions
 each time — the CLI does that, and every module it generates follows the
 same shape as the last one.
@@ -116,7 +116,7 @@ surface, or you'd rather add endpoints one at a time.
 
 Both modes also:
 
-- Register the module in `cmd/api/main.go` (via marker comments — see
+- Register the module in `cmd/api/wiring.go` (via marker comments — see
   `// go-scaffold:*` in that file) — full wires an actual route, minimal
   wires an empty route group
 - Create the module's own Postgres schema (`<module>_svc`, e.g. `order_svc`)
@@ -283,7 +283,7 @@ go-scaffold create my-api --defaults --observability    # or at creation time
 ```
 
 Adds Prometheus metrics at `/metrics` and OpenTelemetry tracing for Gin +
-GORM, patched into `cmd/api/main.go` and `internal/platform/database` the same
+GORM, patched into `cmd/api/wiring.go` and `internal/platform/database` the same
 way `add worker`/`add auth`/`add rbac` patch an existing project. Tracing is
 disabled until `OTEL_EXPORTER_OTLP_ENDPOINT` is configured; `/metrics` works
 either way. `create --observability` is exactly this command run right after
@@ -343,7 +343,7 @@ out of sync with.
 ## Project structure produced by `create`
 
 ```text
-cmd/api/main.go
+cmd/api/wiring.go
 internal/
 ├── platform/database/
 ├── shared/{config,apperror,dberr,httpx,id,middleware,pagination,tx}/

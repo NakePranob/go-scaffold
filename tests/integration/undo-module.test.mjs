@@ -87,7 +87,7 @@ test("undo module refuses, and destroys nothing, once the migrations are committ
 
     assert.equal(existsSync(path.join(project, "internal", "app", "widget")), true);
     assert.deepEqual(createMigrations(project, "widgets"), migrations);
-    assert.match(readFileSync(path.join(project, "cmd", "api", "main.go"), "utf8"), /internal\/app\/widget/);
+    assert.match(readFileSync(path.join(project, "cmd", "api", "wiring.go"), "utf8"), /internal\/app\/widget/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -113,7 +113,7 @@ test("undo module is not blocked by a module whose name only shares a prefix", (
       existsSync(path.join(project, "internal", "app", "orderitem")),
       "the module that merely shares a prefix must survive"
     );
-    const mainGo = readFileSync(path.join(project, "cmd", "api", "main.go"), "utf8");
+    const mainGo = readFileSync(path.join(project, "cmd", "api", "wiring.go"), "utf8");
     assert.doesNotMatch(mainGo, /app\/order"/, "order's own import must be gone");
     assert.match(mainGo, /app\/orderitem"/, "orderitem's wiring must be untouched");
   } finally {

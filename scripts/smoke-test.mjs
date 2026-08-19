@@ -1736,7 +1736,7 @@ step("full module: docs wired into openapi.yaml", () => {
 });
 
 step("main.go serves the whole docs/ tree, not just the index (or $ref resolution 404s over HTTP)", () => {
-  assertFileContains(path.join(fullApp, "cmd", "api", "main.go"), 'r.Static("/docs", "./docs")');
+  assertFileContains(path.join(fullApp, "cmd", "api", "wiring.go"), 'r.Static("/docs", "./docs")');
 });
 
 step(
@@ -1777,7 +1777,7 @@ step("re-generating after deleting only the folder doesn't duplicate wiring (wou
   // reference it, then re-runs generate module. Must stay a single Register.
   rmSync(path.join(fullApp, "internal", "app", "order"), { recursive: true, force: true });
   goScaffold(["generate", "module", "order", "--full"], fullApp);
-  const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8");
+  const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8");
   const registers = (mainGo.match(/order\.NewHandler\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected exactly 1 order route registration, got ${registers}`);
   const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
@@ -2036,13 +2036,13 @@ step("undo module reverses wiring, deletes its migrations, and re-generating sta
   // so undo deletes them — a typo'd module must not leave a migration behind
   // for `//go:embed *` to run on every database from then on
   if (widgetMigrations().length !== 0) throw new Error("widget migrations survived undo");
-  const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8");
+  const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8");
   if (mainGo.includes("widget.NewHandler")) throw new Error("main.go still wires widget after undo");
   const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
   if (openapi.includes("/v1/widgets:")) throw new Error("openapi still lists widgets after undo");
   run("go", ["build", "./..."], fullApp); // must still compile with widget gone
   goScaffold(["generate", "module", "widget"], fullApp); // re-adding must not duplicate
-  const registers = (readFileSync(path.join(fullApp, "cmd", "api", "main.go"), "utf8").match(/widget\.NewHandler\(/g) ?? []).length;
+  const registers = (readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8").match(/widget\.NewHandler\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected 1 widget registration after re-add, got ${registers}`);
   run("go", ["build", "./..."], fullApp);
 });
@@ -2056,7 +2056,7 @@ step("custom prefix: generate module + method, routes land under /beta", () => {
   run("go", ["mod", "tidy"], betaApp);
   goScaffold(["generate", "module", "product"], betaApp);
   goScaffold(["generate", "method", "product", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"], betaApp);
-  const mainGo = readFileSync(path.join(betaApp, "cmd", "api", "main.go"), "utf8");
+  const mainGo = readFileSync(path.join(betaApp, "cmd", "api", "wiring.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/beta")')) throw new Error('expected api := r.Group("/beta") in main.go');
   const openapi = readFileSync(path.join(betaApp, "docs", "openapi.yaml"), "utf8");
   if (!openapi.includes("/beta/products/status/{status}:")) {
@@ -2154,12 +2154,12 @@ step(
     goScaffold(["create", "retrofit-app", "--defaults"], scratch);
     const retrofitApp = path.join(scratch, "retrofit-app");
 
-    const mainGoBefore = readFileSync(path.join(retrofitApp, "cmd", "api", "main.go"), "utf8");
+    const mainGoBefore = readFileSync(path.join(retrofitApp, "cmd", "api", "wiring.go"), "utf8");
     if (mainGoBefore.includes("telemetry")) throw new Error("expected a plain --defaults project to have no telemetry wiring yet");
 
     goScaffold(["add", "observability"], retrofitApp);
 
-    const mainGoAfter = readFileSync(path.join(retrofitApp, "cmd", "api", "main.go"), "utf8");
+    const mainGoAfter = readFileSync(path.join(retrofitApp, "cmd", "api", "wiring.go"), "utf8");
     if (!mainGoAfter.includes("telemetry.Init(") || !mainGoAfter.includes('r.GET("/metrics"')) {
       throw new Error(`expected telemetry.Init and the /metrics route wired into main.go, got:\n${mainGoAfter}`);
     }
@@ -2209,7 +2209,7 @@ step("create --api-prefix '' scaffolds routes with no prefix at all", () => {
   const app = path.join(scratch, "noprefix-app");
   run("go", ["mod", "tidy"], app);
   goScaffold(["generate", "module", "widget", "--full"], app);
-  const mainGo = readFileSync(path.join(app, "cmd", "api", "main.go"), "utf8");
+  const mainGo = readFileSync(path.join(app, "cmd", "api", "wiring.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/")')) throw new Error('expected api := r.Group("/") in main.go');
   const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
   if (!openapi.includes("/widgets:")) throw new Error("expected /widgets (no prefix) in openapi.yaml");
@@ -2225,7 +2225,7 @@ step("create --api-prefix api/v1 supports multi-segment prefixes (gin joins them
   if (cfg.apiPrefix !== "api/v1") throw new Error(`expected leading/trailing slashes stripped, got "${cfg.apiPrefix}"`);
   run("go", ["mod", "tidy"], app);
   goScaffold(["generate", "module", "order", "--full"], app);
-  const mainGo = readFileSync(path.join(app, "cmd", "api", "main.go"), "utf8");
+  const mainGo = readFileSync(path.join(app, "cmd", "api", "wiring.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/api/v1")')) throw new Error('expected api := r.Group("/api/v1") in main.go');
   const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
   if (!openapi.includes("/api/v1/orders:")) throw new Error("expected /api/v1/orders in openapi.yaml");
@@ -2432,7 +2432,7 @@ step("generate fails loudly when the project's shared/ layer has drifted", () =>
   if (mutatedErr === errSrc) throw new Error("middleware.Error signature not found — update this test's mutation");
   writeFileSync(errPath, mutatedErr);
 
-  const mainPath = path.join(app, "cmd", "api", "main.go");
+  const mainPath = path.join(app, "cmd", "api", "wiring.go");
   const mainSrc = readFileSync(mainPath, "utf8");
   const mutatedMain = mainSrc.replace("middleware.Error(", "middleware.Error(true, ");
   if (mutatedMain === mainSrc) throw new Error("middleware.Error call site not found — update this test's mutation");

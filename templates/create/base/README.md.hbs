@@ -184,6 +184,6 @@ go-scaffold generate module orders
 ```
 
 Scaffolds the safe minimal `internal/app/order/` module, wires its empty route
-group/model into `cmd/api/main.go`, and appends a migration file. Add endpoints
+group/model into `cmd/api/wiring.go`, and appends a migration file. Add endpoints
 with `generate method`; use `--full` only when a CRUD skeleton is intentional.
 See `docs/architect/patterns.md` for the module shape and foreign-key rules.

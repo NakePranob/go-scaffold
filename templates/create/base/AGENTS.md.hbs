@@ -46,7 +46,7 @@ hand-rolling anything that looks like scaffolding.
 ## Command quick reference
 
 - `go-scaffold generate module <name>` — safe minimal model + errors +
-  repository + service/handler plumbing, wired into `cmd/api/main.go` and
+  repository + service/handler plumbing, wired into `cmd/api/wiring.go` and
   appended to `migrations/`. Add endpoints one at a time with `generate
   method`, or pass `--full` to opt into a CRUD skeleton with TODO DTO fields
 - `go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]` —

@@ -34,7 +34,7 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
 
   await applyTemplateEntries(projectDir, OBSERVABILITY_FILES, { openapiDocs: config.features.openapiDocs });
 
-  patchMainGoForObservability(path.join(projectDir, "cmd", "api", "main.go"), config.goModule, config.projectName);
+  patchMainGoForObservability(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, config.projectName);
   patchDatabaseGoForObservability(path.join(projectDir, "internal", "platform", "database", "database.go"), config.goModule);
   patchConfigForObservability(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchGoModRequires(path.join(projectDir, "go.mod"), [
@@ -66,7 +66,7 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
 
   if (opts.silent) return;
   console.log(pc.green("\nadded internal/platform/telemetry/, internal/shared/middleware/{metrics,tracing}.go, and GET /metrics"));
-  console.log("wired into cmd/api/main.go and internal/platform/database — every request and GORM query now gets a trace span");
+  console.log("wired into cmd/api/wiring.go and internal/platform/database — every request and GORM query now gets a trace span");
   if (staleDocs.length) {
     // Deliberately not "you edited these". The comparison is a whole-file
     // match against today's template, and techstack.md embeds pinned

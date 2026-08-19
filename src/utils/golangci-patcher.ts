@@ -29,7 +29,7 @@ function depguardRule(goModule: string, pkg: string): string {
     `      desc: >-`,
     `        a domain must not import another domain directly — declare a`,
     `        consumer-side interface for what you need and let`,
-    `        cmd/api/main.go wire the concrete service in`,
+    `        cmd/api/wiring.go wire the concrete service in`,
     `        (docs/architect/patterns.md)`,
   ].join("\n");
 }

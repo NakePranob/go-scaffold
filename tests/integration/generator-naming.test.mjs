@@ -117,7 +117,7 @@ test("undo answers to the package name too, and takes the migrations with it", (
     runCLI(project, "generate", "module", "order-items");
     runCLI(project, "undo", "module", "orderitem", "-y");
 
-    const mainGo = read(project, "cmd/api/main.go");
+    const mainGo = read(project, "cmd/api/wiring.go");
     assert.doesNotMatch(mainGo, /orderitem/, "main.go still references the deleted module");
     assert.equal(
       readdirSync(path.join(project, "migrations")).filter((f) => f.endsWith(".sql")).length,
@@ -152,6 +152,40 @@ test("a module name that would create a go-reserved directory is refused", () =>
       0,
       "nothing may be written when the name is refused"
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// The composition root moved out of main.go so that the file every command
+// patches is not also the first file someone opens to understand the binary.
+// main.go must stay put while wiring.go absorbs everything.
+test("main.go stays constant while wiring.go takes the module wiring", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-wiring-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    const mainPath = path.join(project, "cmd", "api", "main.go");
+    const wiringPath = path.join(project, "cmd", "api", "wiring.go");
+
+    const mainBefore = readFileSync(mainPath, "utf8");
+    const wiringBefore = readFileSync(wiringPath, "utf8");
+
+    runCLI(project, "generate", "module", "widgets", "--full");
+    runCLI(project, "generate", "module", "gadgets", "--full");
+
+    assert.equal(readFileSync(mainPath, "utf8"), mainBefore, "main.go must not change when a module is added");
+    assert.notEqual(readFileSync(wiringPath, "utf8"), wiringBefore, "wiring.go is where the module lands");
+    assert.match(readFileSync(wiringPath, "utf8"), /widget\.NewHandler\(/);
+
+    // os.Exit belongs in exactly one place, which is what lets run()'s defers
+    // actually run and what makes the startup path callable from a test.
+    assert.doesNotMatch(
+      readFileSync(wiringPath, "utf8").replace(/^\s*\/\/.*$/gm, ""),
+      /os\.Exit/,
+      "wiring.go must return errors, not exit"
+    );
+    assert.match(mainBefore, /func run\(\) error|run\(\)/, "main.go calls run()");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
