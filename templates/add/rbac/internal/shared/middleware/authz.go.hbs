@@ -54,6 +54,25 @@ func (a *Authz) Require(perm string) gin.HandlerFunc {
 	}
 }
 
+// Invalidate drops a role's cached permissions so the next request re-reads
+// them. The write path (PATCH /roles/:code/permissions) runs in this same
+// process, so letting the grant sit behind the TTL was a pure own-goal:
+// granting a permission appeared to succeed and then did nothing for up to
+// AUTHZ_CACHE_TTL_MIN, and logging in again didn't help either — the cache is
+// keyed on the role, not the token — so the only way out was restarting the
+// app.
+//
+// ponytail: same-process only. Other pods keep their copy until the TTL
+// expires; that's the documented ceiling, and Redis pub/sub is the upgrade if
+// instant cluster-wide invalidation ever matters.
+func (a *Authz) Invalidate(roleCodes ...string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, code := range roleCodes {
+		delete(a.cache, code)
+	}
+}
+
 // ponytail: process-local cache, a handful of roles x AUTHZ_CACHE_TTL_MIN —
 // a role's permission grants take effect within the TTL, no pub/sub needed.
 // Move to Redis only if instant cross-pod invalidation turns out to matter.

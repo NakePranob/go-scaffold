@@ -2,9 +2,12 @@ package database
 
 import (
 	"fmt"
+	"log"
 	"log/slog"
+	"os"
 	"regexp"
 	"strconv"
+	"time"
 
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/migrations"
@@ -12,13 +15,27 @@ import (
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // Open connects to Postgres and sets the connection pool — it talks to a
 // real external system, so it lives in platform/, not shared/.
 // Schema is managed via golang-migrate (migrations/) in prod, not AutoMigrate — see README.
 func Open(cfg config.Config) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(cfg.DBDSN), &gorm.Config{TranslateError: true})
+	// GORM's default logger reports ErrRecordNotFound at ERROR level, so an
+	// ordinary miss — every FindByID behind a 404, cmd/seed's "does this admin
+	// exist yet" check — printed a red line that reads like a failure and
+	// isn't. Everything else GORM's default does is kept.
+	gormLog := gormlogger.New(log.New(os.Stdout, "", log.LstdFlags), gormlogger.Config{
+		SlowThreshold:             200 * time.Millisecond,
+		LogLevel:                  gormlogger.Warn,
+		IgnoreRecordNotFoundError: true,
+	})
+
+	db, err := gorm.Open(postgres.Open(cfg.DBDSN), &gorm.Config{
+		TranslateError: true,
+		Logger:         gormLog,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { confirm } from "@inquirer/prompts";
 import { readConfig } from "../utils/config";
+import { migrationSlugAliases } from "../utils/naming";
 import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
 import { unpatchMainGo } from "../utils/main-patcher";
 import { unpatchOpenapiIndex } from "../utils/openapi-patcher";
@@ -64,7 +65,7 @@ export async function undoModule(
   }
 
   const migrationsDir = path.join(projectDir, "migrations");
-  const migrations = moduleMigrations(migrationsDir, naming.plural);
+  const migrations = moduleMigrations(migrationsDir, migrationSlugAliases(naming));
   const { checkedDatabase } = assertMigrationsNeverEscaped(projectDir, migrations, naming.pkg);
 
   if (!opts.yes) {
@@ -169,16 +170,18 @@ export async function undoModule(
 // moduleMigrations lists the migration files `generate module` created for
 // this module: the create pair, plus the permission pair when it was
 // generated with --permission.
-function moduleMigrations(migrationsDir: string, plural: string): string[] {
+function moduleMigrations(migrationsDir: string, slugs: string[]): string[] {
   if (!fs.existsSync(migrationsDir)) return [];
   return fs
     .readdirSync(migrationsDir)
-    .filter(
-      (f) =>
-        f.endsWith(`_create_${plural}.up.sql`) ||
-        f.endsWith(`_create_${plural}.down.sql`) ||
-        f.endsWith(`_add_${plural}_permission.up.sql`) ||
-        f.endsWith(`_add_${plural}_permission.down.sql`)
+    .filter((f) =>
+      slugs.some(
+        (slug) =>
+          f.endsWith(`_create_${slug}.up.sql`) ||
+          f.endsWith(`_create_${slug}.down.sql`) ||
+          f.endsWith(`_add_${slug}_permission.up.sql`) ||
+          f.endsWith(`_add_${slug}_permission.down.sql`)
+      )
     )
     .sort();
 }

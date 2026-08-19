@@ -9,6 +9,8 @@ import (
 )
 
 // TODO: add request fields, e.g. Name string `json:"name" binding:"required"`
+// When you do: update createBody in handler_test.go to match, or the
+// generated create test starts failing on its own empty `{}` body.
 type createInput struct {
 }
 

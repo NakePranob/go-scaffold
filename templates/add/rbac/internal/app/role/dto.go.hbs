@@ -24,10 +24,15 @@ type CreateInput struct {
 	Name string `json:"name" binding:"required"`
 }
 
-// SetPermissionsInput.PermissionCodes is deliberately not `binding:"required"`
-// — an empty list is valid (it revokes every permission the role had).
+// SetPermissionsInput.PermissionCodes is a *pointer* so that "field absent"
+// and "field present but empty" stay different things. An empty list is a
+// valid request — it revokes every permission the role had — but with a plain
+// []string a body that simply misspells the key (say `{"permissions": [...]}`)
+// binds to nil, reads as that same "revoke everything", and answers 200 having
+// silently stripped the role. `required` on the pointer rejects the absent
+// case with a 400 while still allowing an explicit [].
 type SetPermissionsInput struct {
-	PermissionCodes []string `json:"permission_codes"`
+	PermissionCodes *[]string `json:"permission_codes" binding:"required"`
 }
 
 type permissionResponse struct {

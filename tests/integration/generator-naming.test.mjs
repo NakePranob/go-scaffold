@@ -67,13 +67,61 @@ test("multi-word module keeps URL words and uses snake_case SQL identifiers", ()
       model,
       /func \(OrderItem\) TableName\(\) string \{\s*return "orderitem_svc\.order_items"\s*\}/
     );
+    // snake_case, like the table it creates — the filename used to be the
+    // kebab-case route slug while everything else in the file was snake
     assert.match(
-      migration(project, "_create_order-items.up.sql"),
+      migration(project, "_create_order_items.up.sql"),
       /CREATE TABLE orderitem_svc\.order_items/
     );
     assert.match(
       read(project, "internal/app/orderitem/handler.go"),
       /Group\("\/order-items"/
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// The package name on disk ("orderitem") has lost the word boundary that
+// "order-items" had, and it is the one form of the name the user actually
+// sees: it's the folder, and `generate module` prints it as the next command
+// to run. Re-deriving the naming from it produced Orderitem/orderitems, so
+// following that printed instruction emitted
+// `undefined: model.Orderitem (but have OrderItem)` and undo left main.go
+// referencing a package it had just deleted.
+test("a multi-word module answers to its own package name", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-pkgname-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    runCLI(project, "generate", "module", "order-items");
+
+    // exactly what `generate module` tells you to run next
+    runCLI(project, "generate", "method", "orderitem", "approve", "--type", "patch");
+
+    const handler = read(project, "internal/app/orderitem/handler.go");
+    assert.match(handler, /model\.OrderItem/);
+    assert.doesNotMatch(handler, /model\.Orderitem\b/);
+    assert.match(read(project, "internal/app/orderitem/service.go"), /model\.OrderItem/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("undo answers to the package name too, and takes the migrations with it", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-pkgundo-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    runCLI(project, "generate", "module", "order-items");
+    runCLI(project, "undo", "module", "orderitem", "-y");
+
+    const mainGo = read(project, "cmd/api/main.go");
+    assert.doesNotMatch(mainGo, /orderitem/, "main.go still references the deleted module");
+    assert.equal(
+      readdirSync(path.join(project, "migrations")).filter((f) => f.endsWith(".sql")).length,
+      0,
+      "undo left the module's migrations behind"
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });

@@ -221,6 +221,21 @@ export function resolveExistingModuleNaming(rawName: string, existingPackages: s
   return canonical;
 }
 
+// Migration filenames read like the thing they create, so they use the
+// snake_case table name: create_order_items.up.sql for order_svc.order_items.
+// Older projects were written with the kebab-case route slug instead
+// (create_order-items.up.sql), so anything that *looks up* an existing pair
+// has to accept both — upgrading the CLI must not strand a module's
+// migrations where `undo` can no longer see them. Identical for the
+// single-word names that are the common case.
+export function migrationSlug(naming: ModuleNaming): string {
+  return naming.tableName;
+}
+
+export function migrationSlugAliases(naming: ModuleNaming): string[] {
+  return naming.tableName === naming.plural ? [naming.tableName] : [naming.tableName, naming.plural];
+}
+
 export function resolveMethodNaming(rawName: string): MethodNaming {
   const cleaned = rawName.trim();
   const pascalName = toPascalCase(cleaned);

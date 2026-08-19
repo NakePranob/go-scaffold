@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig } from "../utils/config";
-import { toDbName } from "../utils/naming";
+import { migrationSlug, migrationSlugAliases, toDbName } from "../utils/naming";
 import { resolveProjectModuleNaming } from "../utils/module-location";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
@@ -83,20 +83,23 @@ export async function generateModule(
   // skip if a create_<plural> migration already exists — re-running after
   // only the module folder was deleted shouldn't leave a duplicate migration.
   const migrationsDir = path.join(projectDir, "migrations");
+  const slug = migrationSlug(naming);
   const migrationExists =
     fs.existsSync(migrationsDir) &&
-    fs.readdirSync(migrationsDir).some((f) => f.endsWith(`_create_${naming.plural}.up.sql`));
+    fs
+      .readdirSync(migrationsDir)
+      .some((f) => migrationSlugAliases(naming).some((alias) => f.endsWith(`_create_${alias}.up.sql`)));
   let seq = "";
   if (!migrationExists) {
     seq = newMigrationVersion(migrationsDir);
     const migrationEntries = [
       {
         template: "generate/module/migration.up.sql.hbs",
-        output: path.join("migrations", `${seq}_create_${naming.plural}.up.sql`),
+        output: path.join("migrations", `${seq}_create_${slug}.up.sql`),
       },
       {
         template: "generate/module/migration.down.sql.hbs",
-        output: path.join("migrations", `${seq}_create_${naming.plural}.down.sql`),
+        output: path.join("migrations", `${seq}_create_${slug}.down.sql`),
       },
     ];
     await applyTemplateEntries(projectDir, migrationEntries, context);
@@ -112,11 +115,11 @@ export async function generateModule(
     const permissionEntries = [
       {
         template: "generate/module/permission.up.sql.hbs",
-        output: path.join("migrations", `${permissionSeq}_add_${naming.plural}_permission.up.sql`),
+        output: path.join("migrations", `${permissionSeq}_add_${slug}_permission.up.sql`),
       },
       {
         template: "generate/module/permission.down.sql.hbs",
-        output: path.join("migrations", `${permissionSeq}_add_${naming.plural}_permission.down.sql`),
+        output: path.join("migrations", `${permissionSeq}_add_${slug}_permission.down.sql`),
       },
     ];
     await applyTemplateEntries(projectDir, permissionEntries, context);
@@ -170,12 +173,12 @@ export async function generateModule(
     );
   }
   if (seq) {
-    console.log(`migration: migrations/${seq}_create_${naming.plural}.{up,down}.sql`);
+    console.log(`migration: migrations/${seq}_create_${slug}.{up,down}.sql`);
   } else {
-    console.log(`migration: reused existing migrations/*_create_${naming.plural}.{up,down}.sql`);
+    console.log(`migration: reused existing migrations/*_create_${slug}.{up,down}.sql`);
   }
   if (permissionSeq) {
-    console.log(`migration: migrations/${permissionSeq}_add_${naming.plural}_permission.{up,down}.sql (seeds the "${opts.permission}" permission — grant it to a role via PATCH /roles/:code/permissions)`);
+    console.log(`migration: migrations/${permissionSeq}_add_${slug}_permission.{up,down}.sql (seeds the "${opts.permission}" permission — grant it to a role via PATCH /roles/:code/permissions)`);
   }
   if (docsMessage) console.log(docsMessage);
   console.log(

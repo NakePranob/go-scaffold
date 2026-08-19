@@ -113,6 +113,13 @@ func doHandlerRequest(r *gin.Engine, method, requestPath, body string) *httptest
 	return w
 }
 
+// createBody is the JSON these tests POST. It starts empty because createInput
+// starts empty — add a value here for every field you add to createInput in
+// dto.go. Miss that and this test fails with a 400 the moment one of those
+// fields is `binding:"required"`: the handler is fine, the fixture just no
+// longer satisfies it.
+const createBody = `{}`
+
 func TestHandler_Create_OK(t *testing.T) {
 	svc := &serviceStub{
 		createFn: func(context.Context, createInput) (*model.{{pascalName}}, error) {
@@ -121,7 +128,7 @@ func TestHandler_Create_OK(t *testing.T) {
 	}
 	r := setupHandlerTest(t, svc)
 
-	w := doHandlerRequest(r, http.MethodPost, "/{{plural}}", `{}`)
+	w := doHandlerRequest(r, http.MethodPost, "/{{plural}}", createBody)
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d body=%s", w.Code, w.Body)

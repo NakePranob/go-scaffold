@@ -12,7 +12,10 @@ import (
 // resolving to one account.
 type User struct {
 	ID            uuid.UUID `json:"id" gorm:"type:uuid;primaryKey"`
-	Email         string    `json:"email" gorm:"uniqueIndex;not null"`
+	// index named explicitly, and named the same in create_users.up.sql: an
+	// anonymous `uniqueIndex` makes GORM invent one, and AutoMigrate then
+	// tries to DROP the differently-named constraint the migration created.
+	Email         string    `json:"email" gorm:"uniqueIndex:idx_users_email;not null"`
 	Name          string    `json:"name"`
 	AvatarURL     string    `json:"avatar_url"`
 	EmailVerified bool      `json:"email_verified"`

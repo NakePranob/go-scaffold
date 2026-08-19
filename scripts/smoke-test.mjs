@@ -1925,6 +1925,29 @@ step(
       throw new Error(`expected a stale update to be refused with 409 *_STALE, got: ${stalePut}`);
     }
 
+    // AutoMigrate on top of a database the SQL migrations already built — the
+    // default dev setup for anyone who followed `add rbac`'s "apply it before
+    // relying on RBAC, even in dev" and left .env.example's AUTO_MIGRATE=true
+    // alone. GORM reconciles its struct tags against the existing schema, and
+    // a unique index the migration named differently from the tag made it try
+    // to DROP a constraint under GORM's own name:
+    //   constraint "uni_users_email" of relation "users" does not exist
+    // which is a fatal boot error, not a warning.
+    writeFileSync(
+      path.join(fullApp, ".env"),
+      readFileSync(path.join(fullApp, ".env"), "utf8").replace("AUTO_MIGRATE=false", "AUTO_MIGRATE=true")
+    );
+    const bothApi = startMakeRun(fullApp, "migration-automigrate-over-sql", true);
+    execFileSync("sleep", ["3"]);
+    const bothReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
+    stopApi(bothApi);
+    if (bothReady !== "200") {
+      throw new Error(
+        `AUTO_MIGRATE=true over an already-migrated schema failed to boot (READYZ=${bothReady}):\n` +
+          readFileSync(logPath("migration-automigrate-over-sql"), "utf8")
+      );
+    }
+
     runMake(["db-drop"], fullApp);
   }
 );
