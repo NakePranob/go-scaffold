@@ -51,7 +51,7 @@ program
   .option("--no-docker", "skip docker-compose.yml (only applies with --defaults)")
   .option("--no-openapi-docs", "skip docs/openapi.yaml (only applies with --defaults)")
   .option("--observability", "add Prometheus /metrics + OpenTelemetry tracing (only applies with --defaults; off by default)")
-  .option("--api-prefix <prefix>", 'URL prefix every route is grouped under (default "v1"; pass "" for none)')
+  .option("--api-prefix <prefix>", 'URL prefix every route is grouped under, e.g. v1 or api/v1 (default: none)')
   .action(async (name, opts) => {
     try {
       await createProject(name, {

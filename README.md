@@ -68,11 +68,11 @@ with `generate module`.
 
 | Option | Effect |
 |---|---|
-| `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, prefix `v1`) |
+| `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, no route prefix) |
 | `--no-docker` | Skip `docker-compose.yml` (with `--defaults`) |
 | `--no-openapi-docs` | Skip `docs/openapi.yaml` (with `--defaults`) |
 | `--observability` | Prometheus `/metrics` + OpenTelemetry tracing (with `--defaults`; off by default — `add observability` does the same later) |
-| `--api-prefix <prefix>` | URL prefix every route is grouped under (with `--defaults`; default `v1`, `""` for none, `/`-separated segments like `api/v1` are fine) |
+| `--api-prefix <prefix>` | URL prefix every route is grouped under — opt in with e.g. `v1` or `api/v1`; omit it for none |
 
 Without `--defaults`, an interactive wizard asks the same four questions.
 The prefix is a single project-wide choice made once at `create` time —
@@ -335,7 +335,7 @@ and `float64` in the other for the *same* column, converging it to
 data with different, silently incompatible interpretations.
 
 Instead, every route in a project is grouped under a single project-wide
-`--api-prefix` (default `v1`) chosen once at `create` time. A domain that
+`--api-prefix` chosen once at `create` time — opt-in, no prefix unless you ask. A domain that
 needs a real breaking change gets a new domain package, or a new field on
 the existing DTO — not a duplicated model pointed at a table it can drift
 out of sync with.

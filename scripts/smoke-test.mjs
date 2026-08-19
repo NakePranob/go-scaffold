@@ -576,7 +576,9 @@ step("rejects an invalid project name before writing anything", () => {
 });
 
 step("create --defaults scaffolds a bare project", () => {
-  goScaffold(["create", "full-app", "--defaults"], scratch);
+  // --api-prefix v1 explicitly: a prefix is opt-in now, and this project
+  // exercises the prefixed routes end to end.
+  goScaffold(["create", "full-app", "--defaults", "--api-prefix", "v1"], scratch);
   assertFileContains(path.join(scratch, "full-app", "go.mod"), "module full-app");
 });
 
@@ -2073,7 +2075,7 @@ step(
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer))) return;
 
-    goScaffold(["create", "obs-app", "--defaults", "--observability"], scratch);
+    goScaffold(["create", "obs-app", "--defaults", "--observability", "--api-prefix", "v1"], scratch);
     const obsApp = path.join(scratch, "obs-app");
     run("go", ["mod", "tidy"], obsApp);
 

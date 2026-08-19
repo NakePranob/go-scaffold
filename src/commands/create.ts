@@ -35,7 +35,11 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   let apiPrefix: string;
   if (opts.defaults) {
     features = { docker: opts.docker ?? true, openapiDocs: opts.openapiDocs ?? true, observability: opts.observability ?? false };
-    apiPrefix = normalizeApiPrefix(opts.apiPrefix ?? "v1");
+    // "" to match what the wizard's Enter now gives. --defaults means "don't
+    // ask me", not "give me something I didn't ask for", and a prefix is a
+    // project-wide decision you cannot change later without rewriting routes
+    // and every OpenAPI path.
+    apiPrefix = normalizeApiPrefix(opts.apiPrefix ?? "");
     const check = validateApiPrefix(apiPrefix);
     if (check !== true) throw new Error(check);
   } else {

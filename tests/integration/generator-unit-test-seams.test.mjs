@@ -24,7 +24,7 @@ function read(project, relativePath) {
 test("generated modules have scalable service and handler unit-test seams", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-unit-seams-"));
   try {
-    run("node", [CLI, "create", "sample", "--defaults", "--no-docker"], scratch);
+    run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
     run("node", [CLI, "generate", "module", "orders", "--full"], project);
 

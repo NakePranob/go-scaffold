@@ -42,7 +42,7 @@ function git(project, ...args) {
 test("undo module deletes the migrations it generated and re-generating stays clean", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-undo-"));
   try {
-    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "widgets");
     runCLI(project, "generate", "method", "widgets", "approve", "--type", "patch");
@@ -71,7 +71,7 @@ test("undo module deletes the migrations it generated and re-generating stays cl
 test("undo module refuses, and destroys nothing, once the migrations are committed", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-undo-tracked-"));
   try {
-    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "widgets");
     const migrations = createMigrations(project, "widgets");
@@ -101,7 +101,7 @@ test("undo module refuses, and destroys nothing, once the migrations are committ
 test("undo module is not blocked by a module whose name only shares a prefix", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-undo-prefix-"));
   try {
-    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "orders", "--full");
     runCLI(project, "generate", "module", "order-items", "--full");
@@ -126,7 +126,7 @@ test("undo module is not blocked by a module whose name only shares a prefix", (
 test("undo module still refuses when another domain genuinely imports it", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-undo-realdep-"));
   try {
-    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "orders", "--full");
     runCLI(project, "generate", "module", "invoices", "--full");

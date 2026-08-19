@@ -101,7 +101,7 @@ function convertToLegacyPluralModule(project) {
 test("generate module refuses to duplicate a legacy plural package", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-legacy-duplicate-"));
   try {
-    run("node", [CLI, "create", "sample", "--defaults", "--no-docker"], scratch);
+    run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
     mkdirSync(path.join(project, "internal", "app", "orders"), { recursive: true });
     writeFileSync(path.join(project, "internal", "app", "orders", "legacy.go"), "package orders\n");
@@ -119,7 +119,7 @@ test("generate module refuses to duplicate a legacy plural package", () => {
 test("undo module locates legacy plural packages and deletes their migrations", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-legacy-undo-"));
   try {
-    run("node", [CLI, "create", "sample", "--defaults", "--no-docker"], scratch);
+    run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
     run("node", [CLI, "generate", "module", "orders", "--full"], project);
     const legacyDir = convertToLegacyPluralModule(project);
@@ -145,7 +145,7 @@ test("undo module locates legacy plural packages and deletes their migrations", 
 test("generate method locates legacy plural packages and concrete handlers", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-legacy-method-"));
   try {
-    run("node", [CLI, "create", "sample", "--defaults", "--no-docker"], scratch);
+    run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
     run("node", [CLI, "generate", "module", "orders", "--full"], project);
 
