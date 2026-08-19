@@ -210,6 +210,7 @@ async email delivery, and `cmd/worker`.
 | | `--queue postgres` (River) | `--queue redis` (Asynq) |
 |---|---|---|
 | Extra service to run | none | Redis |
+| Needed by `add auth` | no | no — `add auth --store` decides that separately |
 | Enqueue joins your DB transaction | yes | **no** — needs an outbox |
 | Throughput | thousands/sec | tens of thousands/sec |
 | Inspect pending jobs | plain SQL | asynqmon |
@@ -238,16 +239,29 @@ tx.Do(ctx, db, func(ctx context.Context) error {
 ### `add auth` — add email/password authentication
 
 ```bash
-go-scaffold add auth
+go-scaffold add auth                    # tokens in Postgres, no extra service
+go-scaffold add auth --store redis      # tokens in Redis, exact across replicas
 ```
 
-Requires `add worker` (verification and password-reset emails go through the
-queue). The refresh-token store needs Redis regardless of the queue backend,
-so `add auth` adds `internal/platform/cache` itself when the project doesn't
-have it yet. Adds JWT access tokens, Redis-backed refresh-token
-rotation, registration/login/logout, password reset, email verification, and
-Google OAuth routes. Apply the generated migrations; `AUTO_MIGRATE=true` is
-convenient in development, while production should use `migrate up`.
+Adds JWT access tokens, refresh-token rotation with reuse detection,
+registration/login/logout, password reset, email verification, failed-login
+lockout, and Google OAuth routes. Apply the generated migrations;
+`AUTO_MIGRATE=true` is convenient in development, while production should use
+`migrate up`.
+
+No prerequisites. On a project with no worker the verification and reset mail
+is sent inline, and `add worker` later moves it onto the queue for you — the
+two endpoints that send mail block on SMTP until you do.
+
+| `--store` | Tokens and rate-limit counters | Extra service |
+|---|---|---|
+| `postgres` (default) | `user_svc.auth_tokens`, counters in-process | none |
+| `redis` | Redis | Redis |
+
+The rate limiter follows the store rather than being chosen separately, because
+"I want this exact across replicas" is one decision. With `postgres` the per-IP
+budget is per-replica; the failed-login lockout is in Postgres either way, since
+that one can't be approximate.
 
 ### `add rbac` — add roles and permissions
 
