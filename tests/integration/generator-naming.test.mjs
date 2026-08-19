@@ -190,3 +190,24 @@ test("main.go stays constant while wiring.go takes the module wiring", () => {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+// Every repository method the module ships with goes through tx.From so it
+// picks up a transaction its caller opened. The lookup `generate method
+// --field` adds reached for r.db directly, so it read outside that
+// transaction and missed the caller's own uncommitted writes — a difference
+// nothing in the build or the tests would show.
+test("a generated field lookup joins the caller's transaction like every other query", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-txfrom-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    runCLI(project, "generate", "module", "orders", "--full");
+    runCLI(project, "generate", "method", "order", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
+
+    const repo = readFileSync(path.join(project, "internal", "app", "order", "repository.go"), "utf8");
+    assert.match(repo, /func \(r \*Repository\) FindByStatus\(/);
+    assert.doesNotMatch(repo, /r\.db\.WithContext/, "a repository method must not bypass tx.From");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
