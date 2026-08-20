@@ -11,14 +11,24 @@ package with its own model/handler/service/repository), or add a **new**
 endpoint to an existing one — stop and run the CLI instead:
 
 ```bash
-go-scaffold generate module <name>
+go-scaffold generate module <name> --defaults
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete>
 ```
+
+**Pass every value as a flag.** Run interactively, these commands ask for
+anything you left out — which has no answer in a non-interactive shell, so
+they exit 1 having written nothing. `--defaults` on `generate module` means
+"minimal, no auth, ask nothing"; add `--full`/`--auth`/`--permission` to it
+when you want those. Same rule elsewhere: `--get-mode` is required with
+`--type get`, and `undo module` needs `-y`. Every `add` command confirms
+before writing — `-y` skips that, but `add auth`/`add worker` also ask which
+backing store to use, so those two want `--defaults` (or `--store`/`--queue`
+plus `-y`).
 
 This applies **even when the request doesn't say "module"/"method" or name
 the CLI at all**. Recognize indirect asks as generation work, for example:
 
-- "add a products feature" → a new domain (`generate module products`)
+- "add a products feature" → a new domain (`generate module products --defaults`)
 - "let admins approve orders" → a new method on an existing module
   (`generate method orders approve --type patch`)
 - "we need an endpoint that lists overdue invoices" → a new `get` method
@@ -45,7 +55,7 @@ hand-rolling anything that looks like scaffolding.
 
 ## Command quick reference
 
-- `go-scaffold generate module <name>` — safe minimal model + errors +
+- `go-scaffold generate module <name> --defaults` — safe minimal model + errors +
   repository + service/handler plumbing, wired into `cmd/api/wiring.go` and
   appended to `migrations/`. Add endpoints one at a time with `generate
   method`, or pass `--full` to opt into a CRUD skeleton with TODO DTO fields
@@ -55,7 +65,7 @@ hand-rolling anything that looks like scaffolding.
   with the same name — pick a different one if it collides. With OpenAPI
   enabled it also writes a valid TODO path document and wires the index;
   replace placeholder schemas while implementing the method
-- `go-scaffold undo module <name>` — takes back a `generate module` that
+- `go-scaffold undo module <name> -y` — takes back a `generate module` that
   shouldn't have happened (typo'd name, domain decided against): deletes the
   package, un-wires main.go/OpenAPI, and deletes the module's migration files.
   It refuses if those migrations are committed to git or already applied to

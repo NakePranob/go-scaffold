@@ -46,11 +46,23 @@ missing AutoMigrate wiring, a `repository` interface out of sync with its
 Run from the project root:
 
 ```bash
-go-scaffold generate module <name> [--full] [--auth] [--permission <code>]
+go-scaffold generate module <name> --defaults [--full] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 go-scaffold generate migration <name>
-go-scaffold undo module <name> [-y]
+go-scaffold undo module <name> -y
 ```
+
+**Every value has to be a flag.** These commands prompt for whatever you
+leave out, and a prompt in a non-interactive shell exits 1 having written
+nothing — so a bare `generate module products` fails rather than taking the
+default. `--defaults` supplies the unasked-for answers (minimal, no auth);
+combine it with `--full`/`--auth`/`--permission` when you want those. The
+same applies to `--get-mode` (required with `--type get`) and `-y` on
+`undo module`. Every `add` command summarises what it will write and asks
+before writing: `-y` skips that confirmation, but `add auth` and `add worker`
+*also* ask which backing store to use — so those two need `--defaults`
+(or their own `--store`/`--queue` flag plus `-y`), while `add rbac -y` and
+`add observability -y` are enough.
 
 `<name>` for a module is a domain noun in whatever form reads naturally —
 singular or plural, any case, hyphens or underscores are all accepted and
@@ -79,7 +91,7 @@ is actually intended — otherwise prefer minimal plus explicit `generate method
 calls.
 
 `--auth` puts the module's routes behind a valid access token (requires
-`go-scaffold add auth` in this project first). `--permission <code>` also
+`go-scaffold add auth -y` in this project first). `--permission <code>` also
 requires that permission via `authz.Require` and seeds it in its own
 migration — it needs `add rbac`, and `--auth` must be passed alongside it.
 
@@ -114,7 +126,7 @@ domain decided against. Deletes `internal/app/<pkg>/`, the module's
 `migrations/<version>_create_<plural>.{up,down}.sql` pair, and reverses
 everything `generate module` wired up in `cmd/api/wiring.go` (and in
 `docs/openapi.yaml` + `docs/<plural>/` when OpenAPI is enabled). `-y` skips
-the confirmation prompt.
+the confirmation prompt, and is required in a non-interactive shell.
 
 The migration files go because `migrations/embed.go` is a `//go:embed *`: a
 typo's migration left behind runs on every database created from then on.
