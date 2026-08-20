@@ -116,11 +116,25 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
     );
   }
 
+  // Only meaningful when there is a worker; readConfig fills this from the
+  // adapter file on disk, so the only way it is still unknown is a project
+  // that has internal/platform/queue with neither adapter in it. Guessing
+  // here used to emit `queue.NewAsynqEnqueuer` into River-only projects —
+  // an undefined symbol that the parse-only gate below cannot see, so the
+  // command reported success over a project that no longer compiled.
+  const queueBackend = config.features.queue;
+  if (worker && !queueBackend) {
+    throw new Error(
+      "this project has internal/platform/queue but no river.go or asynq.go — can't tell which queue backend to wire auth's mailer onto.\n" +
+        "Restore the adapter file, or remove internal/platform/queue and re-run `go-scaffold add worker`."
+    );
+  }
+
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForAuth(path.join(projectDir, "cmd", "api", "wiring.go"), {
     goModule: config.goModule,
-    queueBackend: config.features.queue ?? "asynq",
+    queueBackend: queueBackend ?? "river",
     store,
     worker,
   });
@@ -185,6 +199,16 @@ function patchMakefile(makefilePath: string): void {
   if (!fs.existsSync(makefilePath)) return;
   let content = fs.readFileSync(makefilePath, "utf8");
   if (content.includes("\nseed:\n")) return; // already added
+
+  // Both halves below have to land or neither should: .PHONY naming a target
+  // that was never inserted is a Makefile that lies about itself. `build:` is
+  // the anchor the target is inserted above, so check it first and bail whole.
+  if (!/\nbuild:/.test(content)) {
+    console.error(
+      pc.yellow(`skipped the Makefile \`seed\` target — no \`build:\` target to anchor it to in ${makefilePath}.\nAdd it by hand: \`seed:\` running \`go run ./cmd/seed\`.`)
+    );
+    return;
+  }
 
   content = content.replace(/^\.PHONY: /m, ".PHONY: seed ");
 

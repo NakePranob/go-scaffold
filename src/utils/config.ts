@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs-extra";
-import { ProjectConfig } from "../types";
+import { ProjectConfig, ProjectFeatures } from "../types";
 
 const CONFIG_FILE = "go-scaffold.config.json";
 
@@ -14,12 +14,59 @@ export function writeConfig(projectDir: string, config: ProjectConfig): void {
 
 // readConfig falls back to detecting from go.mod when the config file is
 // missing (e.g. a project scaffolded before this file existed).
+//
+// When the file IS present, any feature key it does not define is filled in
+// from the tree. A file that exists but is missing a key used to mean "false"
+// to every caller, and callers then guessed: `add auth` guessed the queue
+// backend and wrote `queue.NewAsynqEnqueuer` into a River-only project (a
+// symbol that does not exist — and the post-patch gate is parse-only, so the
+// CLI reported success over a project that no longer builds), while
+// `undo module user` read a missing `auth` key as "not auth's" and deleted the
+// whole auth domain. The tree always knew the answer; this stops the guessing.
+//
+// The file still wins wherever it has a value — an explicit `false` is an
+// answer, not a hole.
 export function readConfig(projectDir: string): ProjectConfig {
   const file = configPath(projectDir);
-  if (fs.existsSync(file)) {
-    return fs.readJsonSync(file) as ProjectConfig;
+  if (!fs.existsSync(file)) return detectConfig(projectDir);
+
+  const config = fs.readJsonSync(file) as ProjectConfig;
+  const detected = detectFeatures(projectDir);
+  const features = { ...config.features };
+  for (const key of Object.keys(detected) as (keyof ProjectFeatures)[]) {
+    if (features[key] === undefined) (features as Record<string, unknown>)[key] = detected[key];
   }
-  return detectConfig(projectDir);
+  return { ...config, features };
+}
+
+// detectFeatures answers "what is actually installed here" from the tree
+// alone. Every `add` command leaves a directory or a file behind that nothing
+// else writes, which is what makes this reliable.
+//
+// auth and rbac are keyed on their middleware, not on internal/app/{user,role}:
+// those directories are also what `generate module user` / `generate module
+// role` produce, and mistaking one for the other would make `undo module`
+// refuse to remove a module it generated itself.
+function detectFeatures(projectDir: string): ProjectFeatures {
+  const has = (...segments: string[]) => fs.existsSync(path.join(projectDir, ...segments));
+  const worker = has("internal", "platform", "queue");
+  const auth = has("internal", "app", "user") && has("internal", "shared", "middleware", "auth.go");
+
+  return {
+    docker: has("docker-compose.yml"),
+    openapiDocs: has("docs", "openapi.yaml"),
+    worker,
+    // which adapter file is present is what `add worker --queue` decided
+    queue: !worker ? undefined : has("internal", "platform", "queue", "asynq.go") ? "asynq" : "river",
+    auth,
+    // which store `add auth` chose is readable from which implementation
+    // file it wrote — same trick as the queue adapter above. Projects from
+    // before the option existed have neither name and read as "redis",
+    // which is what they in fact are.
+    authStore: !auth ? undefined : has("internal", "app", "user", "tokenstore_pg.go") ? "postgres" : "redis",
+    rbac: has("internal", "app", "role") && has("internal", "shared", "middleware", "authz.go"),
+    observability: has("internal", "platform", "telemetry"),
+  };
 }
 
 function detectConfig(projectDir: string): ProjectConfig {
@@ -62,32 +109,11 @@ function detectConfig(projectDir: string): ProjectConfig {
   // ("needs add worker first") while `add worker` also refused ("queue
   // already exists"), with no way out. Worse, the first `add` to succeed then
   // wrote a config that recorded the undetected features as absent.
-  const has = (...segments: string[]) => fs.existsSync(path.join(projectDir, ...segments));
-  const worker = has("internal", "platform", "queue");
-
   return {
     projectName: path.basename(projectDir),
     goModule,
     apiPrefix,
-    features: {
-      docker: has("docker-compose.yml"),
-      openapiDocs: has("docs", "openapi.yaml"),
-      worker,
-      // which adapter file is present is what `add worker --queue` decided
-      queue: !worker ? undefined : has("internal", "platform", "queue", "asynq.go") ? "asynq" : "river",
-      auth: has("internal", "app", "user"),
-      // which store `add auth` chose is readable from which implementation
-      // file it wrote — same trick as the queue adapter above. Projects from
-      // before the option existed have neither name and read as "redis",
-      // which is what they in fact are.
-      authStore: !has("internal", "app", "user")
-        ? undefined
-        : has("internal", "app", "user", "tokenstore_pg.go")
-          ? "postgres"
-          : "redis",
-      rbac: has("internal", "app", "role"),
-      observability: has("internal", "platform", "telemetry"),
-    },
+    features: detectFeatures(projectDir),
   };
 }
 
