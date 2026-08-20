@@ -1,6 +1,6 @@
 {
   "name": "@nakedev/go-scaffold",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard",
   "repository": {
     "type": "git",
