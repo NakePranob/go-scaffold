@@ -90,3 +90,15 @@ function detectConfig(projectDir: string): ProjectConfig {
     },
   };
 }
+
+// isProjectDir answers "would readConfig succeed here?" without throwing, so
+// the top-level menu can offer only what can actually run in this directory
+// instead of asking two questions and then failing.
+export function isProjectDir(projectDir: string): boolean {
+  try {
+    readConfig(projectDir);
+    return true;
+  } catch {
+    return false;
+  }
+}

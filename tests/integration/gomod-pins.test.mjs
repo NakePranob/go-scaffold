@@ -55,14 +55,14 @@ function assertPinned(app, modules) {
 
 test("add worker --queue postgres pins River", (t) => {
   const app = scaffold(t);
-  cli(app, "add", "worker", "--queue", "postgres");
+  cli(app, "add", "worker", "--queue", "postgres", "--yes");
   assertPinned(app, PINS.river);
   assert.ok(!pinnedModules(app).has("github.com/hibiken/asynq"), "the Redis backend's deps must not come along");
 });
 
 test("add worker --queue redis pins Asynq and go-redis", (t) => {
   const app = scaffold(t);
-  cli(app, "add", "worker", "--queue", "redis");
+  cli(app, "add", "worker", "--queue", "redis", "--yes");
   assertPinned(app, PINS.asynq);
   assert.ok(!pinnedModules(app).has("github.com/riverqueue/river"), "River must not come along");
 });
@@ -70,14 +70,14 @@ test("add worker --queue redis pins Asynq and go-redis", (t) => {
 test("add auth and add observability pin their own dependencies", (t) => {
   const app = scaffold(t);
   cli(app, "add", "worker", "--defaults");
-  cli(app, "add", "auth");
+  cli(app, "add", "auth", "--defaults");
   assertPinned(app, PINS.auth);
   // the default store is Postgres, and nothing in the project constructs a
   // Redis client — pinning go-redis anyway would put a dependency in go.mod
   // for a file that was never written
   assert.ok(!pinnedModules(app).has("github.com/redis/go-redis/v9"), "go-redis must not come along with --store postgres");
 
-  cli(app, "add", "observability");
+  cli(app, "add", "observability", "--yes");
   assertPinned(app, PINS.observability);
   // and auth's pins survive a later add
   assertPinned(app, PINS.auth);
@@ -86,15 +86,15 @@ test("add auth and add observability pin their own dependencies", (t) => {
 test("add auth --store redis pins go-redis, and only then", (t) => {
   const app = scaffold(t);
   cli(app, "add", "worker", "--defaults"); // River — no Redis yet
-  cli(app, "add", "auth", "--store", "redis");
+  cli(app, "add", "auth", "--store", "redis", "--yes");
   assertPinned(app, [...PINS.auth, "github.com/redis/go-redis/v9"]);
 });
 
 // One require line per module, whatever order the features were added in.
 test("no duplicate require lines when features share a dependency", (t) => {
   const app = scaffold(t);
-  cli(app, "add", "worker", "--queue", "redis"); // pins go-redis
-  cli(app, "add", "auth", "--store", "redis"); // wants go-redis too
+  cli(app, "add", "worker", "--queue", "redis", "--yes"); // pins go-redis
+  cli(app, "add", "auth", "--store", "redis", "--yes"); // wants go-redis too
 
   const lines = readFileSync(path.join(app, "go.mod"), "utf8")
     .split("\n")

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { Command } from "commander";
-import { confirm, select } from "@inquirer/prompts";
+import { Command, Option } from "commander";
+import { confirm, input, select } from "@inquirer/prompts";
 import pc from "picocolors";
 import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
@@ -12,9 +12,11 @@ import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
-import { MethodType, GetMethodMode, QueueBackend } from "./types";
+import { MethodType, GetMethodMode, QueueBackend, AuthStore } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
-import { readConfig } from "./utils/config";
+import { promptAuthStore } from "./prompts/auth-wizard";
+import { promptModuleName, promptModuleShape, promptModuleAuth, promptModulePermission } from "./prompts/generate-wizard";
+import { isProjectDir, readConfig } from "./utils/config";
 
 // fail is every command's catch: one place so the two non-obvious cases stay
 // consistent. @inquirer/prompts throws ExitPromptError both on Ctrl-C and when
@@ -40,7 +42,10 @@ function fail(err: unknown): void {
 const program = new Command();
 program
   .name("go-scaffold")
-  .description("Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard")
+  .description(
+    "Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard\n\n" +
+      "Run `go-scaffold` with no arguments to pick what to do from a menu. Every command below also asks for anything you don't pass as a flag."
+  )
   .version(cliVersion());
 
 program
@@ -66,29 +71,64 @@ program
     }
   });
 
+// runModuleWizard resolves everything `generate module` needs, asking for
+// whatever wasn't passed as a flag. Shared by the bare menu and by
+// `generate module` itself, so both offer the same choices — the flags exist
+// for scripting, not as the only way to reach a decision.
+//
+// --defaults is the escape hatch CI and scripts use: it takes the documented
+// defaults (minimal, no auth) and asks nothing.
+async function runModuleWizard(
+  name: string | undefined,
+  opts: { full?: boolean; auth?: boolean; permission?: string; defaults?: boolean }
+): Promise<void> {
+  let { full, auth, permission } = opts;
+
+  if (!opts.defaults) {
+    // read first, so "not a go-scaffold project" fails before we ask anything,
+    // and so the auth/permission questions are only asked when the project
+    // actually has the features they depend on — offering them otherwise
+    // would present a choice whose only outcome is generateModule's error.
+    const config = readConfig(process.cwd());
+    if (name === undefined) name = await promptModuleName();
+    if (full === undefined) full = await promptModuleShape();
+    if (auth === undefined && config.features.auth) auth = await promptModuleAuth();
+    if (auth && permission === undefined && config.features.rbac) permission = await promptModulePermission();
+  }
+
+  await generateModule(name, { full: full ?? false, auth, permission });
+}
+
+// runGenerateWizard is `generate`/`g` run bare — asks which target, then
+// delegates (each subcommand still prompts for anything else it's missing,
+// e.g. the name). Pulled out to a function, not just the command's .action,
+// so the top-level bare `go-scaffold` invocation can offer the exact same
+// choice without duplicating it.
+async function runGenerateWizard(): Promise<void> {
+  const target = await select({
+    message: "What do you want to generate?",
+    choices: [
+      { name: "Module (safe minimal domain; add methods explicitly)", value: "module" },
+      { name: "Method (add one endpoint to an existing module)", value: "method" },
+      { name: "Migration (reserve a timestamped up/down SQL file pair)", value: "migration" },
+    ],
+  });
+  if (target === "module") {
+    await runModuleWizard(undefined, {});
+  } else if (target === "method") {
+    await generateMethod(undefined, undefined, {});
+  } else {
+    await generateMigration(undefined);
+  }
+}
+
 const generate = program
   .command("generate")
   .alias("g")
   .description("add to an existing go-scaffold project")
   .action(async () => {
-    // bare `generate`/`g` — ask which target, then delegate (each subcommand
-    // still prompts for anything else it's missing, e.g. the name).
     try {
-      const target = await select({
-        message: "What do you want to generate?",
-        choices: [
-          { name: "Module (safe minimal domain; add methods explicitly)", value: "module" },
-          { name: "Method (add one endpoint to an existing module)", value: "method" },
-          { name: "Migration (reserve a timestamped up/down SQL file pair)", value: "migration" },
-        ],
-      });
-      if (target === "module") {
-        await generateModule(undefined, { full: false });
-      } else if (target === "method") {
-        await generateMethod(undefined, undefined, {});
-      } else {
-        await generateMigration(undefined);
-      }
+      await runGenerateWizard();
     } catch (err) {
       fail(err);
     }
@@ -102,12 +142,23 @@ generate
     "--full",
     "generate a CRUD skeleton (DTO fields/business rules remain TODO); minimal is the safe default"
   )
-  .option("--no-full", "deprecated compatibility alias; minimal is already the default")
+  // kept working for muscle memory, hidden from help: minimal is already the
+  // default, so advertising a flag that asks for it is pure noise.
+  .addOption(new Option("--no-full", "deprecated compatibility alias; minimal is already the default").hideHelp())
   .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
   .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; pass --auth too)")
+  .option("--defaults", "skip the prompts, use the defaults (minimal, no auth) — for CI/scripting")
   .action(async (name, opts) => {
     try {
-      await generateModule(name, { full: opts.full, auth: opts.auth, permission: opts.permission });
+      // anything not passed as a flag gets asked for — declaring both --full
+      // and --no-full leaves opts.full undefined when neither is given, which
+      // is exactly the "not answered yet" signal runModuleWizard needs.
+      await runModuleWizard(name, {
+        full: opts.full,
+        auth: opts.auth,
+        permission: opts.permission,
+        defaults: opts.defaults,
+      });
     } catch (err) {
       fail(err);
     }
@@ -163,7 +214,8 @@ generate
 // keystroke ago — carrying that Enter straight through would write ~15 files
 // and patch main.go, and there is no `undo auth` to walk it back. A stray
 // Enter costs a re-run instead.
-async function confirmAdd(summaryLines: string[]): Promise<void> {
+async function confirmAdd(summaryLines: string[], opts: { yes?: boolean } = {}): Promise<void> {
+  if (opts.yes) return;
   console.log(pc.bold("\nThis will:"));
   for (const line of summaryLines) console.log(`  ${pc.dim("•")} ${line}`);
   console.log();
@@ -174,59 +226,128 @@ async function confirmAdd(summaryLines: string[]): Promise<void> {
   }
 }
 
+// runAddWizard is `add` run bare — asks which target, then delegates. Pulled
+// out to a function for the same reason as runGenerateWizard above: the
+// top-level bare `go-scaffold` invocation reuses it verbatim.
+async function runAddWizard(): Promise<void> {
+  // read once, up front: every add command reads it anyway, the summary below
+  // needs to know what's already installed (e.g. whether auth's mail goes out
+  // inline or through an existing queue), and so does the menu itself.
+  const config = readConfig(process.cwd());
+
+  // Each add is once-only, and rbac needs auth first. Both facts are already
+  // known here, so say them in the menu rather than letting someone walk three
+  // steps and a confirmation to reach "already been added".
+  const target = await select({
+    message: "What do you want to add?",
+    choices: [
+      {
+        name: "Worker (background job queue, SMTP mail, cmd/worker)",
+        value: "worker",
+        disabled: config.features.worker ? "— already installed" : false,
+      },
+      {
+        name: "Auth (JWT access tokens, refresh rotation, register/login/refresh/logout/me)",
+        value: "auth",
+        disabled: config.features.auth ? "— already installed" : false,
+      },
+      {
+        name: "RBAC (roles/permissions, cached Authz middleware)",
+        value: "rbac",
+        disabled: config.features.rbac
+          ? "— already installed"
+          : config.features.auth
+            ? false
+            : "— needs `add auth` first",
+      },
+      {
+        name: "Observability (Prometheus /metrics + OpenTelemetry tracing)",
+        value: "observability",
+        disabled: config.features.observability ? "— already installed" : false,
+      },
+    ],
+  });
+
+  if (target === "worker") {
+    await runAddWorker(await resolveQueueBackend({}), {});
+  } else if (target === "auth") {
+    // `--store` is a real fork (it decides whether Redis joins the project at
+    // all), so the menu has to ask it the same way the worker menu asks for
+    // its queue backend — a choice only reachable by knowing the flag name
+    // isn't a choice for anyone driving this from the menu.
+    await runAddAuth(await promptAuthStore(), {});
+  } else if (target === "rbac") {
+    await runAddRbac({});
+  } else {
+    await runAddObservability({});
+  }
+}
+
+// The four add targets, each as "summarise -> confirm -> run". They exist as
+// functions so `add worker` typed straight out and the menu's Worker entry go
+// through the same path: an add writes ~15 files and patches wiring.go with no
+// `undo` to walk it back, and which of the two ways you asked for it should
+// not decide whether you get told that first.
+//
+// --yes skips the confirmation (and --defaults implies it, since it already
+// means "ask me nothing"), which is what CI and scripts pass.
+interface AddOpts {
+  yes?: boolean;
+}
+
+async function runAddWorker(backend: QueueBackend, opts: AddOpts): Promise<void> {
+  await confirmAdd(
+    [
+      `add internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend === "river" ? "postgres/River" : "redis/Asynq"})`,
+      backend === "river"
+        ? "no extra service to run — jobs are rows in your own Postgres"
+        : pc.yellow("requires Redis to be running"),
+    ],
+    opts
+  );
+  await addWorker(backend);
+}
+
+async function runAddAuth(store: AuthStore, opts: AddOpts): Promise<void> {
+  const config = readConfig(process.cwd());
+  await confirmAdd(
+    [
+      "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
+      store === "postgres"
+        ? "tokens + rate-limit counters: Postgres (user_svc.auth_tokens), in-process — no extra service"
+        : pc.yellow("tokens + rate-limit counters: Redis — requires a Redis server to be running"),
+      config.features.worker
+        ? "verification/reset mail: queued through the worker already installed"
+        : pc.yellow("verification/reset mail: sent inline over SMTP (no worker yet) — /auth/register and /auth/forgot-password block until it's sent"),
+    ],
+    opts
+  );
+  await addAuth(store);
+}
+
+async function runAddRbac(opts: AddOpts): Promise<void> {
+  const config = readConfig(process.cwd());
+  if (!config.features.auth) {
+    throw new Error("`add rbac` requires `add auth` first — there's no Role claim to check permissions against otherwise");
+  }
+  await confirmAdd(["add roles/permissions admin API, cached Authz middleware, and PATCH /users/:id/set-role"], opts);
+  await addRbac();
+}
+
+async function runAddObservability(opts: AddOpts): Promise<void> {
+  await confirmAdd(
+    ["add Prometheus /metrics + OpenTelemetry tracing", "patch cmd/api/wiring.go and internal/platform/database to wire it in"],
+    opts
+  );
+  await addObservability();
+}
+
 const add = program
   .command("add")
   .description("add opt-in infrastructure to an existing go-scaffold project")
   .action(async () => {
-    // bare `add` — ask which target, then delegate (each subcommand still
-    // prompts for anything else it's missing, e.g. the queue backend).
     try {
-      const target = await select({
-        message: "What do you want to add?",
-        choices: [
-          { name: "Worker (background job queue, SMTP mail, cmd/worker)", value: "worker" },
-          { name: "Auth (JWT access tokens, refresh rotation, register/login/refresh/logout/me)", value: "auth" },
-          { name: "RBAC (roles/permissions, cached Authz middleware — requires auth)", value: "rbac" },
-          { name: "Observability (Prometheus /metrics + OpenTelemetry tracing)", value: "observability" },
-        ],
-      });
-
-      // read once, up front: every add command reads it anyway, and the
-      // summary below needs to know what's already installed (e.g. whether
-      // auth's mail goes out inline or through an existing queue).
-      const config = readConfig(process.cwd());
-
-      if (target === "worker") {
-        const backend = await resolveQueueBackend({});
-        await confirmAdd([
-          `add internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend === "river" ? "postgres/River" : "redis/Asynq"})`,
-          backend === "river"
-            ? "no extra service to run — jobs are rows in your own Postgres"
-            : pc.yellow("requires Redis to be running"),
-        ]);
-        await addWorker(backend);
-      } else if (target === "auth") {
-        await confirmAdd([
-          "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
-          "tokens + rate-limit counters: Postgres (user_svc.auth_tokens), in-process — no extra service",
-          config.features.worker
-            ? "verification/reset mail: queued through the worker already installed"
-            : pc.yellow("verification/reset mail: sent inline over SMTP (no worker yet) — /auth/register and /auth/forgot-password block until it's sent"),
-        ]);
-        await addAuth("postgres");
-      } else if (target === "rbac") {
-        if (!config.features.auth) {
-          throw new Error("`add rbac` requires `add auth` first — there's no Role claim to check permissions against otherwise");
-        }
-        await confirmAdd(["add roles/permissions admin API, cached Authz middleware, and PATCH /users/:id/set-role"]);
-        await addRbac();
-      } else {
-        await confirmAdd([
-          "add Prometheus /metrics + OpenTelemetry tracing",
-          "patch cmd/api/wiring.go and internal/platform/database to wire it in",
-        ]);
-        await addObservability();
-      }
+      await runAddWizard();
     } catch (err) {
       fail(err);
     }
@@ -237,9 +358,10 @@ add
   .description("add a background job queue, SMTP mail, and cmd/worker (opt-in — most projects don't need this on day one)")
   .option("--queue <backend>", "where jobs are stored: postgres (River, default) or redis (Asynq)")
   .option("--defaults", "skip the prompt, use the Postgres-backed queue")
-  .action(async (opts: { queue?: string; defaults?: boolean }) => {
+  .option("-y, --yes", "skip the confirmation summary")
+  .action(async (opts: { queue?: string; defaults?: boolean; yes?: boolean }) => {
     try {
-      await addWorker(await resolveQueueBackend(opts));
+      await runAddWorker(await resolveQueueBackend(opts), { yes: opts.yes || opts.defaults });
     } catch (err) {
       fail(err);
     }
@@ -275,13 +397,26 @@ add
     "--store <store>",
     'where tokens and rate-limit counters live: "postgres" (default, no extra service) or "redis" (exact across replicas)'
   )
-  .action(async (opts: { store?: string }) => {
+  .option("--defaults", "skip the prompt, use the Postgres-backed store (for CI/scripting)")
+  .option("-y, --yes", "skip the confirmation summary")
+  .action(async (opts: { store?: string; defaults?: boolean; yes?: boolean }) => {
     try {
-      const store = (opts.store ?? "postgres").trim().toLowerCase();
-      if (store !== "postgres" && store !== "redis") {
-        throw new Error(`unknown --store ${opts.store} — use "postgres" or "redis"`);
+      // Same shape as `add worker`: an explicit flag wins, --defaults takes
+      // the documented default silently, and anything else asks rather than
+      // picking a store the caller never saw a choice about.
+      let store: AuthStore;
+      if (opts.store !== undefined) {
+        const normalized = opts.store.trim().toLowerCase();
+        if (normalized !== "postgres" && normalized !== "redis") {
+          throw new Error(`unknown --store ${opts.store} — use "postgres" or "redis"`);
+        }
+        store = normalized;
+      } else if (opts.defaults) {
+        store = "postgres";
+      } else {
+        store = await promptAuthStore();
       }
-      await addAuth(store);
+      await runAddAuth(store, { yes: opts.yes || opts.defaults });
     } catch (err) {
       fail(err);
     }
@@ -290,9 +425,10 @@ add
 add
   .command("rbac")
   .description("add role-based access control: roles/permissions admin API, cached Authz middleware, PATCH /users/:id/set-role (requires `add auth` first)")
-  .action(async () => {
+  .option("-y, --yes", "skip the confirmation summary")
+  .action(async (opts: { yes?: boolean }) => {
     try {
-      await addRbac();
+      await runAddRbac({ yes: opts.yes });
     } catch (err) {
       fail(err);
     }
@@ -301,9 +437,10 @@ add
 add
   .command("observability")
   .description("add Prometheus /metrics + OpenTelemetry tracing for Gin + GORM (also available at `create` time via --observability)")
-  .action(async () => {
+  .option("-y, --yes", "skip the confirmation summary")
+  .action(async (opts: { yes?: boolean }) => {
     try {
-      await addObservability();
+      await runAddObservability({ yes: opts.yes });
     } catch (err) {
       fail(err);
     }
@@ -354,4 +491,46 @@ remove
     }
   });
 
-program.parseAsync(process.argv);
+// runTopMenu is bare `go-scaffold` with no arguments at all — the exact
+// command name is the one thing people forget, so give the same "ask, then
+// delegate" menu `add` and `generate` already give when run bare, instead of
+// Commander's static help text (which lists commands but never lets you act
+// on one).
+//
+// Deliberately NOT a .action() on the root command: giving the root an action
+// makes it callable, which turns a mistyped subcommand into "too many
+// arguments. Expected 0 arguments but got 2: ad, auth" instead of Commander's
+// "unknown command 'ad' (Did you mean add?)". Branching on argv keeps the
+// menu and keeps that error.
+async function runTopMenu(): Promise<void> {
+  // Every entry but "create" needs a project. Offering them outside one buys
+  // two selects and then the same error — so say it once, up front, and only
+  // offer what can actually run here.
+  const inProject = isProjectDir(process.cwd());
+  const target = inProject
+    ? await select({
+        message: "What do you want to do?",
+        choices: [
+          { name: "Create a new project", value: "create" },
+          { name: "Generate (module/method/migration in an existing project)", value: "generate" },
+          { name: "Add (auth/worker/rbac/observability in an existing project)", value: "add" },
+          { name: "Undo a generated module", value: "undo" },
+        ],
+      })
+    : ((console.log(pc.dim(`${process.cwd()} isn't a go-scaffold project — only "create" can run here.\n`)), "create") as string);
+  if (target === "create") {
+    await createProject(undefined, {});
+  } else if (target === "generate") {
+    await runGenerateWizard();
+  } else if (target === "add") {
+    await runAddWizard();
+  } else {
+    await undoModule(undefined, {});
+  }
+}
+
+if (process.argv.length <= 2) {
+  runTopMenu().catch(fail);
+} else {
+  program.parseAsync(process.argv);
+}

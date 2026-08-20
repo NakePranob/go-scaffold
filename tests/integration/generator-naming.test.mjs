@@ -40,7 +40,7 @@ test("plural module input produces a singular entity with one explicit table nam
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "orders");
+    runCLI(project, "generate", "module", "orders", "--defaults");
 
     const model = read(project, "internal/app/order/model/model.go");
     assert.match(model, /type Order struct/);
@@ -60,7 +60,7 @@ test("multi-word module keeps URL words and uses snake_case SQL identifiers", ()
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "order-items");
+    runCLI(project, "generate", "module", "order-items", "--defaults");
 
     const model = read(project, "internal/app/orderitem/model/model.go");
     assert.match(model, /type OrderItem struct/);
@@ -95,7 +95,7 @@ test("a multi-word module answers to its own package name", () => {
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "order-items");
+    runCLI(project, "generate", "module", "order-items", "--defaults");
 
     // exactly what `generate module` tells you to run next
     runCLI(project, "generate", "method", "orderitem", "approve", "--type", "patch");
@@ -114,7 +114,7 @@ test("undo answers to the package name too, and takes the migrations with it", (
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "order-items");
+    runCLI(project, "generate", "module", "order-items", "--defaults");
     runCLI(project, "undo", "module", "orderitem", "-y");
 
     const mainGo = read(project, "cmd/api/wiring.go");
@@ -141,7 +141,7 @@ test("a module name that would create a go-reserved directory is refused", () =>
     const project = path.join(scratch, "sample");
 
     assert.throws(
-      () => runCLI(project, "generate", "module", "vendors"),
+      () => runCLI(project, "generate", "module", "vendors", "--defaults"),
       /directory name the go tool reserves/
     );
     // internal/app doesn't exist until the first module lands, so "nothing
@@ -171,8 +171,8 @@ test("main.go stays constant while wiring.go takes the module wiring", () => {
     const mainBefore = readFileSync(mainPath, "utf8");
     const wiringBefore = readFileSync(wiringPath, "utf8");
 
-    runCLI(project, "generate", "module", "widgets", "--full");
-    runCLI(project, "generate", "module", "gadgets", "--full");
+    runCLI(project, "generate", "module", "widgets", "--full", "--defaults");
+    runCLI(project, "generate", "module", "gadgets", "--full", "--defaults");
 
     assert.equal(readFileSync(mainPath, "utf8"), mainBefore, "main.go must not change when a module is added");
     assert.notEqual(readFileSync(wiringPath, "utf8"), wiringBefore, "wiring.go is where the module lands");
@@ -201,7 +201,7 @@ test("a generated field lookup joins the caller's transaction like every other q
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "orders", "--full");
+    runCLI(project, "generate", "module", "orders", "--full", "--defaults");
     runCLI(project, "generate", "method", "order", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
 
     const repo = readFileSync(path.join(project, "internal", "app", "order", "repository.go"), "utf8");

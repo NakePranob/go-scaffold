@@ -44,7 +44,7 @@ function buildBothWays(t, createFlags) {
 
   cli(upfrontDir, "create", "app", "--defaults", "--observability", ...createFlags);
   cli(retroDir, "create", "app", "--defaults", ...createFlags);
-  cli(path.join(retroDir, "app"), "add", "observability");
+  cli(path.join(retroDir, "app"), "add", "observability", "--yes");
 
   return { upfront: path.join(upfrontDir, "app"), retro: path.join(retroDir, "app") };
 }
@@ -84,7 +84,7 @@ test("add observability leaves a hand-edited architect doc alone", (t) => {
   const mine = readFileSync(doc, "utf8") + "\n## My own section\n";
   writeFileSync(doc, mine);
 
-  cli(app, "add", "observability");
+  cli(app, "add", "observability", "--yes");
 
   assert.equal(readFileSync(doc, "utf8"), mine, "the edited doc must not be overwritten");
   // ...while the untouched one is still brought up to date
@@ -107,7 +107,7 @@ test("add observability still refreshes docs checked out with CRLF endings", (t)
     writeFileSync(p, readFileSync(p, "utf8").replace(/\n/g, "\r\n"));
   }
 
-  cli(app, "add", "observability");
+  cli(app, "add", "observability", "--yes");
 
   // anchored to the metrics line specifically: `enabled` also appears on the
   // Docker and OpenAPI lines, so a bare /`enabled`/ matches either way and

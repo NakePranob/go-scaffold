@@ -175,11 +175,13 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
 // good queue sitting next to it.
 //
 // No-op on a project whose auth already had a worker, and on one with no auth
-// at all — both simply don't contain the line it looks for.
-export function upgradeMailerToQueue(mainGoPath: string, goModule: string, queueBackend: QueueBackend): void {
+// at all — both simply don't contain the line it looks for. Returns whether
+// it actually upgraded something, so the caller's printed summary can say
+// which happened instead of always assuming "no auth yet".
+export function upgradeMailerToQueue(mainGoPath: string, goModule: string, queueBackend: QueueBackend): boolean {
   let content = fs.readFileSync(mainGoPath, "utf8");
   const syncMailer = "mail.NewSyncClient(mail.Open(cfg))";
-  if (!content.includes(syncMailer)) return;
+  if (!content.includes(syncMailer)) return false;
 
   const queueImportLine = `"${goModule}/internal/platform/queue"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
@@ -193,4 +195,5 @@ export function upgradeMailerToQueue(mainGoPath: string, goModule: string, queue
 
   content = content.replace(syncMailer, () => "mail.NewAsyncClient(q)");
   fs.writeFileSync(mainGoPath, content);
+  return true;
 }

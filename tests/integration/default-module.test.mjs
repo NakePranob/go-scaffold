@@ -23,7 +23,7 @@ test("generate module defaults to a safe minimal module", () => {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
     const project = path.join(scratch, "sample");
 
-    const output = runCLI(project, "generate", "module", "orders");
+    const output = runCLI(project, "generate", "module", "orders", "--defaults");
     const handler = readFileSync(
       path.join(project, "internal", "app", "order", "handler.go"),
       "utf8"
@@ -33,7 +33,7 @@ test("generate module defaults to a safe minimal module", () => {
     assert.doesNotMatch(handler, /g\.POST\(/);
     assert.equal(existsSync(path.join(project, "docs", "orders")), false);
 
-    const legacyOutput = runCLI(project, "generate", "module", "widgets", "--no-full");
+    const legacyOutput = runCLI(project, "generate", "module", "widgets", "--no-full", "--defaults");
     const legacyHandler = readFileSync(
       path.join(project, "internal", "app", "widget", "handler.go"),
       "utf8"

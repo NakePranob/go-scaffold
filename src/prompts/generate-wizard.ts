@@ -1,4 +1,4 @@
-import { input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import { GetMethodMode, MethodType } from "../types";
 import { assertNotGoKeyword, toCamelCase, validateModuleName } from "../utils/naming";
 
@@ -70,4 +70,61 @@ export async function promptLookupField(): Promise<string> {
     },
   });
   return field.trim();
+}
+
+// The three `generate module` decisions that exist as flags (--full, --auth,
+// --permission). They live here next to the other generate prompts so the
+// subcommand and the bare-menu path can ask them the same way — a choice only
+// reachable by knowing the flag name isn't a choice for anyone driving this
+// from the menu.
+export async function promptModuleShape(): Promise<boolean> {
+  return select<boolean>({
+    message: "What should the module contain?",
+    default: false,
+    choices: [
+      {
+        name: "Minimal — model + wiring only",
+        value: false,
+        description: "the safe default; add endpoints one at a time with `generate method`",
+      },
+      {
+        name: "CRUD skeleton — list/get/create/update/delete",
+        value: true,
+        description: "all five endpoints wired up; DTO fields and business rules are left as TODO",
+      },
+    ],
+  });
+}
+
+export async function promptModuleAuth(): Promise<boolean> {
+  return confirm({
+    message: "Require a valid access token for this module's routes?",
+    default: false,
+  });
+}
+
+// Blank is a real answer here (auth without a specific permission), so this
+// takes no validate — an unusable code is caught by generateModule, which
+// owns the pattern and the "needs add rbac" rule.
+export async function promptModulePermission(): Promise<string | undefined> {
+  const code = await input({
+    message: "Also require a permission code — leave blank for none, or e.g. products:manage:",
+  });
+  return code.trim() || undefined;
+}
+
+// promptExistingModule picks from what's actually on disk, for the commands
+// that operate on a module that already exists (`generate method`, `undo
+// module`). Free text was the wrong control here: the package name is the one
+// form of the name nobody remembers exactly — a typo'd "ordrs" gets
+// singularized to "ordr" on the way to the error, so the message names a
+// string the user never typed.
+export async function promptExistingModule(packages: string[], action: string): Promise<string> {
+  if (packages.length === 0) {
+    throw new Error(`no modules in internal/app yet — run \`go-scaffold generate module <name>\` before trying to ${action} one`);
+  }
+  return select({
+    message: "Which module?",
+    choices: packages.map((pkg) => ({ name: pkg, value: pkg })),
+  });
 }

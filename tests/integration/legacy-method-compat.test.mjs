@@ -107,7 +107,7 @@ test("generate module refuses to duplicate a legacy plural package", () => {
     writeFileSync(path.join(project, "internal", "app", "orders", "legacy.go"), "package orders\n");
 
     assert.throws(
-      () => run("node", [CLI, "generate", "module", "orders", "--full"], project),
+      () => run("node", [CLI, "generate", "module", "orders", "--full", "--defaults"], project),
       /internal\/app\/orders.*already exists/
     );
     assert.equal(existsSync(path.join(project, "internal", "app", "order")), false);
@@ -121,7 +121,7 @@ test("undo module locates legacy plural packages and deletes their migrations", 
   try {
     run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
-    run("node", [CLI, "generate", "module", "orders", "--full"], project);
+    run("node", [CLI, "generate", "module", "orders", "--full", "--defaults"], project);
     const legacyDir = convertToLegacyPluralModule(project);
     const migrationsDir = path.join(project, "migrations");
     const migrationsBefore = readdirSync(migrationsDir).filter((name) => name.includes("_create_orderses."));
@@ -147,7 +147,7 @@ test("generate method locates legacy plural packages and concrete handlers", () 
   try {
     run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
-    run("node", [CLI, "generate", "module", "orders", "--full"], project);
+    run("node", [CLI, "generate", "module", "orders", "--full", "--defaults"], project);
 
     const legacyDir = convertToLegacyPluralModule(project);
 

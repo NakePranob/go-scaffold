@@ -26,7 +26,7 @@ test("generated modules have scalable service and handler unit-test seams", () =
   try {
     run("node", [CLI, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1"], scratch);
     const project = path.join(scratch, "sample");
-    run("node", [CLI, "generate", "module", "orders", "--full"], project);
+    run("node", [CLI, "generate", "module", "orders", "--full", "--defaults"], project);
 
     const handler = read(project, "internal/app/order/handler.go");
     assert.match(handler, /type service interface \{/);

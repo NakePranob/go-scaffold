@@ -773,7 +773,7 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
   // --queue redis: this step (and `add auth` after it) asserts on the Redis
   // path specifically — readyz pinging Redis, a task round-tripping through
   // it. The Postgres-backed default is covered by its own build-only step.
-  goScaffold(["add", "worker", "--queue", "redis"], fullApp);
+  goScaffold(["add", "worker", "--queue", "redis", "--yes"], fullApp);
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
@@ -903,7 +903,7 @@ func main() {
 step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/verify-email/google-oauth-redirect/rate-limiting against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
   if (!hasDocker) return;
 
-  goScaffold(["add", "auth"], fullApp);
+  goScaffold(["add", "auth", "--defaults"], fullApp);
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
@@ -1424,7 +1424,7 @@ step(
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
 
-    const rbacOut = goScaffold(["add", "rbac"], fullApp);
+    const rbacOut = goScaffold(["add", "rbac", "--yes"], fullApp);
     // AUTO_MIGRATE=true creates the tables but never runs the migration's
     // seed INSERTs — a dev following the normal AUTO_MIGRATE=true dev flow
     // would otherwise hit "unknown role code" from `make seed` with no clue
@@ -1658,17 +1658,17 @@ step(
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
 
     // --permission without --auth must be rejected before anything is written.
-    expectThrows(() => goScaffold(["generate", "module", "shouldfail", "--permission", "shouldfail:manage"], fullApp), "--permission requires --auth");
+    expectThrows(() => goScaffold(["generate", "module", "shouldfail", "--permission", "shouldfail:manage", "--defaults"], fullApp), "--permission requires --auth");
     if (existsSync(path.join(fullApp, "internal", "app", "shouldfail"))) {
       throw new Error("expected the rejected --permission-without-auth call to write nothing");
     }
 
     // invalid permission code shape.
-    expectThrows(() => goScaffold(["generate", "module", "shouldfail2", "--auth", "--permission", "Not Valid"], fullApp), "invalid permission code");
+    expectThrows(() => goScaffold(["generate", "module", "shouldfail2", "--auth", "--permission", "Not Valid", "--defaults"], fullApp), "invalid permission code");
 
-    goScaffold(["generate", "module", "cart", "--full", "--auth"], fullApp);
-    goScaffold(["generate", "module", "secret", "--full", "--auth", "--permission", "secret:manage"], fullApp);
-    const noteOut = goScaffold(["generate", "module", "note", "--full"], fullApp);
+    goScaffold(["generate", "module", "cart", "--full", "--auth", "--defaults"], fullApp);
+    goScaffold(["generate", "module", "secret", "--full", "--auth", "--permission", "secret:manage", "--defaults"], fullApp);
+    const noteOut = goScaffold(["generate", "module", "note", "--full", "--defaults"], fullApp);
     if (!noteOut.includes("PUBLIC")) throw new Error(`expected a PUBLIC-route reminder since fullApp already has auth installed, got:\n${noteOut}`);
 
     assertFileContains(path.join(fullApp, "internal", "app", "cart", "handler.go"), "middleware.RequireAuth(h.jwtSecret)");
@@ -1729,7 +1729,7 @@ step(
 );
 
 step("generate module order (full CRUD)", () => {
-  goScaffold(["generate", "module", "order", "--full"], fullApp);
+  goScaffold(["generate", "module", "order", "--full", "--defaults"], fullApp);
 });
 
 step("full module: docs wired into openapi.yaml", () => {
@@ -1778,7 +1778,7 @@ step("re-generating after deleting only the folder doesn't duplicate wiring (wou
   // simulate: user rm -rf's the module dir but main.go/openapi.yaml still
   // reference it, then re-runs generate module. Must stay a single Register.
   rmSync(path.join(fullApp, "internal", "app", "order"), { recursive: true, force: true });
-  goScaffold(["generate", "module", "order", "--full"], fullApp);
+  goScaffold(["generate", "module", "order", "--full", "--defaults"], fullApp);
   const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8");
   const registers = (mainGo.match(/order\.NewHandler\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected exactly 1 order route registration, got ${registers}`);
@@ -2012,24 +2012,24 @@ step("generate method rejects --field id", () => {
 });
 
 step("generate module rejects a name that already exists", () => {
-  expectThrows(() => goScaffold(["generate", "module", "order"], fullApp), "already exists");
+  expectThrows(() => goScaffold(["generate", "module", "order", "--defaults"], fullApp), "already exists");
 });
 
 step("rejects reserved Go words before writing broken code (module/method/field)", () => {
-  expectThrows(() => goScaffold(["generate", "module", "type"], fullApp), "reserved Go word");
-  expectThrows(() => goScaffold(["generate", "module", "string"], fullApp), "reserved Go word");
+  expectThrows(() => goScaffold(["generate", "module", "type", "--defaults"], fullApp), "reserved Go word");
+  expectThrows(() => goScaffold(["generate", "module", "string", "--defaults"], fullApp), "reserved Go word");
   expectThrows(() => goScaffold(["generate", "method", "order", "func", "--type", "post"], fullApp), "Go keyword");
   expectThrows(
     () => goScaffold(["generate", "method", "order", "findByType", "--type", "get", "--get-mode", "one", "--field", "type"], fullApp),
     "Go keyword"
   );
-  expectThrows(() => goScaffold(["generate", "module", "2fa"], fullApp), "starts with a digit");
+  expectThrows(() => goScaffold(["generate", "module", "2fa", "--defaults"], fullApp), "starts with a digit");
 });
 
 step("undo module reverses wiring, deletes its migrations, and re-generating stays clean", () => {
   const widgetMigrations = () =>
     readdirSync(path.join(fullApp, "migrations")).filter((name) => name.includes("_create_widgets."));
-  goScaffold(["generate", "module", "widget"], fullApp);
+  goScaffold(["generate", "module", "widget", "--defaults"], fullApp);
   run("go", ["build", "./..."], fullApp);
   if (widgetMigrations().length !== 2) throw new Error("expected an up/down migration pair for widget");
   goScaffold(["undo", "module", "widget", "--yes"], fullApp);
@@ -2043,7 +2043,7 @@ step("undo module reverses wiring, deletes its migrations, and re-generating sta
   const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
   if (openapi.includes("/v1/widgets:")) throw new Error("openapi still lists widgets after undo");
   run("go", ["build", "./..."], fullApp); // must still compile with widget gone
-  goScaffold(["generate", "module", "widget"], fullApp); // re-adding must not duplicate
+  goScaffold(["generate", "module", "widget", "--defaults"], fullApp); // re-adding must not duplicate
   const registers = (readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8").match(/widget\.NewHandler\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected 1 widget registration after re-add, got ${registers}`);
   run("go", ["build", "./..."], fullApp);
@@ -2056,7 +2056,7 @@ step("create --api-prefix beta scaffolds routes under a custom prefix", () => {
 const betaApp = path.join(scratch, "beta-app");
 step("custom prefix: generate module + method, routes land under /beta", () => {
   run("go", ["mod", "tidy"], betaApp);
-  goScaffold(["generate", "module", "product"], betaApp);
+  goScaffold(["generate", "module", "product", "--defaults"], betaApp);
   goScaffold(["generate", "method", "product", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status"], betaApp);
   const mainGo = readFileSync(path.join(betaApp, "cmd", "api", "wiring.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/beta")')) throw new Error('expected api := r.Group("/beta") in main.go');
@@ -2097,7 +2097,7 @@ step(
       notVerified("add observability: the generated tree being lint-clean — skipped (golangci-lint not installed)");
     }
 
-    goScaffold(["generate", "module", "widget", "--full"], obsApp);
+    goScaffold(["generate", "module", "widget", "--full", "--defaults"], obsApp);
     run("go", ["build", "./..."], obsApp);
 
     runMake(["db-create"], obsApp, obsDb);
@@ -2159,7 +2159,7 @@ step(
     const mainGoBefore = readFileSync(path.join(retrofitApp, "cmd", "api", "wiring.go"), "utf8");
     if (mainGoBefore.includes("telemetry")) throw new Error("expected a plain --defaults project to have no telemetry wiring yet");
 
-    goScaffold(["add", "observability"], retrofitApp);
+    goScaffold(["add", "observability", "--yes"], retrofitApp);
 
     const mainGoAfter = readFileSync(path.join(retrofitApp, "cmd", "api", "wiring.go"), "utf8");
     if (!mainGoAfter.includes("telemetry.Init(") || !mainGoAfter.includes('r.GET("/metrics"')) {
@@ -2175,7 +2175,7 @@ step(
       throw new Error("expected /metrics wired into docs/openapi.yaml unprefixed (it isn't behind the api group)");
     }
 
-    expectThrows(() => goScaffold(["add", "observability"], retrofitApp), "already exists");
+    expectThrows(() => goScaffold(["add", "observability", "--yes"], retrofitApp), "already exists");
 
     run("go", ["mod", "tidy"], retrofitApp);
     run("go", ["build", "./..."], retrofitApp);
@@ -2210,7 +2210,7 @@ step("create --api-prefix '' scaffolds routes with no prefix at all", () => {
   goScaffold(["create", "noprefix-app", "--defaults", "--api-prefix", ""], scratch);
   const app = path.join(scratch, "noprefix-app");
   run("go", ["mod", "tidy"], app);
-  goScaffold(["generate", "module", "widget", "--full"], app);
+  goScaffold(["generate", "module", "widget", "--full", "--defaults"], app);
   const mainGo = readFileSync(path.join(app, "cmd", "api", "wiring.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/")')) throw new Error('expected api := r.Group("/") in main.go');
   const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
@@ -2226,7 +2226,7 @@ step("create --api-prefix api/v1 supports multi-segment prefixes (gin joins them
   const cfg = JSON.parse(readFileSync(path.join(app, "go-scaffold.config.json"), "utf8"));
   if (cfg.apiPrefix !== "api/v1") throw new Error(`expected leading/trailing slashes stripped, got "${cfg.apiPrefix}"`);
   run("go", ["mod", "tidy"], app);
-  goScaffold(["generate", "module", "order", "--full"], app);
+  goScaffold(["generate", "module", "order", "--full", "--defaults"], app);
   const mainGo = readFileSync(path.join(app, "cmd", "api", "wiring.go"), "utf8");
   if (!mainGo.includes('api := r.Group("/api/v1")')) throw new Error('expected api := r.Group("/api/v1") in main.go');
   const openapi = readFileSync(path.join(app, "docs", "openapi.yaml"), "utf8");
@@ -2239,7 +2239,7 @@ step("default minimal module layers up to full build", () => {
   goScaffold(["create", "min-app", "--defaults"], scratch);
   const minApp = path.join(scratch, "min-app");
   run("go", ["mod", "tidy"], minApp);
-  goScaffold(["generate", "module", "widget"], minApp);
+  goScaffold(["generate", "module", "widget", "--defaults"], minApp);
   run("go", ["build", "./..."], minApp);
   if (hasGolangciLint) {
     // bare minimal module, zero methods yet: the ahead-of-use plumbing
@@ -2361,7 +2361,7 @@ func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
 step("add worker --queue postgres: River adapter builds, no Redis anywhere", () => {
   goScaffold(["create", "river-app", "--defaults"], scratch);
   const riverApp = path.join(scratch, "river-app");
-  goScaffold(["add", "worker", "--queue", "postgres"], riverApp);
+  goScaffold(["add", "worker", "--queue", "postgres", "--yes"], riverApp);
 
   const queueDir = path.join(riverApp, "internal", "platform", "queue");
   if (!existsSync(path.join(queueDir, "river.go"))) throw new Error("expected internal/platform/queue/river.go");
@@ -2396,7 +2396,7 @@ step(
     const dsn = `postgres://postgres:postgres@localhost:${smoke.dbPort}/${dbName}?sslmode=disable`;
 
     run("docker", ["exec", sharedPostgresContainerId, "psql", "-U", "postgres", "-d", "postgres", "-c", `CREATE DATABASE ${dbName}`]);
-    goScaffold(["generate", "module", "order"], riverApp);
+    goScaffold(["generate", "module", "order", "--defaults"], riverApp);
     run("go", ["mod", "tidy"], riverApp);
     // exercises the generated Makefile target, not a hand-rolled equivalent
     run("make", ["river-migrate"], riverApp, { DB_DSN: dsn });
@@ -2446,7 +2446,7 @@ step("generate fails loudly when the project's shared/ layer has drifted", () =>
   // generate module's frozen template, which doesn't know about the mutation
   // above — `go build` wouldn't see it (test file), `go vet` does.
   expectThrows(
-    () => goScaffold(["generate", "module", "order", "--full"], app),
+    () => goScaffold(["generate", "module", "order", "--full", "--defaults"], app),
     "drift"
   );
 });
@@ -2457,7 +2457,7 @@ step("generate doesn't blame itself for a project that was already broken", () =
   run("go", ["mod", "tidy"], app);
   // a type error the user introduced, nothing to do with the generator
   writeFileSync(path.join(app, "internal", "shared", "id", "wip.go"), 'package id\n\nfunc wip() int { return "nope" }\n');
-  goScaffold(["generate", "module", "order"], app); // must still succeed
+  goScaffold(["generate", "module", "order", "--defaults"], app); // must still succeed
   if (!existsSync(path.join(app, "internal", "app", "order", "handler.go"))) {
     throw new Error("module wasn't generated");
   }

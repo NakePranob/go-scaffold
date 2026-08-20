@@ -21,7 +21,7 @@ function scaffold(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("node", [CLI, "create", "app", "--defaults"], { cwd: dir, stdio: "ignore" });
   const app = path.join(dir, "app");
-  execFileSync("node", [CLI, "generate", "module", "order", "--full"], { cwd: app, stdio: "ignore" });
+  execFileSync("node", [CLI, "generate", "module", "order", "--full", "--defaults"], { cwd: app, stdio: "ignore" });
   return app;
 }
 
@@ -47,7 +47,7 @@ function migrationsOf(app) {
 // then ran on every database anyone created from then on.
 test("a typo'd module leaves nothing behind for the next database to pick up", (t) => {
   const app = scaffold(t);
-  execFileSync("node", [CLI, "generate", "module", "oder", "--full"], { cwd: app, stdio: "ignore" });
+  execFileSync("node", [CLI, "generate", "module", "oder", "--full", "--defaults"], { cwd: app, stdio: "ignore" });
   cli(app, ["undo", "module", "oder", "--yes"]);
 
   const left = migrationsOf(app).join(" ");

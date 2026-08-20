@@ -45,7 +45,7 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   );
   // auth added before the worker wired a synchronous mailer — now that there
   // is a queue, move it onto it
-  upgradeMailerToQueue(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, backend);
+  const mailerUpgraded = upgradeMailerToQueue(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, backend);
 
   patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
   patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });
@@ -62,28 +62,44 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
     console.log("jobs are rows in your Postgres — no extra service, and an enqueue inside tx.Do commits with it");
     console.log(pc.dim("\nnext: make river-migrate (creates River's tables), then make worker"));
   } else {
-    console.log("wired Redis into cmd/api (readyz check) — cmd/api does not enqueue anything yet");
+    console.log(
+      mailerUpgraded
+        ? "wired Redis into cmd/api (readyz check) — auth's mailer now enqueues onto it instead of blocking on SMTP"
+        : "wired Redis into cmd/api (readyz check) — cmd/api does not enqueue anything yet"
+    );
     console.log(pc.yellow("note: a Redis enqueue cannot join a database transaction — see the warning on queue.Asynq"));
     console.log(pc.dim("\nnext: make worker (separate terminal, or `make dev` runs both), then go build ./... to confirm"));
   }
 }
 
+// needsSmtp and needsRedis are checked independently: `add auth` run without
+// a worker already writes SMTP_HOST on its own (auth stands alone — see
+// addAuth), so by the time a Redis-backed worker arrives after it, the old
+// single `if (content.includes("SMTP_HOST")) return` guard fired on the SMTP
+// block alone and quietly skipped the Redis block right along with it —
+// REDIS_URL never made it into .env.example even though config.go now reads
+// it. Each block gets its own guard so one being done doesn't hide the other.
 function patchEnvExample(envExamplePath: string, opts: { redis: boolean }): void {
   if (!fs.existsSync(envExamplePath)) return;
   let content = fs.readFileSync(envExamplePath, "utf8");
-  if (content.includes("SMTP_HOST")) return; // already added
 
-  const redisBlock = opts.redis && !content.includes("REDIS_URL") ? "\nREDIS_URL=redis://localhost:6379/0\n" : "";
+  const needsRedis = opts.redis && !content.includes("REDIS_URL");
+  const needsSmtp = !content.includes("SMTP_HOST");
+  if (!needsRedis && !needsSmtp) return; // both already added
 
-  content =
-    content.replace(/\n?$/, "\n") +
-    redisBlock +
-    "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
-    "SMTP_HOST=\n" +
-    "SMTP_PORT=587\n" +
-    "SMTP_USERNAME=\n" +
-    "SMTP_PASSWORD=\n" +
-    "SMTP_FROM=no-reply@example.local\n";
+  content = content.replace(/\n?$/, "\n");
+  if (needsRedis) {
+    content += "\nREDIS_URL=redis://localhost:6379/0\n";
+  }
+  if (needsSmtp) {
+    content +=
+      "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
+      "SMTP_HOST=\n" +
+      "SMTP_PORT=587\n" +
+      "SMTP_USERNAME=\n" +
+      "SMTP_PASSWORD=\n" +
+      "SMTP_FROM=no-reply@example.local\n";
+  }
   fs.writeFileSync(envExamplePath, content);
 }
 

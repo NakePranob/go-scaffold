@@ -11,7 +11,7 @@ import { unpatchOpenapiIndex } from "../utils/openapi-patcher";
 import { unpatchGolangciForModule } from "../utils/golangci-patcher";
 import { gofmtTree } from "../utils/template-renderer";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
-import { promptModuleName } from "../prompts/generate-wizard";
+import { promptExistingModule } from "../prompts/generate-wizard";
 
 export interface UndoModuleOptions {
   yes?: boolean;
@@ -40,7 +40,7 @@ export async function undoModule(
   projectDir: string = process.cwd()
 ): Promise<void> {
   const config = readConfig(projectDir);
-  const naming = resolveProjectModuleNaming(projectDir, rawName ?? (await promptModuleName()));
+  const naming = resolveProjectModuleNaming(projectDir, rawName ?? (await promptExistingModule(existingModulePackages(projectDir), "undo")));
   const modulePath = naming.pkg;
 
   const moduleDir = path.join(projectDir, "internal", "app", modulePath);

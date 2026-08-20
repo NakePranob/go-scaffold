@@ -52,6 +52,11 @@ go-scaffold generate method orders approve --type patch
 
 ## Commands
 
+Every `add` command shows what it's about to do and asks before writing;
+`-y/--yes` skips that (and `--defaults` implies it) for CI and scripts.
+Running `go-scaffold` with no arguments picks the command from a menu.
+
+
 ### `create <name>` — scaffold a new project
 
 ```bash
@@ -88,9 +93,13 @@ directory layout if missing).
 ### `generate module <name>` (alias `m`) — add a domain module
 
 ```bash
-go-scaffold generate module orders                  # safe minimal module (default)
-go-scaffold generate module orders --full           # opt-in CRUD skeleton
+go-scaffold generate module orders                  # asks for the shape (and auth, if installed)
+go-scaffold generate module orders --full           # opt-in CRUD skeleton, no prompt
+go-scaffold generate module orders --defaults       # safe minimal module, no prompt (CI/scripting)
 ```
+
+Anything you don't pass as a flag is asked for; `--defaults` takes the
+documented defaults (minimal, no auth) and asks nothing.
 
 `--full` scaffolds:
 
@@ -239,8 +248,10 @@ tx.Do(ctx, db, func(ctx context.Context) error {
 ### `add auth` — add email/password authentication
 
 ```bash
-go-scaffold add auth                    # tokens in Postgres, no extra service
+go-scaffold add auth                    # asks where tokens should live, then confirms
+go-scaffold add auth --store postgres   # tokens in Postgres, no extra service
 go-scaffold add auth --store redis      # tokens in Redis, exact across replicas
+go-scaffold add auth --defaults         # Postgres, no prompt at all (CI/scripting)
 ```
 
 Adds JWT access tokens, refresh-token rotation with reuse detection,

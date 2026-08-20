@@ -22,8 +22,8 @@ function project(t, store) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cli(dir, "create", "app", "--defaults", "--no-docker");
   const app = path.join(dir, "app");
-  cli(app, "add", "worker", "--queue", "postgres");
-  cli(app, "add", "auth", "--store", store);
+  cli(app, "add", "worker", "--queue", "postgres", "--yes");
+  cli(app, "add", "auth", "--store", store, "--yes");
   return app;
 }
 
@@ -71,7 +71,7 @@ test("--store redis keeps the previous wiring", (t) => {
 for (const store of ["postgres", "redis"]) {
   test(`add rbac rewrites the handler line correctly on --store ${store}`, (t) => {
     const app = project(t, store);
-    cli(app, "add", "rbac");
+    cli(app, "add", "rbac", "--yes");
 
     const main = read(app, "cmd/api/wiring.go");
     const limiter = store === "postgres" ? "middleware.NewMemoryLimiter()" : "middleware.NewRedisLimiter(rdb)";
@@ -94,7 +94,7 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   cli(dir, "create", "app", "--defaults", "--no-docker");
   const app = path.join(dir, "app");
 
-  cli(app, "add", "auth"); // no worker anywhere
+  cli(app, "add", "auth", "--defaults"); // no worker anywhere
 
   assert.ok(has(app, "internal/platform/mail/mail.go"), "the SMTP client has to come along");
   assert.ok(!has(app, "internal/platform/queue"), "no queue was asked for");
@@ -102,7 +102,7 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   assert.match(read(app, "cmd/api/wiring.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
   assert.match(read(app, ".env.example"), /^SMTP_HOST=/m, "auth has to bring the SMTP env block too");
 
-  cli(app, "add", "worker", "--queue", "postgres");
+  cli(app, "add", "worker", "--queue", "postgres", "--yes");
 
   const main = read(app, "cmd/api/wiring.go");
   assert.match(main, /mail\.NewAsyncClient\(q\)/, "the mailer must move onto the queue");
@@ -118,6 +118,44 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   assert.equal((config.match(/JWTSecret\s+string/g) ?? []).length, 1, "JWT config was added twice");
 });
 
+// `add worker --queue redis` takes a materially different path than postgres:
+// a separate cache.Open(Redis) client, queue.NewAsynqEnqueuer instead of
+// queue.NewRiverEnqueuer, and an extra rdb.Ping in readyz. The postgres test
+// above doesn't exercise any of that, so it wouldn't catch a regression
+// specific to the redis queue backend — including the printed summary, which
+// used to unconditionally claim "cmd/api does not enqueue anything yet" even
+// when auth was already there and its mailer just got moved onto the queue.
+test("add auth stands alone, and a later add worker --queue redis moves its mail onto the queue", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-solo-auth-redis-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cli(dir, "create", "app", "--defaults", "--no-docker");
+  const app = path.join(dir, "app");
+
+  cli(app, "add", "auth", "--defaults"); // no worker anywhere
+  assert.match(read(app, "cmd/api/wiring.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
+
+  const out = cli(app, "add", "worker", "--queue", "redis", "--yes");
+  assert.match(out, /auth's mailer now enqueues onto it/, "the printed summary must say the mailer actually moved, not that cmd/api still enqueues nothing");
+
+  const main = read(app, "cmd/api/wiring.go");
+  assert.match(main, /mail\.NewAsyncClient\(q\)/, "the mailer must move onto the queue");
+  assert.doesNotMatch(main, /mail\.NewSyncClient/, "the synchronous mailer must be gone");
+  assert.match(main, /q, err := queue\.NewAsynqEnqueuer\(cfg\.RedisURL\)/, "the asynq enqueuer has to be built");
+  assert.match(main, /rdb, err := cache\.Open\(cfg\)/, "the redis client backing the queue has to be built");
+  assert.match(main, /rdb\.Ping\(c\.Request\.Context\(\)\)/, "readyz must gain a redis check");
+  assert.match(main, /q\.Close\(\)/, "and the queue closed on shutdown");
+  assert.match(main, /rdb\.Close\(\)/, "and the redis client closed on shutdown");
+
+  const config = read(app, "internal/shared/config/config.go");
+  assert.equal((config.match(/RedisURL/g) ?? []).length, 2, "redis config was added twice (field + env load)");
+
+  // `add auth` (standalone) already wrote SMTP_HOST into .env.example before
+  // the worker ever ran. patchEnvExample used to gate both its SMTP and Redis
+  // blocks behind one `already has SMTP_HOST` check, so REDIS_URL silently
+  // never got written here even though config.go now reads it.
+  assert.match(read(app, ".env.example"), /^REDIS_URL=/m, "REDIS_URL must land in .env.example even though SMTP_HOST got there first");
+});
+
 // `add rbac` rebuilds the userSvc line to append roleSvc, which means it has
 // to reproduce byte-for-byte what `add auth` wrote — including which mailer.
 // It read features.worker as `?? true`, and a project that never ran
@@ -129,8 +167,8 @@ test("add rbac extends the userSvc line on a project that never ran add worker",
   cli(dir, "create", "app", "--defaults", "--no-docker");
   const app = path.join(dir, "app");
 
-  cli(app, "add", "auth");
-  cli(app, "add", "rbac");
+  cli(app, "add", "auth", "--defaults");
+  cli(app, "add", "rbac", "--yes");
 
   const main = read(app, "cmd/api/wiring.go");
   assert.match(
@@ -150,7 +188,7 @@ test("add rbac checks wiring.go before it edits anything else", (t) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cli(dir, "create", "app", "--defaults", "--no-docker");
   const app = path.join(dir, "app");
-  cli(app, "add", "auth");
+  cli(app, "add", "auth", "--defaults");
 
   const mainPath = path.join(app, "cmd", "api", "wiring.go");
   writeFileSync(
@@ -158,7 +196,7 @@ test("add rbac checks wiring.go before it edits anything else", (t) => {
     readFileSync(mainPath, "utf8").replace("userSvc := user.NewService(", "userSvc := user.NewService( /* hand edited */ ")
   );
 
-  assert.throws(() => cli(app, "add", "rbac"), /doesn't match what `add auth` wrote/);
+  assert.throws(() => cli(app, "add", "rbac", "--yes"), /doesn't match what `add auth` wrote/);
 
   assert.doesNotMatch(
     read(app, "internal/app/user/service.go"),

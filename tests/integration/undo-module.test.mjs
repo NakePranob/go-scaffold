@@ -44,7 +44,7 @@ test("undo module deletes the migrations it generated and re-generating stays cl
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "widgets");
+    runCLI(project, "generate", "module", "widgets", "--defaults");
     runCLI(project, "generate", "method", "widgets", "approve", "--type", "patch");
 
     assert.equal(createMigrations(project, "widgets").length, 2);
@@ -61,7 +61,7 @@ test("undo module deletes the migrations it generated and re-generating stays cl
     assert.match(output, /deleted migrations\//);
     assert.doesNotMatch(readFileSync(openapiPath, "utf8"), /\.\/widgets\//);
 
-    runCLI(project, "generate", "module", "widgets");
+    runCLI(project, "generate", "module", "widgets", "--defaults");
     assert.equal(createMigrations(project, "widgets").length, 2);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -73,7 +73,7 @@ test("undo module refuses, and destroys nothing, once the migrations are committ
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "widgets");
+    runCLI(project, "generate", "module", "widgets", "--defaults");
     const migrations = createMigrations(project, "widgets");
     assert.equal(migrations.length, 2);
 
@@ -103,8 +103,8 @@ test("undo module is not blocked by a module whose name only shares a prefix", (
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "orders", "--full");
-    runCLI(project, "generate", "module", "order-items", "--full");
+    runCLI(project, "generate", "module", "orders", "--full", "--defaults");
+    runCLI(project, "generate", "module", "order-items", "--full", "--defaults");
 
     runCLI(project, "undo", "module", "order", "--yes");
 
@@ -128,8 +128,8 @@ test("undo module still refuses when another domain genuinely imports it", () =>
   try {
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
-    runCLI(project, "generate", "module", "orders", "--full");
-    runCLI(project, "generate", "module", "invoices", "--full");
+    runCLI(project, "generate", "module", "orders", "--full", "--defaults");
+    runCLI(project, "generate", "module", "invoices", "--full", "--defaults");
 
     const servicePath = path.join(project, "internal", "app", "invoice", "service.go");
     writeFileSync(

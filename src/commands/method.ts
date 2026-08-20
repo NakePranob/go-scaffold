@@ -8,7 +8,7 @@ import {
   toCamelCase,
   toDbName,
 } from "../utils/naming";
-import { resolveProjectModuleNaming } from "../utils/module-location";
+import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
 import { MethodPatchPaths, markersPresent, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
@@ -19,7 +19,7 @@ import {
   promptLookupField,
   promptMethodName,
   promptMethodType,
-  promptModuleName,
+  promptExistingModule,
 } from "../prompts/generate-wizard";
 import { GetMethodMode, MethodType, ModuleNaming, MethodNaming } from "../types";
 
@@ -132,7 +132,7 @@ export async function generateMethod(
   projectDir: string = process.cwd()
 ): Promise<void> {
   const config = readConfig(projectDir);
-  const naming = resolveProjectModuleNaming(projectDir, moduleNameArg ?? (await promptModuleName()));
+  const naming = resolveProjectModuleNaming(projectDir, moduleNameArg ?? (await promptExistingModule(existingModulePackages(projectDir), "add a method to")));
   const modulePath = naming.pkg;
 
   const moduleDir = path.join(projectDir, "internal", "app", modulePath);
