@@ -1,4 +1,4 @@
-import { confirm, input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "./interactive";
 import { GetMethodMode, MethodType } from "../types";
 import { assertNotGoKeyword, toCamelCase, validateModuleName } from "../utils/naming";
 

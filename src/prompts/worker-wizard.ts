@@ -1,4 +1,4 @@
-import { select } from "@inquirer/prompts";
+import { select } from "./interactive";
 import { QueueBackend } from "../types";
 
 // The one decision `add worker` cannot make for you: where jobs live. It

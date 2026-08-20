@@ -582,6 +582,31 @@ step("create --defaults scaffolds a bare project", () => {
   assertFileContains(path.join(scratch, "full-app", "go.mod"), "module full-app");
 });
 
+// This script runs every command with stdin ignored, which is the CI case: a
+// command that needs an answer has to say so and stop. It used to print the
+// question first and leave the cursor escapes it wrote in the log.
+step("a command that needs a prompt fails with advice, not a question nobody can answer", () => {
+  let output = "";
+  try {
+    goScaffold(["create", "needs-a-tty", "--no-docker"], scratch);
+    throw new Error("expected create without --defaults to fail with no TTY");
+  } catch (err) {
+    output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "") + err.message;
+  }
+  if (!output.includes("no interactive terminal to prompt on")) {
+    throw new Error(`expected the no-TTY advice, got: ${output}`);
+  }
+  if (output.includes("Configure your project:") || output.includes("Include Docker Compose")) {
+    throw new Error(`a wizard that cannot run printed part of itself anyway: ${output}`);
+  }
+  if (output.includes("\u001b[")) {
+    throw new Error(`terminal escape sequences leaked into non-TTY output: ${JSON.stringify(output)}`);
+  }
+  if (existsSync(path.join(scratch, "needs-a-tty"))) {
+    throw new Error("create left a project directory behind after failing");
+  }
+});
+
 step("create stamps the CLI version into go-scaffold.config.json", () => {
   const cfg = JSON.parse(readFileSync(path.join(scratch, "full-app", "go-scaffold.config.json"), "utf8"));
   const { version } = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
@@ -1738,7 +1763,7 @@ step("full module: docs wired into openapi.yaml", () => {
 });
 
 step("main.go serves the whole docs/ tree, not just the index (or $ref resolution 404s over HTTP)", () => {
-  assertFileContains(path.join(fullApp, "cmd", "api", "wiring.go"), 'r.Static("/docs", "./docs")');
+  assertFileContains(path.join(fullApp, "cmd", "api", "wiring.go"), 'r.StaticFS("/docs", gin.Dir("./docs", true))');
 });
 
 step(
@@ -2000,8 +2025,15 @@ step(
   }
 );
 
-step("generate method rejects a duplicate method name", () => {
-  expectThrows(() => goScaffold(["generate", "method", "order", "approve", "--type", "patch"], fullApp), "already exists");
+// The assertion names the handler method on purpose. `fullApp` has OpenAPI docs
+// on, so a laxer "already exists" also matched the leftover docs/ document —
+// which is downstream of the taken name and told the caller to go look at the
+// wrong thing.
+step("generate method rejects a duplicate method name, naming the method and not its docs file", () => {
+  expectThrows(
+    () => goScaffold(["generate", "method", "order", "approve", "--type", "patch"], fullApp),
+    'handler method "approve" already exists'
+  );
 });
 
 step("generate method rejects --field id", () => {

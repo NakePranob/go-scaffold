@@ -43,7 +43,15 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     const check = validateApiPrefix(apiPrefix);
     if (check !== true) throw new Error(check);
   } else {
-    ({ features, apiPrefix } = await runCreateWizard());
+    // commander gives `--no-x` options a default of true, and there is no
+    // `--docker`/`--openapi-docs` to pass, so false here can only mean the
+    // caller opted out explicitly. undefined leaves the question to the wizard.
+    ({ features, apiPrefix } = await runCreateWizard({
+      docker: opts.docker === false ? false : undefined,
+      openapiDocs: opts.openapiDocs === false ? false : undefined,
+      observability: opts.observability === true ? true : undefined,
+      apiPrefix: opts.apiPrefix,
+    }));
   }
 
   const context = {

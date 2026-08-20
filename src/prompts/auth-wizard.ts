@@ -1,4 +1,4 @@
-import { select } from "@inquirer/prompts";
+import { select } from "./interactive";
 import { AuthStore } from "../types";
 
 // The one decision `add auth` cannot make for you: where refresh tokens,

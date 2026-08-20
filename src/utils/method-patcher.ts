@@ -51,6 +51,18 @@ function routeCall(type: MethodType): string {
   return { get: "GET", post: "POST", put: "PUT", patch: "PATCH", delete: "DELETE" }[type];
 }
 
+// assertMethodAbsent is the same check patchMethod runs, exported so callers
+// can reach it before their own pre-flight checks. A name that already exists
+// is the cause the caller needs to hear about, so it has to be reported ahead
+// of anything downstream of it (the OpenAPI document that name would collide
+// with, for one) rather than after.
+export function assertMethodAbsent(paths: MethodPatchPaths, method: MethodNaming): void {
+  const handlerSig = `func (h *Handler) ${method.handlerName}(`;
+  const serviceSig = `func (s *Service) ${method.pascalName}(`;
+  assertNotDuplicate(fs.readFileSync(paths.handlerPath, "utf8"), handlerSig, `handler method "${method.handlerName}"`);
+  assertNotDuplicate(fs.readFileSync(paths.servicePath, "utf8"), serviceSig, `service method "${method.pascalName}"`);
+}
+
 export function patchMethod(
   paths: MethodPatchPaths,
   naming: ModuleNaming,
@@ -58,13 +70,7 @@ export function patchMethod(
   opts: MethodPatchOptions,
   goModule: string
 ): void {
-  const handlerSig = `func (h *Handler) ${method.handlerName}(`;
-  const serviceSig = `func (s *Service) ${method.pascalName}(`;
-
-  const handlerContent = fs.readFileSync(paths.handlerPath, "utf8");
-  const serviceContent = fs.readFileSync(paths.servicePath, "utf8");
-  assertNotDuplicate(handlerContent, handlerSig, `handler method "${method.handlerName}"`);
-  assertNotDuplicate(serviceContent, serviceSig, `service method "${method.pascalName}"`);
+  assertMethodAbsent(paths, method);
 
   if (opts.type === "get" && opts.getMode === "all") {
     patchGetAll(paths, naming, method, goModule);

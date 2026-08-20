@@ -39,6 +39,7 @@ depending on your machine's npm/pnpm global-bin config — running
 go-scaffold create my-api
 cd my-api
 make docker-up   # if you kept Docker + PostgreSQL
+make db-create   # create the database itself (safe to re-run)
 go mod tidy
 make run
 ```
@@ -74,12 +75,14 @@ with `generate module`.
 | Option | Effect |
 |---|---|
 | `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, no route prefix) |
-| `--no-docker` | Skip `docker-compose.yml` (with `--defaults`) |
-| `--no-openapi-docs` | Skip `docs/openapi.yaml` (with `--defaults`) |
-| `--observability` | Prometheus `/metrics` + OpenTelemetry tracing (with `--defaults`; off by default — `add observability` does the same later) |
+| `--no-docker` | Skip `docker-compose.yml` |
+| `--no-openapi-docs` | Skip `docs/openapi.yaml` |
+| `--observability` | Prometheus `/metrics` + OpenTelemetry tracing (off by default — `add observability` does the same later) |
 | `--api-prefix <prefix>` | URL prefix every route is grouped under — opt in with e.g. `v1` or `api/v1`; omit it for none |
 
-Without `--defaults`, an interactive wizard asks the same four questions.
+Without `--defaults`, an interactive wizard asks the same four questions —
+skipping any a flag already answered, so `create my-api --no-docker` never asks
+about Docker and never scaffolds it.
 The prefix is a single project-wide choice made once at `create` time —
 there's no per-domain versioning (a domain that needs a real breaking change
 gets a new domain package or a new DTO field, not a duplicated model pointed

@@ -9,7 +9,7 @@ import {
   toDbName,
 } from "../utils/naming";
 import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
-import { MethodPatchPaths, markersPresent, patchMethod } from "../utils/method-patcher";
+import { MethodPatchPaths, assertMethodAbsent, markersPresent, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { newMigrationVersion } from "../utils/migrations";
@@ -179,6 +179,12 @@ export async function generateMethod(
         `restore them, or add this method by hand.`
     );
   }
+  // Before the docs check below, so a name that's already taken is reported as
+  // exactly that on every project — otherwise the leftover OpenAPI document
+  // gets the blame on a docs-enabled project and the real cause (pick another
+  // method name) is the one thing the message doesn't say.
+  assertMethodAbsent(paths, method);
+
   const docsRelativePath = config.features.openapiDocs
     ? `${naming.plural}/methods/${method.pathSegment}.yaml`
     : undefined;

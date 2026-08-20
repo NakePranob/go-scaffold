@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
-import { confirm, input, select } from "@inquirer/prompts";
+import { NO_TTY_MESSAGE, confirm, input, select } from "./prompts/interactive";
 import pc from "picocolors";
 import { createProject } from "./commands/create";
 import { generateModule } from "./commands/generate";
@@ -19,20 +19,15 @@ import { promptModuleName, promptModuleShape, promptModuleAuth, promptModulePerm
 import { isProjectDir, readConfig } from "./utils/config";
 
 // fail is every command's catch: one place so the two non-obvious cases stay
-// consistent. @inquirer/prompts throws ExitPromptError both on Ctrl-C and when
-// stdin isn't a TTY, and its raw message ("User force closed the prompt with 0
-// null") tells a user nothing — the CI case especially, where the real problem
-// is a missing argument, not the prompt.
+// consistent. @inquirer/prompts throws ExitPromptError on Ctrl-C, and its raw
+// message ("User force closed the prompt with 0 null") tells a user nothing.
+// The no-TTY case normally never reaches here — prompts/interactive.ts rejects
+// before a prompt starts — but stdin can also close mid-prompt, which arrives
+// as the same error and deserves the same advice rather than "aborted".
 function fail(err: unknown): void {
   const message = (err as Error).message ?? String(err);
   if ((err as Error).name === "ExitPromptError") {
-    console.error(
-      pc.red(
-        process.stdin.isTTY
-          ? "aborted"
-          : "no interactive terminal to prompt on — pass every value as an argument/flag (see --help), or add --defaults"
-      )
-    );
+    console.error(pc.red(process.stdin.isTTY ? "aborted" : NO_TTY_MESSAGE));
   } else {
     console.error(pc.red(message));
   }
@@ -53,9 +48,9 @@ program
   .alias("c")
   .description("scaffold a new project (bare skeleton — add domains with `generate module`)")
   .option("--defaults", "skip the wizard, use defaults (for CI/scripting)")
-  .option("--no-docker", "skip docker-compose.yml (only applies with --defaults)")
-  .option("--no-openapi-docs", "skip docs/openapi.yaml (only applies with --defaults)")
-  .option("--observability", "add Prometheus /metrics + OpenTelemetry tracing (only applies with --defaults; off by default)")
+  .option("--no-docker", "skip docker-compose.yml")
+  .option("--no-openapi-docs", "skip docs/openapi.yaml")
+  .option("--observability", "add Prometheus /metrics + OpenTelemetry tracing (off by default)")
   .option("--api-prefix <prefix>", 'URL prefix every route is grouped under, e.g. v1 or api/v1 (default: none)')
   .action(async (name, opts) => {
     try {
@@ -399,7 +394,9 @@ async function resolveQueueBackend(opts: { queue?: string; defaults?: boolean })
 
 add
   .command("auth")
-  .description("add email/password auth: JWT access tokens, refresh token rotation, register/login/refresh/logout/me (requires `add worker` first)")
+  .description(
+    "add email/password auth: JWT access tokens, refresh token rotation, register/login/refresh/logout/me (no prerequisites — without `add worker` the verification/reset mail is sent inline)"
+  )
   .option(
     "--store <store>",
     'where tokens and rate-limit counters live: "postgres" (default, no extra service) or "redis" (exact across replicas)'

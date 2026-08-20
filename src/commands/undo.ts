@@ -2,7 +2,7 @@ import path from "path";
 import { execFileSync, spawnSync } from "child_process";
 import fs from "fs-extra";
 import pc from "picocolors";
-import { confirm } from "@inquirer/prompts";
+import { confirm } from "../prompts/interactive";
 import { readConfig } from "../utils/config";
 import { migrationSlugAliases } from "../utils/naming";
 import { ModuleNaming } from "../types";
