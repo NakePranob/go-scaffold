@@ -66,7 +66,17 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
 
   if (opts.silent) return;
   console.log(pc.green("\nadded internal/platform/telemetry/, internal/shared/middleware/{metrics,tracing}.go, and GET /metrics"));
-  console.log("wired into cmd/api/wiring.go and internal/platform/database — every request and GORM query now gets a trace span");
+  console.log("wired into cmd/api/wiring.go and internal/platform/database — every request and GORM query cmd/api makes now gets a trace span");
+  // database.Open is shared, so a River-backed cmd/worker does raise GORM
+  // spans — but telemetry.Init, the only caller of otel.SetTracerProvider,
+  // runs in cmd/api alone. Those spans reach a no-op provider and vanish, and
+  // the worker serves no /metrics. Say so rather than leave someone hunting
+  // for background jobs that were never going to appear.
+  if (config.features.worker) {
+    console.log(
+      pc.yellow("cmd/worker is not instrumented — it initialises no tracer provider, so its spans are dropped and it exposes no /metrics")
+    );
+  }
   if (staleDocs.length) {
     // Deliberately not "you edited these". The comparison is a whole-file
     // match against today's template, and techstack.md embeds pinned

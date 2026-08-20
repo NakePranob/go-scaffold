@@ -335,8 +335,15 @@ async function runAddRbac(opts: AddOpts): Promise<void> {
 }
 
 async function runAddObservability(opts: AddOpts): Promise<void> {
+  const config = readConfig(process.cwd());
   await confirmAdd(
-    ["add Prometheus /metrics + OpenTelemetry tracing", "patch cmd/api/wiring.go and internal/platform/database to wire it in"],
+    [
+      "add Prometheus /metrics + OpenTelemetry tracing",
+      "patch cmd/api/wiring.go and internal/platform/database to wire it in — cmd/api only",
+      ...(config.features.worker
+        ? [pc.yellow("cmd/worker is not instrumented: no tracer provider there, so its spans are dropped and it serves no /metrics")]
+        : []),
+    ],
     opts
   );
   await addObservability();

@@ -133,6 +133,15 @@ newer Gin (→ HTTP/3/quic-go) and every DB driver they support tracing for
 (MySQL, ClickHouse, MongoDB), respectively, for a Postgres-only project that
 only wants request/query spans.
 
+**Scope: `cmd/api` only.** `cmd/worker` is not instrumented. The GORM plugin
+lives in `database.Open`, which the worker also calls, so it does raise spans —
+but `telemetry.Init` is the only thing that calls `otel.SetTracerProvider` and
+it runs in `cmd/api` alone, so those spans reach a no-op provider and are
+discarded. The worker serves no `/metrics` either. To change that, call
+`telemetry.Init` from `cmd/worker/main.go` — split it into `main`/`run` first,
+the way `cmd/api` is, or the `defer` that flushes the exporter on shutdown is
+skipped by the `os.Exit` calls already in there.
+
 {{/if}}
 ## Evolution Notes
 
