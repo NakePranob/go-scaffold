@@ -108,6 +108,16 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
   let content = fs.readFileSync(makefilePath, "utf8");
   if (content.includes("\nworker:\n")) return; // already added
 
+  // Same all-or-nothing rule as `add auth`'s Makefile patch: without the
+  // `build:` anchor the targets never get inserted, and a .PHONY line naming
+  // them would be a Makefile that lies about what it can run.
+  if (!/\nbuild:/.test(content)) {
+    console.error(
+      pc.yellow(`skipped the Makefile \`dev\`/\`worker\` targets — no \`build:\` target to anchor them to in ${makefilePath}.\nAdd them by hand: \`worker:\` running \`go run ./cmd/worker\`.`)
+    );
+    return;
+  }
+
   content = content.replace(/^\.PHONY: /m, `.PHONY: dev worker${opts.river ? " river-migrate" : ""} `);
 
   // River keeps its own tables, versioned by River itself rather than by this

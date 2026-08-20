@@ -1,4 +1,5 @@
 import fs from "fs-extra";
+import pc from "picocolors";
 import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
@@ -49,8 +50,21 @@ export function patchCiForRedis(ciPath: string): void {
 
   // `steps:` sits one level under the job, so it's the first line that ends
   // the `services:` block — insert the service just above it.
+  //
+  // Anchored on the exact indentation the template emits. A hand-reformatted
+  // workflow is the realistic way to miss it, and returning silently there
+  // means CI runs without Redis and fails on a connection error that says
+  // nothing about this — so say it here instead.
   const stepsLine = content.split("\n").find((l) => l.trimEnd() === "    steps:");
-  if (!stepsLine) return;
+  if (!stepsLine) {
+    console.error(
+      pc.yellow(
+        `skipped adding the Redis service to ${ciPath} — no \`steps:\` line at the expected indentation to anchor it to.\n` +
+          `Add a redis service to the workflow's \`services:\` block by hand, or CI will run without one.`
+      )
+    );
+    return;
+  }
 
   const service = [
     "      redis:",
