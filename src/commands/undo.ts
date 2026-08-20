@@ -5,6 +5,7 @@ import pc from "picocolors";
 import { confirm } from "@inquirer/prompts";
 import { readConfig } from "../utils/config";
 import { migrationSlugAliases } from "../utils/naming";
+import { ModuleNaming } from "../types";
 import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
 import { unpatchMainGo } from "../utils/main-patcher";
 import { unpatchOpenapiIndex } from "../utils/openapi-patcher";
@@ -65,7 +66,7 @@ export async function undoModule(
   }
 
   const migrationsDir = path.join(projectDir, "migrations");
-  const migrations = moduleMigrations(migrationsDir, migrationSlugAliases(naming));
+  const { owned: migrations, unclaimed } = moduleMigrations(migrationsDir, naming);
   const { checkedDatabase } = assertMigrationsNeverEscaped(projectDir, migrations, naming.pkg);
 
   if (!opts.yes) {
@@ -158,6 +159,15 @@ export async function undoModule(
       )
     );
   }
+  if (unclaimed.length) {
+    console.log(
+      pc.yellow(
+        `\nleft in place: ${unclaimed.join(", ")}\n` +
+          `  named like this module's column migrations but not referencing ${naming.schemaName}.${naming.tableName},\n` +
+          `  so they look like they belong to another table. Delete them by hand if they don't.`
+      )
+    );
+  }
   console.log(
     pc.dim(
       `\nnothing was dropped from any database — if you had already run these migrations locally,\n` +
@@ -167,23 +177,51 @@ export async function undoModule(
   );
 }
 
-// moduleMigrations lists the migration files `generate module` created for
-// this module: the create pair, plus the permission pair when it was
-// generated with --permission.
-function moduleMigrations(migrationsDir: string, slugs: string[]): string[] {
-  if (!fs.existsSync(migrationsDir)) return [];
-  return fs
-    .readdirSync(migrationsDir)
-    .filter((f) =>
-      slugs.some(
-        (slug) =>
-          f.endsWith(`_create_${slug}.up.sql`) ||
-          f.endsWith(`_create_${slug}.down.sql`) ||
-          f.endsWith(`_add_${slug}_permission.up.sql`) ||
-          f.endsWith(`_add_${slug}_permission.down.sql`)
-      )
-    )
-    .sort();
+// moduleMigrations lists every migration file this module caused: the create
+// pair, the permission pair from --permission, and the column pair that
+// `generate method --get-mode one --field <f>` writes (method.ts names it
+// `<version>_add_<tableName>_<column>`).
+//
+// That last one used to be left behind. The module and its create migration
+// went, the ALTER TABLE against the now-uncreated table stayed, and because
+// migrations/embed.go is a `//go:embed *` it then ran on every database made
+// from that project — "schema <x>_svc does not exist" — which is the exact
+// failure this command exists to prevent.
+//
+// The column pair cannot be claimed on filename alone: a module whose table is
+// `orders` would otherwise also claim `_add_orders_logs_email.up.sql`, which
+// belongs to a table named `orders_logs`. So a filename match is confirmed
+// against the file's own `<schema>.<table>` reference, which is unique to this
+// module. Anything that matches the shape but not the schema is reported
+// rather than silently deleted or silently kept.
+function moduleMigrations(
+  migrationsDir: string,
+  naming: ModuleNaming
+): { owned: string[]; unclaimed: string[] } {
+  if (!fs.existsSync(migrationsDir)) return { owned: [], unclaimed: [] };
+
+  const slugs = migrationSlugAliases(naming);
+  const owned: string[] = [];
+  const unclaimed: string[] = [];
+
+  for (const f of fs.readdirSync(migrationsDir).sort()) {
+    const suffix = [".up.sql", ".down.sql"].find((e) => f.endsWith(e));
+    if (!suffix) continue;
+    const stem = f.slice(0, -suffix.length);
+
+    if (slugs.some((slug) => stem.endsWith(`_create_${slug}`) || stem.endsWith(`_add_${slug}_permission`))) {
+      owned.push(f);
+      continue;
+    }
+    // `<version>_add_<slug>_<column>` — the --field column migration
+    if (!slugs.some((slug) => new RegExp(`^\\d+_add_${slug}_.+$`).test(stem))) continue;
+    if (fs.readFileSync(path.join(migrationsDir, f), "utf8").includes(`${naming.schemaName}.${naming.tableName}`)) {
+      owned.push(f);
+    } else {
+      unclaimed.push(f);
+    }
+  }
+  return { owned, unclaimed };
 }
 
 // assertMigrationsNeverEscaped is what lets undo delete migration files at
