@@ -166,15 +166,15 @@ TEST_DB_DSN=postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=
 
 ## API spec
 
-`docs/openapi.yaml` is hand-written and served, along with every file it `$ref`s (`common/`, `health/`, per-domain folders), under `/docs` while the server runs — point a renderer (Scalar, Swagger UI, Redoc) or a client generator (Hey API) at `http://localhost:8080/docs/openapi.yaml`, or browse the tree at `http://localhost:8080/docs/`. Update the spec by hand whenever an endpoint/DTO changes.
+`docs/openapi.yaml` is hand-written and split across sibling files (`common/`, `health/`, per-domain folders) via relative `$ref`. **The server never serves it** — there is no `/docs` route, in any environment, so the API surface and `docs/architect/`'s internal notes stay off the wire. Update the spec by hand whenever an endpoint/DTO changes.
 
-Some tools don't resolve external `$ref`s when importing a local file — they read it as-is and see zero routes (Bruno's "Import Collection" does this; some Postman flows too). For those, bundle the spec into one fully-resolved file first:
+To open it in a renderer (Scalar, Swagger UI, Redoc) or a client generator (Hey API), bundle it into one fully-resolved file and point the tool at that file. Bundling is also what importers that don't resolve external `$ref`s need — they read the index as-is and see zero routes (Bruno's "Import Collection" does this; some Postman flows too):
 
 ```bash
 make openapi-bundle          # writes docs/openapi.bundled.yaml (gitignored — regenerate anytime)
 ```
 
-Import `docs/openapi.bundled.yaml` instead. Tools that resolve `$ref` over HTTP or when reading a URL (Scalar, Swagger UI, Redoc) don't need this — point them at the live `/docs/openapi.yaml` URL above.
+Then open `docs/openapi.bundled.yaml` — it needs no network and no running server.
 {{/if}}
 
 ## Adding a domain

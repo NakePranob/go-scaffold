@@ -89,23 +89,13 @@ func run() error {
 	})
 	// go-scaffold:extra-routes
 {{#if openapiDocs}}
-	// hand-written spec at docs/openapi.yaml, split across sibling files (common/, health/,
-	// <domain>/) via relative $ref — serve the whole tree under one prefix so a client that
-	// resolves $ref over HTTP (Scalar, Swagger UI, Redoc, Hey API pointed at a URL) can reach
-	// them too; StaticFile on just the index file would 404 on every $ref it follows.
-	//
-	// gin.Dir(..., true) keeps directory listings on, which r.Static suppresses:
-	// without them opening /docs/ in a browser answers 404 with a blank page,
-	// which reads as "this is broken" rather than "ask for a file". The listing
-	// costs nothing here — every file in the tree is already downloadable — and
-	// it makes openapi.yaml discoverable without knowing its name up front.
-	//
-	// Not in production: this serves your whole API surface — every path,
-	// parameter and schema — to anyone who asks. Publish the spec deliberately
-	// (`make openapi-bundle`) rather than by leaving this on.
-	if !cfg.IsProd() {
-		r.StaticFS("/docs", gin.Dir("./docs", true))
-	}
+	// ponytail: docs/ is deliberately NOT served over HTTP, in any environment.
+	// The whole tree — every path, parameter and schema, plus docs/architect/'s
+	// internal design notes — used to be reachable at /docs outside production.
+	// Read the spec from the working copy instead: `make openapi-bundle` writes
+	// one fully-resolved docs/openapi.bundled.yaml for a renderer or client
+	// generator to open as a local file. Publish it deliberately if you want
+	// it public.
 {{/if}}
 
 	api := r.Group("/{{apiPrefix}}")

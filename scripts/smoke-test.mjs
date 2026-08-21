@@ -139,6 +139,12 @@ function assertFileContains(filePath, needle) {
   if (!content.includes(needle)) throw new Error(`${filePath} doesn't contain "${needle}"`);
 }
 
+function assertFileOmits(filePath, needle) {
+  if (!existsSync(filePath)) throw new Error(`missing file: ${filePath}`);
+  const content = readFileSync(filePath, "utf8");
+  if (content.includes(needle)) throw new Error(`${filePath} still contains "${needle}"`);
+}
+
 // Set by the "add worker" step once it patches fullApp's readyz to also ping
 // Redis — every later step in this file that boots fullApp's cmd/api shares
 // that same project, so it needs a reachable Redis from that point on too,
@@ -1762,8 +1768,8 @@ step("full module: docs wired into openapi.yaml", () => {
   assertFileContains(path.join(fullApp, "docs", "openapi.yaml"), "OrderResponse");
 });
 
-step("main.go serves the whole docs/ tree, not just the index (or $ref resolution 404s over HTTP)", () => {
-  assertFileContains(path.join(fullApp, "cmd", "api", "wiring.go"), 'r.StaticFS("/docs", gin.Dir("./docs", true))');
+step("docs/ is not served over HTTP in any environment", () => {
+  assertFileOmits(path.join(fullApp, "cmd", "api", "wiring.go"), '"/docs"');
 });
 
 step(

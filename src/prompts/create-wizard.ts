@@ -45,7 +45,7 @@ export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<
   const openapiDocs =
     preset.openapiDocs ??
     (await confirm({
-      message: "Include hand-written OpenAPI docs (docs/openapi.yaml, whole docs/ tree served at /docs)?",
+      message: "Include hand-written OpenAPI docs (docs/openapi.yaml — files only, never served over HTTP)?",
       default: true,
     }));
   const observability =

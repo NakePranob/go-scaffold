@@ -49,8 +49,8 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   const newUseLine = `${USE_LINE.slice(0, -1)}, middleware.Metrics(), middleware.Tracing("${projectName}"))`;
   content = content.replace(USE_LINE, () => newUseLine);
 
-  // Not gated on APP_ENV the way /docs is: production is exactly where you
-  // want a scrape target, and Prometheus reaches it in-cluster. It is still
+  // Unlike docs/, which is never served at all: production is exactly where
+  // you want a scrape target, and Prometheus reaches it in-cluster. It is still
   // unauthenticated and does disclose your route list and traffic shape, so
   // block /metrics at the ingress rather than publishing it to the internet.
   const metricsRoute = 'r.GET("/metrics", gin.WrapH(promhttp.Handler()))';
