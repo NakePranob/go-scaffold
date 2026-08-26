@@ -45,7 +45,12 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   );
   // auth added before the worker wired a synchronous mailer — now that there
   // is a queue, move it onto it
-  const mailerUpgraded = upgradeMailerToQueue(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, backend);
+  const mailerUpgraded = upgradeMailerToQueue(
+    path.join(projectDir, "cmd", "api", "wiring.go"),
+    config.goModule,
+    backend,
+    path.join(projectDir, "internal", "app", "user", "composition.go")
+  );
 
   patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
   patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });

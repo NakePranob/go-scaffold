@@ -15,7 +15,7 @@ import { addObservability } from "./commands/observability";
 import { MethodType, GetMethodMode, QueueBackend, AuthStore } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
 import { promptAuthStore } from "./prompts/auth-wizard";
-import { promptModuleName, promptModuleShape, promptModuleAuth, promptModulePermission } from "./prompts/generate-wizard";
+import { promptModuleName, promptModuleShape, promptModuleCqrs, promptModuleAuth, promptModulePermission } from "./prompts/generate-wizard";
 import { isProjectDir, readConfig } from "./utils/config";
 
 // fail is every command's catch: one place so the two non-obvious cases stay
@@ -72,12 +72,12 @@ program
 // for scripting, not as the only way to reach a decision.
 //
 // --defaults is the escape hatch CI and scripts use: it takes the documented
-// defaults (minimal, no auth) and asks nothing.
+// defaults (minimal, no CQRS, no auth) and asks nothing.
 async function runModuleWizard(
   name: string | undefined,
-  opts: { full?: boolean; auth?: boolean; permission?: string; defaults?: boolean }
+  opts: { full?: boolean; cqrs?: boolean; auth?: boolean; permission?: string; defaults?: boolean }
 ): Promise<void> {
-  let { full, auth, permission } = opts;
+  let { full, cqrs, auth, permission } = opts;
 
   if (!opts.defaults) {
     // read first, so "not a go-scaffold project" fails before we ask anything,
@@ -87,11 +87,12 @@ async function runModuleWizard(
     const config = readConfig(process.cwd());
     if (name === undefined) name = await promptModuleName();
     if (full === undefined) full = await promptModuleShape();
+    if (cqrs === undefined) cqrs = await promptModuleCqrs();
     if (auth === undefined && config.features.auth) auth = await promptModuleAuth();
     if (auth && permission === undefined && config.features.rbac) permission = await promptModulePermission();
   }
 
-  await generateModule(name, { full: full ?? false, auth, permission });
+  await generateModule(name, { full: full ?? false, cqrs: cqrs ?? false, auth, permission });
 }
 
 // runGenerateWizard is `generate`/`g` run bare — asks which target, then
@@ -132,17 +133,21 @@ const generate = program
 generate
   .command("module [name]")
   .alias("m")
-  .description("scaffold a safe minimal domain module; opt into a CRUD skeleton with --full")
+  .description("scaffold a safe minimal domain module; opt into CRUD with --full and CQRS with --cqrs")
   .option(
     "--full",
     "generate a CRUD skeleton (DTO fields/business rules remain TODO); minimal is the safe default"
+  )
+  .option(
+    "--cqrs",
+    "split application commands and queries into separate handlers (opt-in; works with minimal or --full)"
   )
   // kept working for muscle memory, hidden from help: minimal is already the
   // default, so advertising a flag that asks for it is pure noise.
   .addOption(new Option("--no-full", "deprecated compatibility alias; minimal is already the default").hideHelp())
   .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
   .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; pass --auth too)")
-  .option("--defaults", "skip the prompts, use the defaults (minimal, no auth) — for CI/scripting")
+  .option("--defaults", "skip the prompts, use the defaults (minimal, no CQRS, no auth) — for CI/scripting")
   .action(async (name, opts) => {
     try {
       // anything not passed as a flag gets asked for — declaring both --full
@@ -150,6 +155,7 @@ generate
       // is exactly the "not answered yet" signal runModuleWizard needs.
       await runModuleWizard(name, {
         full: opts.full,
+        cqrs: opts.cqrs,
         auth: opts.auth,
         permission: opts.permission,
         defaults: opts.defaults,
@@ -309,8 +315,8 @@ async function runAddAuth(store: AuthStore, opts: AddOpts): Promise<void> {
     [
       "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
       store === "postgres"
-        ? "tokens + rate-limit counters: Postgres (user_svc.auth_tokens), in-process — no extra service"
-        : pc.yellow("tokens + rate-limit counters: Redis — requires a Redis server to be running"),
+        ? "refresh + recovery tokens: Postgres (user_svc.auth_tokens), rate-limit counters in-process — no extra service"
+        : pc.yellow("refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres — requires Redis"),
       config.features.worker
         ? "verification/reset mail: queued through the worker already installed"
         : pc.yellow("verification/reset mail: sent inline over SMTP (no worker yet) — /auth/register and /auth/forgot-password block until it's sent"),

@@ -14,7 +14,6 @@ type Config struct {
 	Port              string
 	DBDSN             string
 	LogLevel          string
-	AutoMigrate       bool
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
@@ -55,13 +54,6 @@ func Load() Config {
 	if cfg.AppEnv != "development" && cfg.AppEnv != "production" {
 		panic(fmt.Sprintf("invalid APP_ENV %q — must be development or production", cfg.AppEnv))
 	}
-
-	// Defaults off in production, which is why it's set here rather than in
-	// the literal above — it needs a validated AppEnv first. AutoMigrate
-	// rewrites the schema at boot AND skips CheckMigrationVersion entirely
-	// (see main.go), so a deploy that merely forgets to set it used to get
-	// both. AUTO_MIGRATE=true still forces it on if you really mean it.
-	cfg.AutoMigrate = env("AUTO_MIGRATE", strconv.FormatBool(!cfg.IsProd())) == "true"
 
 	return cfg
 }

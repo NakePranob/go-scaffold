@@ -9,9 +9,11 @@
 export type QueueBackend = "river" | "asynq";
 
 /**
- * Where `add auth` keeps refresh/reset/verify tokens and its rate-limit
- * counters. The two travel together on purpose — picking Redis is one
- * decision ("I want this exact across pods"), not two.
+ * Where `add auth` keeps refresh tokens and its rate-limit counters. Recovery
+ * tokens always use Postgres so reset/verification can share a transaction
+ * with the user update. The two selectable concerns travel together on
+ * purpose — picking Redis is one decision ("I want this exact across pods"),
+ * not two.
  * - "postgres": rows in the project's own database, rate limiting in-process.
  *   No service beyond Postgres. The default.
  * - "redis": what every project before this option got. Exact across replicas,

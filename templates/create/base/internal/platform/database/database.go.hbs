@@ -20,7 +20,8 @@ import (
 
 // Open connects to Postgres and sets the connection pool — it talks to a
 // real external system, so it lives in platform/, not shared/.
-// Schema is managed via golang-migrate (migrations/) in prod, not AutoMigrate — see README.
+// Production schema is managed via golang-migrate (migrations/); development
+// may use the convenience path selected by APP_ENV in the composition root.
 func Open(cfg config.Config) (*gorm.DB, error) {
 	// GORM's default logger reports ErrRecordNotFound at ERROR level, so an
 	// ordinary miss — every FindByID behind a 404, cmd/seed's "does this admin
@@ -58,8 +59,7 @@ var migrationVersionRe = regexp.MustCompile(`^(\d+)_.*\.up\.sql$`)
 // golang-migrate CLI's own schema_migrations table) doesn't match the newest
 // migration file baked into this binary — instead of booting against a stale
 // or half-applied schema and failing later on whatever query hits the
-// missing column first. Only meaningful when AutoMigrate is off (prod); call
-// this from that branch only.
+// missing column first. Call this from the production branch only.
 func CheckMigrationVersion(db *gorm.DB) error {
 	entries, err := migrations.FS.ReadDir(".")
 	if err != nil {

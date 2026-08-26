@@ -91,8 +91,8 @@ test("a hand-generated user module is still undoable when auth was never added",
 });
 
 // A key the file answers is an answer, not a hole — detection fills gaps, it
-// does not overrule. Proved on the one flag whose value is visible in the
-// output: `worker` decides whether auth wires the async or the sync mailer.
+// does not overrule. Proved on the worker flag: it decides whether auth's
+// feature-local composition wires the async or the sync mailer.
 test("an explicit false in the config wins over what is on disk", (t) => {
   const app = project(t, "explicit-false");
   cli(app, "add", "worker", "--queue", "postgres", "--yes");
@@ -104,6 +104,8 @@ test("an explicit false in the config wins over what is on disk", (t) => {
   cli(app, "add", "auth", "--defaults");
 
   const wiring = read(app, "cmd/api/wiring.go");
-  assert.match(wiring, /mail\.NewSyncClient/, "the file said no worker, so auth must wire the sync mailer");
-  assert.doesNotMatch(wiring, /mail\.NewAsyncClient/, "detection must not overrule an explicit false");
+  const composition = read(app, "internal/app/user/composition.go");
+  assert.match(composition, /mail\.NewSyncClient/, "the file said no worker, so auth must wire the sync mailer locally");
+  assert.doesNotMatch(composition, /mail\.NewAsyncClient/, "detection must not overrule an explicit false");
+  assert.match(wiring, /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
 });

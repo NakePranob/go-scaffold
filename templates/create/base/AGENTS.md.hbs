@@ -1,80 +1,209 @@
 # Agent Guidance: {{projectName}}
 
-This project was scaffolded by `@nakedev/go-scaffold` and is maintained using
-its `generate` subcommands — new domain modules and new endpoints are not
-hand-written.
+This project was scaffolded by `@nakedev/go-scaffold`. It is a modular
+monolith: each business capability lives in its own feature package, while
+`cmd/api/wiring.go` is the process composition root. This file is the working
+contract for AI coding agents and humans; keep generated structure and the
+runtime safety rules below intact.
 
-## Hard rule: use the CLI to add a new domain module or a new endpoint
+## Start every task here
 
-If you are about to create a **new** domain (a new `internal/app/<name>/`
-package with its own model/handler/service/repository), or add a **new**
-endpoint to an existing one — stop and run the CLI instead:
+1. Read the relevant code, `docs/architect/`, tests, and this file before
+   editing. Search for an existing module or port before creating one.
+2. Check `git status --short --branch`. Work on a dedicated, non-protected
+   branch and preserve unrelated changes. Never edit a protected branch just
+   to make a quick fix.
+3. Classify the request: generated surface, business behavior, schema, auth /
+   security, infrastructure, or documentation. Ask the owner before changing
+   schema/migrations, authentication or security behavior, architecture,
+   dependencies, or deployment configuration when the project workflow
+   requires approval.
+4. Make the smallest complete change, add a focused test, and report exact
+   commands and output. Do not claim a check passed if it was skipped or
+   failed.
+
+## Architecture contract
+
+This scaffold combines modular boundaries with Hexagonal Architecture,
+domain-oriented design, and an optional CQRS style. They are compatible:
+apply them inside each feature instead of creating a second architecture or
+an empty layer for every noun.
+
+- **Inbound adapter:** `handler.go` parses HTTP, validates/binds transport
+  input, calls an application service, and maps the result to HTTP.
+- **Application boundary:** `service.go` (or `commands.go`/`queries.go` when
+  the module uses `--cqrs`; complex auth may also use
+  `internal/app/<feature>/application/`) orchestrates use cases. It owns
+  workflow decisions and depends on narrow consumer-owned ports.
+- **Domain:** models, value rules, and invariants stay independent of Gin,
+  GORM, Redis, HTTP status codes, and environment variables.
+- **Outbound adapter:** `repository.go`, token stores, mail/queue clients,
+  and other platform integrations translate a port into persistence or I/O.
+- **Composition:** the feature-local `composition.go` constructs its
+  repository, service, and handler. `cmd/api/wiring.go` selects shared
+  infrastructure, supplies explicitly declared cross-feature ports/security
+  dependencies, and registers the feature route; it does not contain
+  business logic or feature-internal constructors.
+
+Use CQRS when a feature has genuinely different command and query models,
+consistency needs, or scaling/read-shape pressure: commands mutate state and
+queries read state. Generate that boundary explicitly with
+`go-scaffold generate module <name> --cqrs` (combine with `--full` when a CRUD
+skeleton is useful). For simple CRUD, one application service and one port are
+clearer. Do not introduce a broker, a second database, or a command/query
+folder only to satisfy a label.
+
+Keep feature boundaries real. Do not import another feature's private model,
+repository, or handler. Expose a small public application port, call a
+documented feature API, or use an explicit event when cross-feature behavior
+is required. Keep dependency direction flowing inward:
+
+```text
+handler -> application/use case -> domain + ports -> adapters
+                                  ^                 |
+                                  +--- composition -+
+```
+
+The generated CRUD shape is an intentionally incremental starter. It gives
+each module a testable service/handler seam and a feature-local composition
+root; it does not decide the final aggregate, fields, invariants, or split
+between commands and queries for the product.
+
+## Hard rule: use the CLI for generated surface
+
+If you are creating a **new domain** (`internal/app/<name>/` with its own
+model/service/repository/handler), or adding a **new endpoint** to an existing
+domain, stop and run the CLI:
 
 ```bash
 go-scaffold generate module <name> --defaults
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete>
 ```
 
-**Pass every value as a flag.** Run interactively, these commands ask for
-anything you left out — which has no answer in a non-interactive shell, so
-they exit 1 having written nothing. `--defaults` on `generate module` means
-"minimal, no auth, ask nothing"; add `--full`/`--auth`/`--permission` to it
-when you want those. Same rule elsewhere: `--get-mode` is required with
-`--type get`, and `undo module` needs `-y`. Every `add` command confirms
-before writing — `-y` skips that, but `add auth`/`add worker` also ask which
-backing store to use, so those two want `--defaults` (or `--store`/`--queue`
-plus `-y`).
+Pass every value as a flag. In a non-interactive shell, omitted values prompt
+and the command exits without writing. `--defaults` means minimal, no CQRS, no
+auth; add `--full`, `--cqrs`, `--auth`, and `--permission <code>` deliberately.
+`--get-mode`
+is required for `--type get`, and `undo module` needs `-y`. For `add auth`
+and `add worker`, choose the backing store/queue with `--defaults` or an
+explicit flag as well as the confirmation flag.
 
-This applies **even when the request doesn't say "module"/"method" or name
-the CLI at all**. Recognize indirect asks as generation work, for example:
+Recognize indirect requests as generation work:
 
-- "add a products feature" → a new domain (`generate module products --defaults`)
-- "let admins approve orders" → a new method on an existing module
-  (`generate method orders approve --type patch`)
-- "we need an endpoint that lists overdue invoices" → a new `get` method
-  (`generate method invoices findOverdue --type get --get-mode all`)
-- "add a way to look up a user by email" → a new `get` lookup
-  (`generate method users findByEmail --type get --get-mode one --field email`)
+- “add a products feature” → `generate module products --defaults`
+- “let admins approve orders” → `generate method orders approve --type patch`
+- “list overdue invoices” → `generate method invoices findOverdue --type get --get-mode all`
+- “look up a user by email” → `generate method users findByEmail --type get --get-mode one --field email`
 
-Run `go-scaffold generate module --help` / `generate method --help` before
-hand-rolling anything that looks like scaffolding.
+Run `go-scaffold generate module --help` or `generate method --help` when the
+desired shape is unclear. Do not hand-edit generated route markers to add a
+new endpoint; the CLI keeps handler, service interface, test stub, and
+OpenAPI/migration patching in sync.
 
-## What the CLI does NOT do — these are still done by hand, as normal
+## What the CLI does not decide
 
-- Business logic inside a generated method (the CLI leaves a TODO-marked
-  stub — filling in real behavior is your job)
-- Adding fields to a generated model/DTO beyond `id`/`created_at`/`updated_at`
-- Foreign keys / relations between domains — add the column, the migration
-  `REFERENCES ... ON DELETE ...` clause, and the `dberr.IsForeignKey` mapping
-  yourself; see `docs/architect/patterns.md` for the 3 rules domains with a
-  relation must follow
-- Bug fixes, refactors, or edits to existing logic
-- Anything in a project that does **not** have `go-scaffold.config.json` at
-  its root — that means the project wasn't scaffolded by this CLI, and this
-  rule does not apply
+These remain deliberate engineering work:
+
+- business behavior, invariants, authorization policy, and real DTO/model
+  fields;
+- validation beyond the transport shape and all domain-specific rules;
+- foreign keys and relations between domains, including their reviewed SQL
+  and `dberr.IsForeignKey` mapping;
+- the business-specific command/query contracts and the public port used for
+  cross-feature collaboration;
+- bug fixes, refactors, and changes to an existing method;
+- any work in a repository that lacks `go-scaffold.config.json`.
+
+Generated methods are explicit stubs. `generate method` GET-all reuses
+`FindAll` until real filtering is added; POST and DELETE return an internal
+error until implemented; PUT/PATCH intentionally return `501 Not Implemented`
+and must not read or write a record before their behavior is designed. Treat
+the generated OpenAPI TODO contract as incomplete, not as a promise that the
+endpoint is production-ready.
+
+## Runtime and schema safety
+
+- `APP_ENV` is the single environment gate and accepts only `development` or
+  `production`. Do not add a parallel flag such as `AUTO_MIGRATE`.
+- Development may use the convenience `db.AutoMigrate(...)` path for the
+  models registered by the generator. Production must never bootstrap or
+  mutate schema at API startup: apply versioned SQL with
+  `make migrate-up`, then let the startup migration-version check fail fast if
+  the database is behind or dirty.
+- Any schema change is a reviewed pair of versioned files in `migrations/`.
+  Use `go-scaffold generate migration <name>` for changes outside a new
+  module, write both directions, and test them against a disposable database.
+- Keep `*sql.DB`, Redis, queue, mail, and other external resources owned by
+  their composition root. Close them on every exit path and preserve the
+  signal-driven graceful shutdown; do not call `os.Exit` from a goroutine or
+  hide a startup error.
+- Keep liveness and readiness semantics intact. Readiness may check external
+  dependencies; liveness must not turn a transient dependency failure into a
+  process restart.
+
+## Auth and error boundaries
+
+Treat auth and security changes as high-risk and get the required owner
+approval before changing their contract.
+
+- Never log passwords, raw access/refresh/reset/verification tokens, JWT
+  secrets, OAuth client secrets, or authorization headers.
+- Refresh rotation is an atomic consume: Postgres uses one SQL unit and Redis
+  uses one Lua operation, including active-session cleanup and the reuse
+  tombstone. Never replace it with a read-then-delete sequence.
+- Password reset and email verification consume a one-time token in the same
+  retry-safe transaction as the user/identity update. A failed post-commit
+  session revocation must not make a successful reset impossible to retry.
+- Keep auth transport adapters separate from auth application ports. A use
+  case should not import Gin, GORM models, or HTTP error payloads merely to
+  perform its workflow.
+- Return a stable, generic client error for unexpected failures. Wrap causes
+  with `%w` or pass them to `apperror.NewInternal(cause)` so middleware can
+  log the server-side cause with `request_id`; production responses must not
+  expose that cause or internal field details.
+
+## Verification workflow
+
+After changing Go templates or generated Go code, run the checks that match
+the change (from the generated project root):
+
+```bash
+gofmt -w <changed-go-files>
+go test ./...
+go test -race ./...       # required for concurrency/auth/token changes
+go vet ./...
+golangci-lint run
+```
+
+For schema/repository/auth adapter work, run the real-store tests with a
+migrated disposable PostgreSQL/Redis instance and `REQUIRE_TEST_DB=true` or
+`REQUIRE_TEST_REDIS=true`; a skipped integration test is not evidence of
+correctness. For CLI/template changes, run the generator project's
+`pnpm run verify` and generate fresh sample projects to inspect the output.
+
+At each checkpoint record: branch and base, files changed, generated output
+shape, tests and their exact result, and any limitation. Before handoff,
+review `git diff --check`, `git diff`, and `git status --short`; leave unrelated
+work untouched.
 
 ## Command quick reference
 
-- `go-scaffold generate module <name> --defaults` — safe minimal model + errors +
-  repository + service/handler plumbing, wired into `cmd/api/wiring.go` and
-  appended to `migrations/`. Add endpoints one at a time with `generate
-  method`, or pass `--full` to opt into a CRUD skeleton with TODO DTO fields
-- `go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]` —
-  patches an *existing* module's handler + service (and repository, for a
-  `get --get-mode one --field` lookup) in place; never overwrites a method
-  with the same name — pick a different one if it collides. With OpenAPI
-  enabled it also writes a valid TODO path document and wires the index;
-  replace placeholder schemas while implementing the method
-- `go-scaffold undo module <name> -y` — takes back a `generate module` that
-  shouldn't have happened (typo'd name, domain decided against): deletes the
-  package, un-wires main.go/OpenAPI, and deletes the module's migration files.
-  It refuses if those migrations are committed to git or already applied to
-  your database, since then they may exist somewhere this can't reach. Not for
-  retiring a domain that has shipped — that's `generate migration drop_<table>`
-  plus a reviewed data removal; the table is never dropped either way
-- Every route in this project is grouped under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
-  (set once at `create` time via `--api-prefix`) — there is no per-domain
-  versioning; a breaking API change gets a new domain package or a new DTO
-  field, not a duplicated model
-- Full architecture rationale for this project's configuration: see
-  `docs/architect/`
+- `go-scaffold generate module <name> --defaults` — minimal model, errors,
+  repository, service/handler seams, feature-local `composition.go`, root
+  route registration, and versioned module migrations. Add endpoints with
+  `generate method`, use `--full` for a CRUD skeleton, or add `--cqrs` for
+  separate command/query application handlers.
+- `go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]` — patches an existing
+  module's handler/service and, for a GET-one lookup, repository plus test
+  seam. It never overwrites a same-named method.
+- `go-scaffold generate migration <name>` — reserves a timestamped SQL
+  migration pair for a reviewed schema change.
+- `go-scaffold undo module <name> -y` — removes an unshipped generated module,
+  its migration, and its wiring. It refuses once those migrations are
+  committed or applied; use a reviewed drop migration for a shipped domain.
+- All routes share the project-wide prefix chosen at `create` time:
+  `{{#if apiPrefix}}/{{apiPrefix}}{{else}}(no prefix){{/if}}`. There is no
+  per-domain versioning.
+
+Read `docs/architect/architecture.md`, `docs/architect/patterns.md`, and
+`docs/architect/techstack.md` for the rationale behind these constraints.

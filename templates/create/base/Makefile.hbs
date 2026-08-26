@@ -68,7 +68,8 @@ tools:
 tidy:
 	go mod tidy
 
-# creates the database itself (not the schema — AUTO_MIGRATE or migrate-up does that).
+# creates the database itself (not the schema — the app's development path or
+# migrate-up does that).
 # connects to the always-present "postgres" maintenance DB to run CREATE DATABASE,
 # since the target DB may not exist yet. Safe to re-run — skips if it already exists.
 # \gexec only works read from stdin, not through -c, hence the pipe.

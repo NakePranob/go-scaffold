@@ -1,0 +1,97 @@
+package user
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+// tokenStoreDBForTest opens a real database instead of reusing the repository
+// test transaction: concurrent consumers must use separate PostgreSQL
+// connections to exercise DELETE ... RETURNING's row-level serialization.
+func tokenStoreDBForTest(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatal("TEST_DB_DSN is required when REQUIRE_TEST_DB=true")
+		}
+		t.Skip("token-store integration test skipped: set TEST_DB_DSN to a migrated PostgreSQL database")
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true})
+	if err != nil {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatalf("open required token-store database: %v", err)
+		}
+		t.Skipf("token-store integration test skipped: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get token-store SQL handle: %v", err)
+	}
+	if err := sqlDB.Ping(); err != nil {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatalf("ping required token-store database: %v", err)
+		}
+		t.Skipf("token-store integration test skipped: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
+
+func TestPgTokenStore_ConsumeRefreshToken_ConcurrentRealDatabase(t *testing.T) {
+	db := tokenStoreDBForTest(t)
+	store := NewPgTokenStore(db)
+	ctx := context.Background()
+	userID := uuid.New()
+	hash := "real-pg-refresh-" + uuid.NewString()
+	if err := store.SetRefreshToken(ctx, hash, userID, time.Hour); err != nil {
+		t.Fatalf("seed refresh token: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Exec("DELETE FROM user_svc.auth_tokens WHERE token_hash = ?", hash).Error
+	})
+
+	const callers = 32
+	type result struct {
+		id  uuid.UUID
+		ok  bool
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan result, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			id, ok, err := store.ConsumeRefreshToken(ctx, hash, time.Hour)
+			results <- result{id: id, ok: ok, err: err}
+		}()
+	}
+	close(start)
+
+	winners := 0
+	for i := 0; i < callers; i++ {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("concurrent consume: %v", got.err)
+		}
+		if got.ok {
+			winners++
+			if got.id != userID {
+				t.Fatalf("winner returned user %s, want %s", got.id, userID)
+			}
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly one real-database refresh winner, got %d", winners)
+	}
+	if _, ok, err := store.GetRefreshToken(ctx, hash); err != nil || ok {
+		t.Fatalf("consumed refresh token remained active: ok=%t err=%v", ok, err)
+	}
+}

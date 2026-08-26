@@ -31,8 +31,8 @@
 
 {{#if docker}}- Local Postgres comes from `docker-compose.yml`
 {{else}}- No Docker scaffolding included — bring your own Postgres and point `DB_DSN` at it
-{{/if}}- `AUTO_MIGRATE=true` (dev default) runs GORM AutoMigrate on boot; set it to
-  `false` in prod and run `migrate up` as a deploy step instead
+{{/if}}- `APP_ENV=development` enables the convenience table bootstrap;
+  `APP_ENV=production` requires `migrate up` as a deploy step instead
 {{#if openapiDocs}}- `docs/openapi.yaml` is hand-written, not generated — update it whenever an
   endpoint or DTO changes
 {{/if}}{{#if observability}}- `OTEL_EXPORTER_OTLP_ENDPOINT` unset (dev default) means tracing exports

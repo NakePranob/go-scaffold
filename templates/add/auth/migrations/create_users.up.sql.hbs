@@ -12,8 +12,8 @@ CREATE TABLE user_svc.users (
 
 -- A unique INDEX, not an inline UNIQUE constraint, and named to match the
 -- `uniqueIndex:idx_users_email` tag on model.User exactly. Postgres names an
--- inline UNIQUE "users_email_key"; GORM's AutoMigrate (dev, AUTO_MIGRATE=true)
--- then sees uniqueness it didn't create and tries to drop it under its own
+-- inline UNIQUE "users_email_key"; the development bootstrap then sees
+-- uniqueness it didn't create and tries to drop it under its own
 -- name, which fails the boot with
 --   constraint "uni_users_email" of relation "users" does not exist
 -- for anyone who ran `make migrate-up` first — which `add rbac` tells you to.

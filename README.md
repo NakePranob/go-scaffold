@@ -4,7 +4,8 @@ A CLI that scaffolds a Gin + GORM + PostgreSQL Go backend, then keeps
 generating consistent domain modules into that project as it grows — the Go
 counterpart to nest-scaffold.
 
-You don't hand-wire a new domain into `cmd/api/wiring.go`, write the
+You don't hand-wire a new domain's repository/service/handler composition into
+`cmd/api/wiring.go`, write the
 handler/service/repository boilerplate, or decide error-handling conventions
 each time — the CLI does that, and every module it generates follows the
 same shape as the last one.
@@ -98,6 +99,7 @@ directory layout if missing).
 ```bash
 go-scaffold generate module orders                  # asks for the shape (and auth, if installed)
 go-scaffold generate module orders --full           # opt-in CRUD skeleton, no prompt
+go-scaffold generate module orders --full --cqrs    # CRUD + separate command/query handlers
 go-scaffold generate module orders --defaults       # safe minimal module, no prompt (CI/scripting)
 ```
 
@@ -119,6 +121,22 @@ internal/app/order/
 └── repository_test.go    # Postgres integration test against migrated schema
 ```
 
+Add `--cqrs` when this feature has meaningful command/query differences:
+
+```text
+internal/app/order/
+├── commands.go            # command port + state-changing application handlers
+├── queries.go             # query port + read-only application handlers
+├── service.go             # compatibility facade; new wiring uses both handlers
+└── composition.go         # constructs command/query handlers separately
+```
+
+`--cqrs` works with both minimal and `--full` modules. It keeps one modular
+monolith and one database by default; CQRS here means separate application
+paths, not mandatory separate databases, brokers, or event sourcing. The
+default remains the simpler layered module because an empty command/query
+split adds ceremony without a business reason.
+
 The default minimal mode scaffolds the same `model`/`errors`/`repository` (so `generate
 method` always has a full data-access surface to call), but `dto`/`service`/
 `handler` start empty — no default CRUD, no routes, just the plumbing
@@ -128,13 +146,13 @@ surface, or you'd rather add endpoints one at a time.
 
 Both modes also:
 
-- Register the module in `cmd/api/wiring.go` (via marker comments — see
-  `// go-scaffold:*` in that file) — full wires an actual route, minimal
-  wires an empty route group
+- Register the module through its feature-local composition and the root
+  registration markers in `cmd/api/wiring.go` — full wires an actual route,
+  minimal wires an empty route group
 - Create the module's own Postgres schema (`<module>_svc`, e.g. `order_svc`)
-  and add the model to the `AutoMigrate(...)` call
+  and add the model to the development schema bootstrap
 - Append `migrations/<timestamp>_create_<plural>.{up,down}.sql`, which creates that
-  same schema for `AUTO_MIGRATE=false`/production
+  same schema for production
 
 What it does **not** do: invent your fields or wire foreign keys between
 domains — see `docs/architect/patterns.md` in the generated project for the
@@ -151,6 +169,9 @@ go-scaffold g me orders findOverdue --type get --get-mode all
 Patches an *existing* module's `handler.go`/`service.go` in place via the
 same marker-comment approach as `main.go` — never a whole new module. Never
 overwrites a method with the same name; picks a different one or errors.
+For a module generated with `--cqrs`, it also patches `commands.go` for
+state-changing endpoints and `queries.go` for read endpoints, while keeping
+the compatibility facade in sync.
 
 | Option | Effect |
 |---|---|
@@ -259,18 +280,17 @@ go-scaffold add auth --defaults         # Postgres, no prompt at all (CI/scripti
 
 Adds JWT access tokens, refresh-token rotation with reuse detection,
 registration/login/logout, password reset, email verification, failed-login
-lockout, and Google OAuth routes. Apply the generated migrations;
-`AUTO_MIGRATE=true` is convenient in development, while production should use
-`migrate up`.
+lockout, and Google OAuth routes. Apply the generated migrations. Development
+may bootstrap tables for convenience; production must run `migrate up` first.
 
 No prerequisites. On a project with no worker the verification and reset mail
 is sent inline, and `add worker` later moves it onto the queue for you — the
 two endpoints that send mail block on SMTP until you do.
 
-| `--store` | Tokens and rate-limit counters | Extra service |
+| `--store` | Refresh/recovery tokens and rate-limit counters | Extra service |
 |---|---|---|
 | `postgres` (default) | `user_svc.auth_tokens`, counters in-process | none |
-| `redis` | Redis | Redis |
+| `redis` | refresh + rate-limit counters in Redis; recovery in `user_svc.auth_tokens` | Redis |
 
 The rate limiter follows the store rather than being chosen separately, because
 "I want this exact across replicas" is one decision. With `postgres` the per-IP
@@ -286,8 +306,8 @@ go-scaffold generate module secrets --auth --permission secret:manage
 
 Requires `add auth`. Adds role/permission administration, cached authorization
 middleware, and role assignment. Its migration seeds the default roles and
-permissions, so apply it with `migrate up`: AutoMigrate creates tables but does
-not run SQL seed statements.
+permissions, so apply it with `migrate up`; table creation does not run SQL
+seed statements.
 
 ### `add observability` — add metrics + tracing
 
@@ -313,8 +333,8 @@ go-scaffold undo m orders --yes         # skip the confirm
 The inverse of `generate module`, for the case it's actually the inverse of:
 a module you didn't mean to generate — a typo'd name, a domain you decided
 against. It deletes `internal/app/<name>/`, the per-module docs folder, **and
-the module's migration files**, and reverses the import/AutoMigrate/route in
-`main.go` plus the paths/schemas in `docs/openapi.yaml`. Restores the
+the module's migration files**, and reverses the import/bootstrap/route in
+`cmd/api/wiring.go` plus the paths/schemas in `docs/openapi.yaml`. Restores the
 `_ = api` placeholder if it was the last module, so the project still builds.
 
 Deleting the migrations is the point. `migrations/embed.go` is a `//go:embed
@@ -343,8 +363,8 @@ twice with different behavior. It was cut: the migration (and usually the
 DB table) is shared between "versions" of the same domain, but each version
 got its own physically-copied `model.go` — nothing stopped the two structs
 from drifting apart. Verified against a real Postgres instance:
-`AutoMigrate` silently accepted a column typed `int` in one version's model
-and `float64` in the other for the *same* column, converging it to
+development schema bootstrapping silently accepted a column typed `int` in
+one version's model and `float64` in the other for the *same* column, converging it to
 `numeric` with no error — the two versions would then read/write the same
 data with different, silently incompatible interpretations.
 

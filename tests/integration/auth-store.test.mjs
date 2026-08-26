@@ -34,14 +34,18 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
   const app = project(t, "postgres");
 
   assert.ok(has(app, "internal/app/user/tokenstore_pg.go"));
+  assert.ok(has(app, "internal/app/user/tokenstore_pg_test.go"));
   assert.ok(has(app, "internal/app/user/model/authtoken.go"));
   assert.ok(has(app, "internal/shared/middleware/ratelimit_memory.go"));
   assert.ok(!has(app, "internal/app/user/tokenstore_redis.go"), "the Redis store must not be written");
   assert.ok(!has(app, "internal/platform/cache/redis.go"), "no Redis client is needed");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(main, /user\.NewPgTokenStore\(db\)/);
-  assert.match(main, /middleware\.NewMemoryLimiter\(\)/);
+  const composition = read(app, "internal/app/user/composition.go");
+  assert.match(composition, /NewPgTokenStore\(db\)/);
+  assert.match(composition, /middleware\.NewMemoryLimiter\(\)/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
+  assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.doesNotMatch(main, /rdb/, "wiring.go must not reference a Redis client");
   // the table AutoMigrate needs in dev, and the migration prod uses
   assert.match(main, /&usermodel\.AuthToken\{\},/);
@@ -52,34 +56,47 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
   );
 });
 
-test("--store redis keeps the previous wiring", (t) => {
+test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t) => {
   const app = project(t, "redis");
 
   assert.ok(has(app, "internal/app/user/tokenstore_redis.go"));
+  assert.ok(has(app, "internal/app/user/tokenstore_redis_test.go"));
   assert.ok(has(app, "internal/shared/middleware/ratelimit_redis.go"));
   assert.ok(!has(app, "internal/app/user/tokenstore_pg.go"), "the Postgres store must not be written");
   assert.ok(has(app, "internal/platform/cache/redis.go"), "add auth pulls Redis in on this path");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(main, /user\.NewRedisTokenStore\(rdb\)/);
-  assert.match(main, /middleware\.NewRedisLimiter\(rdb\)/);
-  assert.doesNotMatch(main, /&usermodel\.AuthToken\{\},/, "no auth_tokens table on this path");
+  const composition = read(app, "internal/app/user/composition.go");
+  assert.match(composition, /NewRedisTokenStore\(rdb, db\)/);
+  assert.match(composition, /middleware\.NewRedisLimiter\(rdb\)/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
+  assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
+  assert.match(main, /&usermodel\.AuthToken\{\},/, "recovery tokens need the auth_tokens table");
+  assert.ok(has(app, "internal/app/user/tokenstore_recovery.go"));
+  assert.ok(
+    execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),
+    "the auth_tokens migration must also be generated for Redis refresh storage"
+  );
 });
 
-// add rbac rebuilds both lines to insert authz. Given it lives in a different
-// patcher, this is the assertion that keeps it honest for both stores.
+// add rbac composes role locally and passes only its public capabilities into
+// auth. Given it lives in a different patcher, this is the integration guard
+// that keeps auth/RBAC wiring aligned for both stores.
 for (const store of ["postgres", "redis"]) {
   test(`add rbac rewrites the handler line correctly on --store ${store}`, (t) => {
     const app = project(t, store);
     cli(app, "add", "rbac", "--yes");
 
     const main = read(app, "cmd/api/wiring.go");
-    const limiter = store === "postgres" ? "middleware.NewMemoryLimiter()" : "middleware.NewRedisLimiter(rdb)";
+    const authArgs = store === "postgres" ? "db, cfg, q" : "db, cfg, rdb, q";
     assert.ok(
-      main.includes(`cfg.CookieSameSite, ${limiter}, authz).Register(api)`),
-      `expected authz inside NewHandler's arguments, got:\n${main.split("\n").filter((l) => l.includes("user.NewHandler")).join("\n")}`
+      main.includes(`roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.AuthzCacheTTL)`) &&
+        main.includes(`user.NewHandlerFromDB(${authArgs}, roleComposition.Service, roleComposition.Authz).Register(api)`),
+      `expected feature-local auth/RBAC composition, got:\n${main.split("\n").filter((l) => l.includes("Composition") || l.includes("user.NewHandler")).join("\n")}`
     );
-    assert.ok(!main.includes(`${limiter}), authz)`), "authz landed outside the argument list");
+    assert.match(main, /roleComposition\.Handler\.Register\(api\)/);
+    assert.doesNotMatch(main, /role\.NewService\(|role\.NewHandler\(/, "wiring.go must not construct role internals");
+    assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/, "wiring.go must not construct user internals");
   });
 }
 
@@ -99,14 +116,16 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   assert.ok(has(app, "internal/platform/mail/mail.go"), "the SMTP client has to come along");
   assert.ok(!has(app, "internal/platform/queue"), "no queue was asked for");
   assert.ok(!has(app, "cmd/worker"), "no second binary was asked for");
-  assert.match(read(app, "cmd/api/wiring.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
+  assert.match(read(app, "cmd/api/wiring.go"), /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
   assert.match(read(app, ".env.example"), /^SMTP_HOST=/m, "auth has to bring the SMTP env block too");
 
   cli(app, "add", "worker", "--queue", "postgres", "--yes");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(main, /mail\.NewAsyncClient\(q\)/, "the mailer must move onto the queue");
-  assert.doesNotMatch(main, /mail\.NewSyncClient/, "the synchronous mailer must be gone");
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient\(q\)/, "the feature-local mailer must move onto the queue");
+  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient/, "the synchronous mailer must be gone");
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
   assert.match(main, /q, err := queue\.NewRiverEnqueuer\(db\)/, "the enqueuer has to be built");
   assert.match(main, /q\.Close\(\)/, "and closed on shutdown");
 
@@ -132,14 +151,16 @@ test("add auth stands alone, and a later add worker --queue redis moves its mail
   const app = path.join(dir, "app");
 
   cli(app, "add", "auth", "--defaults"); // no worker anywhere
-  assert.match(read(app, "cmd/api/wiring.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
+  assert.match(read(app, "cmd/api/wiring.go"), /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
 
   const out = cli(app, "add", "worker", "--queue", "redis", "--yes");
   assert.match(out, /auth's mailer now enqueues onto it/, "the printed summary must say the mailer actually moved, not that cmd/api still enqueues nothing");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(main, /mail\.NewAsyncClient\(q\)/, "the mailer must move onto the queue");
-  assert.doesNotMatch(main, /mail\.NewSyncClient/, "the synchronous mailer must be gone");
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient\(q\)/, "the feature-local mailer must move onto the queue");
+  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient/, "the synchronous mailer must be gone");
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
   assert.match(main, /q, err := queue\.NewAsynqEnqueuer\(cfg\.RedisURL\)/, "the asynq enqueuer has to be built");
   assert.match(main, /rdb, err := cache\.Open\(cfg\)/, "the redis client backing the queue has to be built");
   assert.match(main, /rdb\.Ping\(c\.Request\.Context\(\)\)/, "readyz must gain a redis check");
@@ -156,12 +177,9 @@ test("add auth stands alone, and a later add worker --queue redis moves its mail
   assert.match(read(app, ".env.example"), /^REDIS_URL=/m, "REDIS_URL must land in .env.example even though SMTP_HOST got there first");
 });
 
-// `add rbac` rebuilds the userSvc line to append roleSvc, which means it has
-// to reproduce byte-for-byte what `add auth` wrote — including which mailer.
-// It read features.worker as `?? true`, and a project that never ran
-// `add worker` has no such field, so it rebuilt the async line for a project
-// wired with the synchronous one and refused to match.
-test("add rbac extends the userSvc line on a project that never ran add worker", (t) => {
+// A project can add RBAC before a worker. Auth's local composition stays
+// synchronous, while root only registers the role-aware handler.
+test("add rbac composes auth and role locally on a project that never ran add worker", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-rbac-noworker-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cli(dir, "create", "app", "--defaults", "--no-docker");
@@ -171,13 +189,33 @@ test("add rbac extends the userSvc line on a project that never ran add worker",
   cli(app, "add", "rbac", "--yes");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(
-    main,
-    /mail\.NewSyncClient\(mail\.Open\(cfg\)\), cfg, roleSvc\)/,
-    "rbac must append roleSvc to the synchronous-mailer line auth actually wrote"
-  );
-  assert.match(read(app, "internal/app/user/service.go"), /roleChecker/, "the service must have gained the dependency");
+  assert.match(main, /roleComposition := role\.NewCompositionFromDB\(db, cfg\.JWTSecret, cfg\.AuthzCacheTTL\)/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, roleComposition\.Service, roleComposition\.Authz\)\.Register\(api\)/);
+  assert.match(main, /roleComposition\.Handler\.Register\(api\)/);
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
+  assert.match(read(app, "internal/app/user/service.go"), /type RoleChecker interface/);
 });
+
+for (const store of ["postgres", "redis"]) {
+  test(`adding worker after RBAC upgrades auth composition on --store ${store}`, (t) => {
+    const dir = mkdtempSync(path.join(tmpdir(), `go-scaffold-rbac-worker-${store}-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    cli(dir, "create", "app", "--defaults", "--no-docker");
+    const app = path.join(dir, "app");
+
+    cli(app, "add", "auth", "--store", store, "--yes");
+    cli(app, "add", "rbac", "--yes");
+    cli(app, "add", "worker", "--queue", "postgres", "--yes");
+
+    const main = read(app, "cmd/api/wiring.go");
+    const composition = read(app, "internal/app/user/composition.go");
+    const authArgs = store === "postgres" ? "db, cfg, q" : "db, cfg, rdb, q";
+    assert.match(composition, /q queue\.Enqueuer/);
+    assert.match(composition, /mail\.NewAsyncClient\(q\)/);
+    assert.match(main, new RegExp(`user\\.NewHandlerFromDB\\(${authArgs}, roleComposition\\.Service, roleComposition\\.Authz\\)\\.Register\\(api\\)`));
+    assert.doesNotMatch(main, /user\.NewService\(|role\.NewService\(|mail\.NewAsyncClient/);
+  });
+}
 
 // Every other file rbac touches is patched before main.go, so a mismatch used
 // to land after user.NewService had already grown a roleChecker parameter —
@@ -193,15 +231,16 @@ test("add rbac checks wiring.go before it edits anything else", (t) => {
   const mainPath = path.join(app, "cmd", "api", "wiring.go");
   writeFileSync(
     mainPath,
-    readFileSync(mainPath, "utf8").replace("userSvc := user.NewService(", "userSvc := user.NewService( /* hand edited */ ")
+    readFileSync(mainPath, "utf8").replace("user.NewHandlerFromDB(", "user.NewHandlerFromDB( /* hand edited */ ")
   );
 
   assert.throws(() => cli(app, "add", "rbac", "--yes"), /doesn't match what `add auth` wrote/);
 
-  assert.doesNotMatch(
+  assert.match(
     read(app, "internal/app/user/service.go"),
-    /roleChecker/,
-    "the service must be untouched when the pre-flight refuses"
+    /type RoleChecker interface/,
+    "the base auth service remains unchanged when the pre-flight refuses"
   );
+  assert.doesNotMatch(read(app, "internal/app/user/service.go"), /SetRole\(/, "RBAC service behavior must not be patched");
   assert.ok(!has(app, "internal/app/role"), "no role domain may be written either");
 });

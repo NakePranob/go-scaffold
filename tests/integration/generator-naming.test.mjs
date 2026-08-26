@@ -101,7 +101,7 @@ test("a multi-word module answers to its own package name", () => {
     runCLI(project, "generate", "method", "orderitem", "approve", "--type", "patch");
 
     const handler = read(project, "internal/app/orderitem/handler.go");
-    assert.match(handler, /model\.OrderItem/);
+    assert.match(handler, /Approve\(context\.Context, uuid\.UUID\) error/);
     assert.doesNotMatch(handler, /model\.Orderitem\b/);
     assert.match(read(project, "internal/app/orderitem/service.go"), /model\.OrderItem/);
   } finally {
@@ -176,7 +176,7 @@ test("main.go stays constant while wiring.go takes the module wiring", () => {
 
     assert.equal(readFileSync(mainPath, "utf8"), mainBefore, "main.go must not change when a module is added");
     assert.notEqual(readFileSync(wiringPath, "utf8"), wiringBefore, "wiring.go is where the module lands");
-    assert.match(readFileSync(wiringPath, "utf8"), /widget\.NewHandler\(/);
+    assert.match(readFileSync(wiringPath, "utf8"), /widget\.NewHandlerFromDB\(/);
 
     // os.Exit belongs in exactly one place, which is what lets run()'s defers
     // actually run and what makes the startup path callable from a test.

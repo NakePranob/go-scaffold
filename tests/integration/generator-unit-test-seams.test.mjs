@@ -28,6 +28,9 @@ test("generated modules have scalable service and handler unit-test seams", () =
     const project = path.join(scratch, "sample");
     run("node", [CLI, "generate", "module", "orders", "--full", "--defaults"], project);
 
+    assert.ok(readFileSync(path.join(project, "internal/app/order/composition.go"), "utf8"));
+    assert.match(read(project, "cmd/api/wiring.go"), /order\.NewHandlerFromDB\(db\)\.Register\(api\)/);
+
     const handler = read(project, "internal/app/order/handler.go");
     assert.match(handler, /type service interface \{/);
     assert.match(handler, /svc service/);
@@ -75,6 +78,17 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.match(approveDocs, /^patch:/m);
     assert.match(approveDocs, /operationId: approveOrder/);
     assert.doesNotMatch(approveDocs, /requestBody:/);
+    assert.match(approveDocs, /"501":/);
+    assert.doesNotMatch(approveDocs, /"200":/);
+
+    const approveHandler = read(project, "internal/app/order/handler.go");
+    const approveService = read(project, "internal/app/order/service.go");
+    assert.match(approveHandler, /Approve\(context\.Context, uuid\.UUID\) error/);
+    assert.match(approveHandler, /if err := h\.svc\.Approve\(c\.Request\.Context\(\), id\); err != nil/);
+    assert.match(approveHandler, /c\.Error\(err\)/);
+    assert.match(approveService, /func \(s \*Service\) Approve\(ctx context\.Context, id uuid\.UUID\) error \{/);
+    assert.match(approveService, /return apperror\.NewNotImplemented\(\)/);
+    assert.doesNotMatch(approveService.slice(approveService.indexOf("func (s *Service) Approve")), /repo\.FindByID|repo\.Update/);
 
     run("node", [CLI, "generate", "method", "orders", "submit", "--type", "post"], project);
     const submitDocs = read(project, "docs/orders/methods/submit.yaml");

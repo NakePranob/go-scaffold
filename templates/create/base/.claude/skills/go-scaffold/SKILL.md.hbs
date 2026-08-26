@@ -3,140 +3,222 @@ name: go-scaffold
 description: >
   Use whenever the user asks to add, create, scaffold, wire up, or generate a
   new domain/feature/resource OR a new endpoint/method in THIS project —
-  including indirect or paraphrased requests that imply new backend surface
-  area without saying "module"/"method" literally, e.g. "add a products
-  feature", "let admins approve orders", "we need an endpoint for X", "look
-  up a user by email". This project was scaffolded by go-scaffold and has a
-  go-scaffold.config.json at its root — check for that file before assuming
-  this applies. Do NOT use for: business logic inside an already-generated
-  method body, model/DTO field edits, foreign keys/relations between
-  domains, bug fixes, refactors of existing code, or any project that lacks
-  go-scaffold.config.json at its root.
+  including indirect requests such as "add products", "let admins approve
+  orders", "add an endpoint for X", or "look up a user by email". This project
+  was scaffolded by go-scaffold and has a go-scaffold.config.json at its root;
+  check for that file before assuming this applies. Use the generated
+  modular/Hexagonal boundaries and runtime safety contract described below.
+  Do NOT use for business logic inside an existing method, model/DTO field
+  edits, foreign keys/relations, bug fixes, refactors, or a project without
+  go-scaffold.config.json.
 ---
 
 # go-scaffold
 
-This project's domain modules (model, dto, errors, repository, service,
-handler) and their endpoints are generated with the `go-scaffold` CLI — do
-not hand-write a new one. Hand-writing a new `internal/app/<name>/` package,
-or adding a method by editing the handler/service directly, produces a shape
-that doesn't match the rest of the codebase (missing route registration,
-missing AutoMigrate wiring, a `repository` interface out of sync with its
-`repositoryStub` test mock, inconsistent error-catalog naming, etc.).
+Use this skill for generated backend surface only. A new module or endpoint
+must be created with the CLI so route registration, feature-local composition,
+application seams, test stubs, OpenAPI TODOs, and migration markers remain
+consistent. After generation, the product's business logic and domain rules
+are still the engineer's responsibility.
 
 ## When to use this skill
 
-- Any request for a new feature/resource/domain, even named informally
-  ("add invoices", "we need a way to track X")
-- Any request for a new endpoint on an existing feature, even phrased as a
-  capability ("let users do X", "admins should be able to Y", "add a lookup
-  by Z")
-- The user explicitly says "generate", "scaffold", or names the CLI
+- A new feature, resource, or domain is requested, even if the user does not
+  say "module".
+- A new endpoint or capability is requested on an existing feature, even if
+  the user does not say "method".
+- The user explicitly asks to scaffold, generate, or use go-scaffold.
 
-## When NOT to use this skill
+Examples that all use this skill:
 
-- Filling in business logic inside a method the CLI already generated
-- Editing model fields, DTO validation, or existing method bodies
-- Wiring a foreign key / relation between two domains
-- Bug fixes and refactors
-- The project has no `go-scaffold.config.json` at its root
+- “add invoices” → a new module
+- “let admins approve orders” → a new method on orders
+- “list overdue invoices” → a GET-all method
+- “look up a user by email” → a GET-one lookup with --field email
 
-## How to use it
+## When not to use it
 
-Run from the project root:
+- Filling in business logic in a method the CLI already generated
+- Editing model fields, DTO validation, or existing method behavior
+- Adding a foreign key or relation between domains
+- Bug fixes, refactors, or architecture work unrelated to generated surface
+- Any repository without go-scaffold.config.json at its root
 
-```bash
-go-scaffold generate module <name> --defaults [--full] [--auth] [--permission <code>]
+Those tasks still follow AGENTS.md and docs/architect/; this skill does
+not authorize schema, auth/security, dependency, architecture, or deployment
+changes without the project's required owner approval.
+
+## Before running the CLI
+
+1. Read AGENTS.md, the relevant docs/architect/ notes, and the target
+   module's existing handler/service/repository.
+2. Run git status --short --branch and confirm the work is on a dedicated,
+   non-protected branch. Preserve unrelated local changes.
+3. Search for an existing module, endpoint, route, and migration before
+   generating anything. Do not generate a duplicate name.
+4. Decide whether minimal or full module generation is appropriate. Minimal is
+   safer when the product only needs a specific endpoint; --full is for an
+   intentional CRUD starter.
+
+## Commands
+
+Run from the project root and pass every value as a flag:
+
+~~~bash
+go-scaffold generate module <name> --defaults [--full] [--cqrs] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 go-scaffold generate migration <name>
 go-scaffold undo module <name> -y
-```
+~~~
 
-**Every value has to be a flag.** These commands prompt for whatever you
-leave out, and a prompt in a non-interactive shell exits 1 having written
-nothing — so a bare `generate module products` fails rather than taking the
-default. `--defaults` supplies the unasked-for answers (minimal, no auth);
-combine it with `--full`/`--auth`/`--permission` when you want those. The
-same applies to `--get-mode` (required with `--type get`) and `-y` on
-`undo module`. Every `add` command summarises what it will write and asks
-before writing: `-y` skips that confirmation, but `add auth` and `add worker`
-*also* ask which backing store to use — so those two need `--defaults`
-(or their own `--store`/`--queue` flag plus `-y`), while `add rbac -y` and
-`add observability -y` are enough.
+Omitted values prompt; in a non-interactive shell that exits 1 without
+writing. --defaults means minimal, no CQRS, and no auth. Add --full, --cqrs,
+--auth, and --permission <code> only when they are wanted. --get-mode is required with
+--type get; --field is required for GET-one and cannot be id. undo requires
+-y. add auth and add worker also require an explicit or defaulted backing
+store/queue.
 
-`<name>` for a module is a domain noun in whatever form reads naturally —
-singular or plural, any case, hyphens or underscores are all accepted and
-normalized (`products` → `product`, `Orders` → `order`, `order-item` →
-`orderitem`). From it the CLI derives the Go package name, the pluralized
-REST route (`/orders`, `/order-items`), the table, and the error-code prefix
-(`ORDER_ITEM_NOT_FOUND`). The only names it refuses are the ones that
-wouldn't compile: starting with a digit, or a Go keyword / predeclared type
-(`type`, `string`, `error`, ...).
+Module names may be singular/plural, mixed case, hyphenated, or underscored.
+The CLI normalizes the Go package, REST path, SQL table, and error-code prefix.
+Reject names that would not compile, such as a leading digit, Go keyword, or
+predeclared type.
 
-### `generate module <name>`
+## Generated module contract
 
-**Minimal is the default** — the module is created with no endpoints, and
-what lands in `cmd/api/wiring.go` is an *empty route group* under{{#if apiPrefix}} `/{{apiPrefix}}`{{else}} no prefix{{/if}}
-waiting for `generate method`. You still get every file:
-`internal/app/<pkg>/{model/,dto,errors,repository,service,handler,service_test,handler_test,repository_test}.go`
-— the full data-access surface exists (the repository and its interface are
-complete) so `generate method` has something to call. Plus the model added
-to the `AutoMigrate` call and a new `migrations/<version>_create_<plural>.{up,down}.sql`.
+generate module <name> --defaults creates a minimal module with:
 
-`--full` swaps in a CRUD skeleton instead: list/get/create/update/delete
-already routed and wired, with DTO fields and business rules left as TODOs.
-With OpenAPI enabled it also writes `docs/<plural>/{collection,item,schemas}.yaml`
-and wires them into `docs/openapi.yaml`. Use it only when a full CRUD surface
-is actually intended — otherwise prefer minimal plus explicit `generate method`
-calls.
+~~~text
+internal/app/<pkg>/
+  model/model.go
+  dto.go
+  errors.go
+  repository.go
+  service.go
+  composition.go
+  handler.go
+  service_test.go
+  handler_test.go
+  repository_test.go
+migrations/<version>_create_<plural>.{up,down}.sql
+~~~
 
-`--auth` puts the module's routes behind a valid access token (requires
-`go-scaffold add auth -y` in this project first). `--permission <code>` also
-requires that permission via `authz.Require` and seeds it in its own
-migration — it needs `add rbac`, and `--auth` must be passed alongside it.
+The minimal module has no endpoint yet, but includes the complete data-access
+surface and test seams needed by generate method. --full adds a CRUD starter
+and routes list/get/create/update/delete. --cqrs adds separate commands.go and
+queries.go application handlers; combine it with --full for a CQRS CRUD
+starter, or use it alone before adding methods one at a time. With OpenAPI
+enabled it also creates the per-domain documents and updates docs/openapi.yaml.
 
-There's no per-domain versioning — the route prefix is a single
-project-wide choice made at `create` time.
+Feature-local composition.go constructs repository → application handlers →
+handler. A module generated with `--cqrs` constructs separate command/query
+handlers there; a regular module constructs its service there.
+cmd/api/wiring.go is the process composition root: it selects shared
+infrastructure, supplies explicit cross-feature ports/security dependencies,
+and registers routes. Do not move business rules or feature-internal
+constructors into wiring, or hand-edit root route markers for a new endpoint.
 
-### `generate method <module> <name>`
+## Method shapes and stub safety
 
-Patches the existing module in place — never overwrites a method with the
-same name; if the name collides it asks for a different one instead. Route
-and shape depend on `--type`:
+generate method patches the existing module without overwriting a same-named
+method:
 
-| `--type` | Route | Notes |
+| Type | Shape | Generated behavior |
 |---|---|---|
-| `get --get-mode all` | `GET /<plural>/<kebab-name>` | list-style, reuses `FindAll` — TODO to add real filtering |
-| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | adds a real `FindBy<F>` query to the repository (and its `repository` interface + `repositoryStub` test stub); `--field` can't be `id` |
-| `post` | `POST /<plural>/<kebab-name>` | adds a body DTO; service body is a TODO stub (`apperror.NewInternal()` until implemented) |
-| `put` / `patch` | `<VERB> /<plural>/:id/<kebab-name>` | finds the record by id, TODO before saving (safe no-op until implemented) |
-| `delete` | `DELETE /<plural>/:id/<kebab-name>` | TODO stub (`apperror.NewInternal()` until implemented) |
+| get --get-mode all | GET /<plural>/<name> | Reuses FindAll; add real filtering |
+| get --get-mode one --field <f> | GET /<plural>/<f>/:<f> | Adds a repository lookup and test seam |
+| post | POST /<plural>/<name> | Body DTO plus internal-error TODO |
+| put / patch | <VERB> /<plural>/:id/<name> | Safe 501 Not Implemented; no repository read/write |
+| delete | DELETE /<plural>/:id/<name> | Internal-error TODO until implemented |
 
-### `generate migration <name>`
+The 501 contract is intentional: a generated PUT/PATCH action must not
+pretend to update a record. Implement the use case, validation, authorization,
+repository operation, tests, and OpenAPI response together before changing
+that behavior. Replace all generated TODOs before treating an endpoint as
+production-ready.
 
-Reserves a timestamped `migrations/<version>_<name>.{up,down}.sql` pair,
-both TODO stubs — the CLI doesn't guess at columns, you write the SQL. This
-is the way to make any schema change that isn't a new module: adding a
-column, an index, a foreign key, a backfill, a drop.
+## Architecture guidance for generated code
 
-### `undo module <name>`
+This project is modular plus Hexagonal/DDD-friendly, with CQRS available via
+`go-scaffold generate module <name> --cqrs`:
 
-For a `generate module` that shouldn't have happened — a typo'd name, a
-domain decided against. Deletes `internal/app/<pkg>/`, the module's
-`migrations/<version>_create_<plural>.{up,down}.sql` pair, and reverses
-everything `generate module` wired up in `cmd/api/wiring.go` (and in
-`docs/openapi.yaml` + `docs/<plural>/` when OpenAPI is enabled). `-y` skips
-the confirmation prompt, and is required in a non-interactive shell.
+- handlers are inbound adapters and know HTTP/Gin only;
+- services or commands.go/queries.go (and, for complex flows,
+  internal/app/<feature>/application/) are application/use-case boundaries and
+  depend on narrow ports;
+- models and domain invariants stay independent of Gin, GORM, Redis, and HTTP;
+- repositories/token stores/mail/queue clients are outbound adapters;
+- composition.go wires one feature locally, while cmd/api/wiring.go wires
+  the process.
 
-The migration files go because `migrations/embed.go` is a `//go:embed *`: a
-typo's migration left behind runs on every database created from then on.
-That's only safe while those files exist nowhere else, so `undo` refuses —
-deleting nothing — when they're committed to git, or when the database is
-already at or past that version. Neither is a bug to work around: a domain
-that has shipped is retired with `generate migration drop_<table>` and a
-reviewed data removal, not with this command. The table is never dropped.
+DDD does not require every CRUD row to become a large aggregate. CQRS optional:
+use it when command and query models, consistency, or read scaling differ;
+`--cqrs` creates separate command/query handlers while keeping one modular
+monolith and database by default. For simple CRUD, a single service and
+repository port are clearer. Do not add a broker, a second database, or empty
+command/query layers just for naming.
 
-What you still do by hand: real field names on the model/DTOs (the generated
-ones are placeholders), any foreign key to another domain (see
-`docs/architect/patterns.md` for the 3 rules), and the actual business logic
-behind every `TODO` the CLI leaves.
+Never import another feature's private model, repository, or handler. For
+cross-feature behavior, define a narrow public application port, use a
+documented feature API, or publish an explicit event. Keep dependencies
+flowing inward:
+
+~~~text
+handler -> application/use case -> domain + ports -> adapters
+                                  ^                 |
+                                  +--- composition -+
+~~~
+
+When a complex auth or recovery flow is generated, keep its transport adapter
+separate from its application ports. Application use cases must not import
+Gin, GORM models, or HTTP error payloads.
+
+## Runtime, migration, and security guardrails
+
+- APP_ENV is the only environment gate and accepts development or production.
+  Do not reintroduce an AUTO_MIGRATE setting.
+- Development may use the convenience db.AutoMigrate(...) bootstrap.
+  Production must never bootstrap or mutate schema at API startup. Apply
+  versioned SQL with make migrate-up; the startup version check must fail
+  fast for a behind or dirty database.
+- Use generate migration for schema changes outside a new module, write and
+  review both migration directions, and test them against a disposable DB.
+- Keep SQL, Redis, queue, mail, and other external resources under the
+  composition root and close them on every exit path. Preserve
+  SIGINT/SIGTERM graceful shutdown and do not call os.Exit from a goroutine.
+- Never log passwords, raw tokens, JWT secrets, OAuth secrets, or auth
+  headers. Client responses must not expose technical error causes.
+- Refresh-token rotation is an atomic consume: Postgres uses one SQL unit and
+  Redis uses one Lua operation. Preserve active-session cleanup and the
+  reuse-detection tombstone; never replace it with read-then-delete.
+- Password reset and email verification consume one-time tokens in the same
+  retry-safe transaction as the identity/user update. Preserve recovery on a
+  post-commit session-revocation failure.
+- Wrap technical causes with %w or apperror.NewInternal(cause). Middleware
+  logs the cause with request_id; production strips it from the response.
+
+## Verification
+
+After changing generated Go code or templates, run the relevant checks:
+
+~~~bash
+gofmt -w <changed-go-files>
+go test ./...
+go test -race ./...       # required for concurrency/auth/token changes
+go vet ./...
+golangci-lint run
+~~~
+
+For repository, schema, or auth adapter changes, use a migrated disposable
+PostgreSQL/Redis instance and set REQUIRE_TEST_DB=true or
+REQUIRE_TEST_REDIS=true; a skipped integration test is not proof. For
+changes to this CLI or its templates, run pnpm run verify, generate a fresh
+sample project, and inspect both the generated source and guidance files.
+Review git diff --check, git diff, and git status --short before handoff,
+and report exact output plus known limitations.
+
+## Migration and undo
+
+generate migration <name> reserves a timestamped .up.sql/.down.sql pair; the
+engineer writes the actual SQL. undo module <name> -y is only for an unshipped
+generated module and refuses if its migration is committed or applied. Retire
+a shipped domain with a reviewed drop migration and data plan, not undo.

@@ -8,6 +8,12 @@ const REPO_INTERFACE_MARKER = "// go-scaffold:repository-interface";
 const REPO_IMPL_MARKER = "// go-scaffold:repository-methods";
 const SERVICE_MARKER = "// go-scaffold:service-methods";
 const SERVICE_INTERFACE_MARKER = "// go-scaffold:service-interface";
+const COMMAND_REPO_INTERFACE_MARKER = "// go-scaffold:command-repository-interface";
+const QUERY_REPO_INTERFACE_MARKER = "// go-scaffold:query-repository-interface";
+const COMMAND_MARKER = "// go-scaffold:command-methods";
+const QUERY_MARKER = "// go-scaffold:query-methods";
+const COMMAND_INTERFACE_MARKER = "// go-scaffold:command-interface";
+const QUERY_INTERFACE_MARKER = "// go-scaffold:query-interface";
 const HANDLER_ROUTES_MARKER = "// go-scaffold:handler-routes";
 const HANDLER_FUNCS_MARKER = "// go-scaffold:handler-funcs";
 const REPOSITORY_STUB_FIELDS_MARKER = "// go-scaffold:repository-stub-fields";
@@ -36,9 +42,68 @@ export interface MethodPatchOptions {
 export interface MethodPatchPaths {
   dtoPath: string;
   repositoryPath: string;
+  /** Present when the module was generated with --cqrs. */
+  commandPath?: string;
+  /** Present when the module was generated with --cqrs. */
+  queryPath?: string;
   servicePath: string;
   handlerPath: string;
   serviceTestPath: string;
+}
+
+function isCqrs(paths: MethodPatchPaths): boolean {
+  return Boolean(
+    paths.commandPath &&
+      paths.queryPath &&
+      fs.existsSync(paths.commandPath) &&
+      fs.existsSync(paths.queryPath)
+  );
+}
+
+function cqrsTarget(paths: MethodPatchPaths, type: MethodType): {
+  path: string;
+  implementationMarker: string;
+  interfaceMarker: string;
+  callReceiver: "commands" | "queries";
+} | null {
+  if (!isCqrs(paths)) return null;
+  if (type === "get") {
+    return {
+      path: paths.queryPath!,
+      implementationMarker: QUERY_MARKER,
+      interfaceMarker: QUERY_INTERFACE_MARKER,
+      callReceiver: "queries",
+    };
+  }
+  return {
+    path: paths.commandPath!,
+    implementationMarker: COMMAND_MARKER,
+    interfaceMarker: COMMAND_INTERFACE_MARKER,
+    callReceiver: "commands",
+  };
+}
+
+function insertCqrsImplementation(paths: MethodPatchPaths, type: MethodType, block: string, goModule: string): void {
+  const target = cqrsTarget(paths, type);
+  if (!target) return;
+  let content = fs.readFileSync(target.path, "utf8");
+  if (type !== "get") {
+    content = ensureImport(content, `${goModule}/internal/shared/apperror`);
+  }
+  content = insertBeforeMarker(content, target.implementationMarker, block);
+  fs.writeFileSync(target.path, content);
+}
+
+function insertCqrsFacade(servicePath: string, block: string, goModule: string, modulePath: string): void {
+  let service = fs.readFileSync(servicePath, "utf8");
+  // Minimal CQRS service.go intentionally has no imports until a method is
+  // generated. The compatibility facade still uses the normal feature input,
+  // model, and UUID types, so make the first generated method compile too.
+  service = ensureImport(service, "context");
+  service = ensureImport(service, `${goModule}/internal/app/${modulePath}/model`);
+  service = ensureImport(service, "github.com/google/uuid");
+  service = insertBeforeMarker(service, SERVICE_MARKER, block);
+  fs.writeFileSync(servicePath, service);
 }
 
 function assertNotDuplicate(content: string, needle: string, what: string): void {
@@ -83,15 +148,15 @@ export function patchMethod(
   } else if (opts.type === "post") {
     patchPost(paths, naming, method, goModule);
   } else if (opts.type === "put" || opts.type === "patch") {
-    patchResourceAction(paths, naming, method, opts.type, goModule);
+    patchResourceAction(paths, method, opts.type, goModule, naming.pkg);
   } else {
-    patchDelete(paths, method, goModule);
+    patchDelete(paths, method, goModule, naming.pkg);
   }
-  patchHandlerServiceInterface(paths.handlerPath, naming, method, opts, goModule);
+  patchHandlerServiceInterface(paths, naming, method, opts, goModule);
 }
 
 function patchHandlerServiceInterface(
-  handlerPath: string,
+  paths: MethodPatchPaths,
   naming: ModuleNaming,
   method: MethodNaming,
   opts: MethodPatchOptions,
@@ -108,7 +173,8 @@ function patchHandlerServiceInterface(
   } else if (opts.type === "post") {
     signature = `${method.pascalName}(context.Context, ${method.pascalName}Input) (*model.${naming.pascalName}, error)`;
   } else if (opts.type === "put" || opts.type === "patch") {
-    signature = `${method.pascalName}(context.Context, uuid.UUID) (*model.${naming.pascalName}, error)`;
+    signature = `${method.pascalName}(context.Context, uuid.UUID) error`;
+    needsModel = false;
     needsUUID = true;
   } else {
     signature = `${method.pascalName}(context.Context, uuid.UUID) error`;
@@ -116,7 +182,7 @@ function patchHandlerServiceInterface(
     needsUUID = true;
   }
 
-  let handler = fs.readFileSync(handlerPath, "utf8");
+  let handler = fs.readFileSync(paths.handlerPath, "utf8");
   if (!hasMarker(handler, SERVICE_INTERFACE_MARKER)) {
     // Projects scaffolded before the narrow service interface stored *Service
     // directly. The concrete type already exposes generated methods, so there
@@ -134,7 +200,14 @@ function patchHandlerServiceInterface(
   if (needsUUID) {
     handler = ensureImport(handler, "github.com/google/uuid");
   }
-  fs.writeFileSync(handlerPath, handler);
+  fs.writeFileSync(paths.handlerPath, handler);
+
+  const target = cqrsTarget(paths, opts.type);
+  if (target) {
+    let application = fs.readFileSync(target.path, "utf8");
+    application = insertBeforeMarker(application, target.interfaceMarker, signature);
+    fs.writeFileSync(target.path, application);
+  }
 }
 
 function patchGetAll(paths: MethodPatchPaths, naming: ModuleNaming, method: MethodNaming, goModule: string): void {
@@ -146,7 +219,7 @@ function patchGetAll(paths: MethodPatchPaths, naming: ModuleNaming, method: Meth
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\tp := pagination.Parse(c)`,
-      `\titems, err := h.svc.${method.pascalName}(c.Request.Context(), p.Limit, p.Offset)`,
+      `\titems, err := ${isCqrs(paths) ? `h.queries.${method.pascalName}` : `h.svc.${method.pascalName}`}(c.Request.Context(), p.Limit, p.Offset)`,
       `\tif err != nil {`,
       `\t\tc.Error(err)`,
       `\t\treturn`,
@@ -162,23 +235,35 @@ function patchGetAll(paths: MethodPatchPaths, naming: ModuleNaming, method: Meth
   );
   writeHandler(paths.handlerPath, handler, goModule, ["net/http", "pagination"]);
 
-  let service = fs.readFileSync(paths.servicePath, "utf8");
-  service = insertBeforeMarker(
-    service,
-    SERVICE_MARKER,
-    [
-      `func (s *Service) ${method.pascalName}(ctx context.Context, limit, offset int) ([]model.${naming.pascalName}, error) {`,
-      `\t// TODO: add real filtering for "${method.name}" — currently reuses FindAll`,
-      `\titems, err := s.repo.FindAll(ctx, limit, offset)`,
-      `\tif err != nil {`,
-      `\t\treturn nil, apperror.NewInternal()`,
-      `\t}`,
-      `\treturn items, nil`,
-      `}`,
-      ``,
-    ].join("\n")
-  );
-  fs.writeFileSync(paths.servicePath, service);
+  const queryMethod = [
+    `func (h *QueryHandler) ${method.pascalName}(ctx context.Context, limit, offset int) ([]model.${naming.pascalName}, error) {`,
+    `\t// TODO: add real filtering for "${method.name}" — currently reuses FindAll`,
+    `\titems, err := h.repo.FindAll(ctx, limit, offset)`,
+    `\tif err != nil {`,
+    `\t\treturn nil, apperror.NewInternal(err)`,
+    `\t}`,
+    `\treturn items, nil`,
+    `}`,
+    ``,
+  ].join("\n");
+  const serviceFacade = [
+    `func (s *Service) ${method.pascalName}(ctx context.Context, limit, offset int) ([]model.${naming.pascalName}, error) {`,
+    `\treturn s.queries.${method.pascalName}(ctx, limit, offset)`,
+    `}`,
+    ``,
+  ].join("\n");
+  if (isCqrs(paths)) {
+    insertCqrsImplementation(paths, "get", queryMethod, goModule);
+    insertCqrsFacade(paths.servicePath, serviceFacade, goModule, naming.pkg);
+  } else {
+    let service = fs.readFileSync(paths.servicePath, "utf8");
+    service = insertBeforeMarker(
+      service,
+      SERVICE_MARKER,
+      queryMethod.replace("(h *QueryHandler)", "(s *Service)").replace("h.repo", "s.repo")
+    );
+    fs.writeFileSync(paths.servicePath, service);
+  }
 }
 
 function patchGetOne(
@@ -217,11 +302,21 @@ function patchGetOne(
   fs.writeFileSync(paths.repositoryPath, repo);
 
   let service = fs.readFileSync(paths.servicePath, "utf8");
-  service = insertBeforeMarker(
-    service,
-    REPO_INTERFACE_MARKER,
-    `FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error)`
-  );
+  if (isCqrs(paths)) {
+    let query = fs.readFileSync(paths.queryPath!, "utf8");
+    query = insertBeforeMarker(
+      query,
+      QUERY_REPO_INTERFACE_MARKER,
+      `FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error)`
+    );
+    fs.writeFileSync(paths.queryPath!, query);
+  } else {
+    service = insertBeforeMarker(
+      service,
+      REPO_INTERFACE_MARKER,
+      `FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error)`
+    );
+  }
 
   // The repository interface just grew, so the test double needs a matching
   // method or focused service tests stop compiling. New projects use a
@@ -273,21 +368,33 @@ function patchGetOne(
   }
   fs.writeFileSync(paths.serviceTestPath, serviceTest);
 
-  service = insertBeforeMarker(
-    service,
-    SERVICE_MARKER,
-    [
-      `func (s *Service) ${method.pascalName}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error) {`,
-      `\tm, err := s.repo.FindBy${fieldPascal}(ctx, ${fieldParam})`,
-      `\tif err != nil {`,
-      `\t\treturn nil, wrapFindErr(err)`,
-      `\t}`,
-      `\treturn m, nil`,
-      `}`,
-      ``,
-    ].join("\n")
-  );
-  fs.writeFileSync(paths.servicePath, service);
+  const queryMethod = [
+    `func (h *QueryHandler) ${method.pascalName}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error) {`,
+    `\tm, err := h.repo.FindBy${fieldPascal}(ctx, ${fieldParam})`,
+    `\tif err != nil {`,
+    `\t\treturn nil, wrapFindErr(err)`,
+    `\t}`,
+    `\treturn m, nil`,
+    `}`,
+    ``,
+  ].join("\n");
+  const serviceFacade = [
+    `func (s *Service) ${method.pascalName}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error) {`,
+    `\treturn s.queries.${method.pascalName}(ctx, ${fieldParam})`,
+    `}`,
+    ``,
+  ].join("\n");
+  if (isCqrs(paths)) {
+    insertCqrsImplementation(paths, "get", queryMethod, goModule);
+    insertCqrsFacade(paths.servicePath, serviceFacade, goModule, naming.pkg);
+  } else {
+    service = insertBeforeMarker(
+      service,
+      SERVICE_MARKER,
+      queryMethod.replace("(h *QueryHandler)", "(s *Service)").replace("h.repo", "s.repo")
+    );
+    fs.writeFileSync(paths.servicePath, service);
+  }
 
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
   handler = insertBeforeMarker(
@@ -301,7 +408,7 @@ function patchGetOne(
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\t${fieldParam} := c.Param("${fieldParam}")`,
-      `\tm, err := h.svc.${method.pascalName}(c.Request.Context(), ${fieldParam})`,
+      `\tm, err := ${isCqrs(paths) ? `h.queries.${method.pascalName}` : `h.svc.${method.pascalName}`}(c.Request.Context(), ${fieldParam})`,
       `\tif err != nil {`,
       `\t\tc.Error(err)`,
       `\t\treturn`,
@@ -334,7 +441,7 @@ function patchPost(paths: MethodPatchPaths, naming: ModuleNaming, method: Method
       `\t\tc.Error(httpx.BindErr(err))`,
       `\t\treturn`,
       `\t}`,
-      `\tm, err := h.svc.${method.pascalName}(c.Request.Context(), in)`,
+      `\tm, err := ${isCqrs(paths) ? `h.commands.${method.pascalName}` : `h.svc.${method.pascalName}`}(c.Request.Context(), in)`,
       `\tif err != nil {`,
       `\t\tc.Error(err)`,
       `\t\treturn`,
@@ -346,28 +453,40 @@ function patchPost(paths: MethodPatchPaths, naming: ModuleNaming, method: Method
   );
   writeHandler(paths.handlerPath, handler, goModule, ["net/http", "httpx"]);
 
-  let service = fs.readFileSync(paths.servicePath, "utf8");
-  service = insertBeforeMarker(
-    service,
-    SERVICE_MARKER,
-    [
-      `func (s *Service) ${method.pascalName}(ctx context.Context, in ${inputName}) (*model.${naming.pascalName}, error) {`,
-      `\t// TODO: implement "${method.name}" — this stub does nothing yet`,
-      `\t_ = in`,
-      `\treturn nil, apperror.NewInternal()`,
-      `}`,
-      ``,
-    ].join("\n")
-  );
-  fs.writeFileSync(paths.servicePath, service);
+  const commandMethod = [
+    `func (h *CommandHandler) ${method.pascalName}(ctx context.Context, in ${inputName}) (*model.${naming.pascalName}, error) {`,
+    `\t// TODO: implement "${method.name}" — this stub does nothing yet`,
+    `\t_ = in`,
+    `\treturn nil, apperror.NewInternal()`,
+    `}`,
+    ``,
+  ].join("\n");
+  const serviceFacade = [
+    `func (s *Service) ${method.pascalName}(ctx context.Context, in ${inputName}) (*model.${naming.pascalName}, error) {`,
+    `\treturn s.commands.${method.pascalName}(ctx, in)`,
+    `}`,
+    ``,
+  ].join("\n");
+  if (isCqrs(paths)) {
+    insertCqrsImplementation(paths, "post", commandMethod, goModule);
+    insertCqrsFacade(paths.servicePath, serviceFacade, goModule, naming.pkg);
+  } else {
+    let service = fs.readFileSync(paths.servicePath, "utf8");
+    service = insertBeforeMarker(
+      service,
+      SERVICE_MARKER,
+      commandMethod.replace("(h *CommandHandler)", "(s *Service)").replace("h.repo", "s.repo")
+    );
+    fs.writeFileSync(paths.servicePath, service);
+  }
 }
 
 function patchResourceAction(
   paths: MethodPatchPaths,
-  naming: ModuleNaming,
   method: MethodNaming,
   type: "put" | "patch",
-  goModule: string
+  goModule: string,
+  modulePath: string
 ): void {
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
   handler = insertBeforeMarker(
@@ -384,51 +503,46 @@ function patchResourceAction(
       `\tif !ok {`,
       `\t\treturn`,
       `\t}`,
-      `\tm, err := h.svc.${method.pascalName}(c.Request.Context(), id)`,
-      `\tif err != nil {`,
+      `\tif err := ${isCqrs(paths) ? `h.commands.${method.pascalName}` : `h.svc.${method.pascalName}`}(c.Request.Context(), id); err != nil {`,
       `\t\tc.Error(err)`,
       `\t\treturn`,
       `\t}`,
-      `\tc.JSON(http.StatusOK, toResponse(m))`,
+      `\tc.Status(http.StatusNotImplemented)`,
       `}`,
       ``,
     ].join("\n")
   );
   writeHandler(paths.handlerPath, handler, goModule, ["net/http", "httpx"]);
 
-  let service = fs.readFileSync(paths.servicePath, "utf8");
-  service = insertBeforeMarker(
-    service,
-    SERVICE_MARKER,
-    [
-      `func (s *Service) ${method.pascalName}(ctx context.Context, id uuid.UUID) (*model.${naming.pascalName}, error) {`,
-      `\tm, err := s.repo.FindByID(ctx, id)`,
-      `\tif err != nil {`,
-      `\t\treturn nil, wrapFindErr(err)`,
-      `\t}`,
-      `\t// TODO: implement "${method.name}" — currently a no-op save`,
-      `\t// The version compared here is the one just read, so this only`,
-      `\t// catches a writer that lands between the read above and this write.`,
-      `\t// It is NOT the check Update does: that one compares against the version`,
-      `\t// the *client* last saw, which is what catches someone submitting a`,
-      `\t// form built from a copy that has since gone stale. If this endpoint`,
-      `\t// needs that, give it an input struct carrying Version and assign it`,
-      `\t// to m.Version here, the way service.go's Update does.`,
-      `\tif err := s.repo.Update(ctx, m); err != nil {`,
-      `\t\tif errors.Is(err, ErrStaleVersion) {`,
-      `\t\t\treturn nil, errStale()`,
-      `\t\t}`,
-      `\t\treturn nil, apperror.NewInternal()`,
-      `\t}`,
-      `\treturn m, nil`,
-      `}`,
-      ``,
-    ].join("\n")
-  );
-  fs.writeFileSync(paths.servicePath, service);
+  const commandMethod = [
+    `func (h *CommandHandler) ${method.pascalName}(ctx context.Context, id uuid.UUID) error {`,
+    `\t_ = ctx`,
+    `\t_ = id`,
+    `\treturn apperror.NewNotImplemented()`,
+    `}`,
+    ``,
+  ].join("\n");
+  const serviceFacade = [
+    `func (s *Service) ${method.pascalName}(ctx context.Context, id uuid.UUID) error {`,
+    `\treturn s.commands.${method.pascalName}(ctx, id)`,
+    `}`,
+    ``,
+  ].join("\n");
+  if (isCqrs(paths)) {
+    insertCqrsImplementation(paths, type, commandMethod, goModule);
+    insertCqrsFacade(paths.servicePath, serviceFacade, goModule, modulePath);
+  } else {
+    let service = fs.readFileSync(paths.servicePath, "utf8");
+    service = insertBeforeMarker(
+      service,
+      SERVICE_MARKER,
+      commandMethod.replace("(h *CommandHandler)", "(s *Service)")
+    );
+    fs.writeFileSync(paths.servicePath, service);
+  }
 }
 
-function patchDelete(paths: MethodPatchPaths, method: MethodNaming, goModule: string): void {
+function patchDelete(paths: MethodPatchPaths, method: MethodNaming, goModule: string, modulePath: string): void {
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
   handler = insertBeforeMarker(
     handler,
@@ -444,7 +558,7 @@ function patchDelete(paths: MethodPatchPaths, method: MethodNaming, goModule: st
       `\tif !ok {`,
       `\t\treturn`,
       `\t}`,
-      `\tif err := h.svc.${method.pascalName}(c.Request.Context(), id); err != nil {`,
+      `\tif err := ${isCqrs(paths) ? `h.commands.${method.pascalName}` : `h.svc.${method.pascalName}`}(c.Request.Context(), id); err != nil {`,
       `\t\tc.Error(err)`,
       `\t\treturn`,
       `\t}`,
@@ -455,29 +569,64 @@ function patchDelete(paths: MethodPatchPaths, method: MethodNaming, goModule: st
   );
   writeHandler(paths.handlerPath, handler, goModule, ["net/http", "httpx"]);
 
-  let service = fs.readFileSync(paths.servicePath, "utf8");
-  service = insertBeforeMarker(
-    service,
-    SERVICE_MARKER,
-    [
-      `func (s *Service) ${method.pascalName}(ctx context.Context, id uuid.UUID) error {`,
-      `\t// TODO: implement "${method.name}" — this stub does nothing yet`,
-      `\treturn apperror.NewInternal()`,
-      `}`,
-      ``,
-    ].join("\n")
-  );
-  fs.writeFileSync(paths.servicePath, service);
+  const commandMethod = [
+    `func (h *CommandHandler) ${method.pascalName}(ctx context.Context, id uuid.UUID) error {`,
+    `\t// TODO: implement "${method.name}" — this stub does nothing yet`,
+    `\treturn apperror.NewInternal()`,
+    `}`,
+    ``,
+  ].join("\n");
+  const serviceFacade = [
+    `func (s *Service) ${method.pascalName}(ctx context.Context, id uuid.UUID) error {`,
+    `\treturn s.commands.${method.pascalName}(ctx, id)`,
+    `}`,
+    ``,
+  ].join("\n");
+  if (isCqrs(paths)) {
+    insertCqrsImplementation(paths, "delete", commandMethod, goModule);
+    insertCqrsFacade(paths.servicePath, serviceFacade, goModule, modulePath);
+  } else {
+    let service = fs.readFileSync(paths.servicePath, "utf8");
+    service = insertBeforeMarker(
+      service,
+      SERVICE_MARKER,
+      commandMethod.replace("(h *CommandHandler)", "(s *Service)")
+    );
+    fs.writeFileSync(paths.servicePath, service);
+  }
 }
 
 export function markersPresent(handlerPath: string, servicePath: string): boolean {
-  const handler = fs.readFileSync(handlerPath, "utf8");
-  const service = fs.readFileSync(servicePath, "utf8");
-  return (
+  return markersPresentForPaths({ handlerPath, servicePath });
+}
+
+export function markersPresentForPaths(
+  paths: Pick<MethodPatchPaths, "handlerPath" | "servicePath"> &
+    Partial<Pick<MethodPatchPaths, "commandPath" | "queryPath">>
+): boolean {
+  const handler = fs.readFileSync(paths.handlerPath, "utf8");
+  const service = fs.readFileSync(paths.servicePath, "utf8");
+  const baseMarkers =
     hasMarker(handler, HANDLER_ROUTES_MARKER) &&
     hasMarker(handler, HANDLER_FUNCS_MARKER) &&
     (hasMarker(handler, SERVICE_INTERFACE_MARKER) || handler.includes("svc *Service")) &&
     hasMarker(service, SERVICE_MARKER) &&
-    hasMarker(service, REPO_INTERFACE_MARKER)
+    hasMarker(service, REPO_INTERFACE_MARKER);
+
+  const hasCommand = Boolean(paths.commandPath && fs.existsSync(paths.commandPath));
+  const hasQuery = Boolean(paths.queryPath && fs.existsSync(paths.queryPath));
+  if (!hasCommand && !hasQuery) return baseMarkers;
+  if (!hasCommand || !hasQuery) return false;
+
+  const commands = fs.readFileSync(paths.commandPath!, "utf8");
+  const queries = fs.readFileSync(paths.queryPath!, "utf8");
+  return (
+    baseMarkers &&
+    hasMarker(commands, COMMAND_MARKER) &&
+    hasMarker(commands, COMMAND_INTERFACE_MARKER) &&
+    hasMarker(commands, COMMAND_REPO_INTERFACE_MARKER) &&
+    hasMarker(queries, QUERY_MARKER) &&
+    hasMarker(queries, QUERY_INTERFACE_MARKER) &&
+    hasMarker(queries, QUERY_REPO_INTERFACE_MARKER)
   );
 }

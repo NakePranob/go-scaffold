@@ -9,7 +9,7 @@ import {
   toDbName,
 } from "../utils/naming";
 import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
-import { MethodPatchPaths, assertMethodAbsent, markersPresent, patchMethod } from "../utils/method-patcher";
+import { MethodPatchPaths, assertMethodAbsent, markersPresentForPaths, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { newMigrationVersion } from "../utils/migrations";
@@ -100,9 +100,13 @@ function methodOpenapiDocument(
     );
   }
 
-  const status = type === "delete" ? "204" : type === "post" ? "201" : "200";
-  operation.push("  responses:", `    \"${status}\":`, `      description: ${type === "delete" ? "completed or already absent" : "TODO define response"}`);
-  if (type !== "delete") {
+  const status = type === "delete" ? "204" : type === "post" ? "201" : type === "put" || type === "patch" ? "501" : "200";
+  operation.push(
+    "  responses:",
+    `    \"${status}\":`,
+    `      description: ${type === "delete" ? "completed or already absent" : type === "put" || type === "patch" ? "not implemented" : "TODO define response"}`
+  );
+  if (type !== "delete" && type !== "put" && type !== "patch") {
     operation.push(
       "      content:",
       "        application/json:",
@@ -112,7 +116,7 @@ function methodOpenapiDocument(
     );
   }
   operation.push("    \"400\": { $ref: '../../common/responses.yaml#/ValidationError' }");
-  if (type === "get" || type === "put" || type === "patch") {
+  if (type === "get") {
     operation.push("    \"404\": { $ref: '../../common/responses.yaml#/NotFoundError' }");
   }
 
@@ -139,18 +143,36 @@ export async function generateMethod(
   const paths: MethodPatchPaths = {
     dtoPath: path.join(moduleDir, "dto.go"),
     repositoryPath: path.join(moduleDir, "repository.go"),
+    commandPath: path.join(moduleDir, "commands.go"),
+    queryPath: path.join(moduleDir, "queries.go"),
     servicePath: path.join(moduleDir, "service.go"),
     handlerPath: path.join(moduleDir, "handler.go"),
     serviceTestPath: path.join(moduleDir, "service_test.go"),
   };
 
-  for (const p of Object.values(paths)) {
+  const requiredPaths = [
+    paths.dtoPath,
+    paths.repositoryPath,
+    paths.servicePath,
+    paths.handlerPath,
+    paths.serviceTestPath,
+  ];
+  for (const p of requiredPaths) {
     if (!fs.existsSync(p)) {
       throw new Error(
         `module "${naming.pkg}" not found at ${moduleDir} (missing ${path.basename(p)}) — ` +
           `run \`go-scaffold generate module ${naming.pkg}\` first`
       );
     }
+  }
+  const cqrsPaths = [paths.commandPath, paths.queryPath].filter(
+    (candidate): candidate is string => candidate !== undefined && fs.existsSync(candidate)
+  );
+  if (cqrsPaths.length === 1) {
+    throw new Error(
+      `module "${naming.pkg}" has an incomplete CQRS boundary at ${moduleDir} — ` +
+        `commands.go and queries.go must be present together`
+    );
   }
 
   const type = opts.type ?? (await promptMethodType());
@@ -172,7 +194,7 @@ export async function generateMethod(
   // patchMethod writes dto.go, then handler.go, then reads service.go, so a
   // missing service marker used to leave two files patched and the method
   // permanently un-retryable (assertNotDuplicate then sees it as existing).
-  if (!markersPresent(paths.handlerPath, paths.servicePath)) {
+  if (!markersPresentForPaths(paths)) {
     throw new Error(
       `internal/app/${naming.pkg} is missing the marker comments \`generate method\` patches at.\n` +
         `handler.go and service.go must both still carry their \`// go-scaffold:*\` markers —\n` +
@@ -239,5 +261,6 @@ export async function generateMethod(
   if (docsRelativePath) {
     console.log(pc.green(`docs: docs/${docsRelativePath} (wired into docs/openapi.yaml)`));
   }
-  console.log(pc.dim(`\nnext: fill in the TODO in service.go, then \`go build ./...\` / \`go test ./...\``));
+  const implementationFile = paths.commandPath && paths.queryPath ? (type === "get" ? "queries.go" : "commands.go") : "service.go";
+  console.log(pc.dim(`\nnext: fill in the TODO in ${implementationFile}, then \`go build ./...\` / \`go test ./...\``));
 }

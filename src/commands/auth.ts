@@ -33,7 +33,7 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 ];
 
 // addAuth scaffolds email/password authentication: a users+identities model
-// pair, JWT access tokens, a Redis-backed refresh token store with
+// pair, JWT access tokens, a selectable refresh token store with
 // rotation + reuse detection, and register/login/refresh/logout/me. No RBAC
 // (no roles/permissions) — that's a separate opt-in on top of this, since
 // most projects need "is this caller logged in" long before they need "can
@@ -65,7 +65,11 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
     patchEnvExampleForSMTP(path.join(projectDir, ".env.example"));
   }
 
-  await applyTemplateEntries(projectDir, authFiles(store), { goModule: config.goModule });
+  await applyTemplateEntries(projectDir, authFiles(store), {
+    goModule: config.goModule,
+    redis: store === "redis",
+    worker,
+  });
 
   const migrationsDir = path.join(projectDir, "migrations");
   fs.ensureDirSync(migrationsDir);
@@ -104,17 +108,17 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
     {}
   );
 
-  if (store === "postgres") {
-    const authTokensVersion = newMigrationVersion(migrationsDir);
-    await applyTemplateEntries(
-      projectDir,
-      [
-        { template: "add/auth/migrations/create_auth_tokens.up.sql.hbs", output: path.join("migrations", `${authTokensVersion}_create_auth_tokens.up.sql`) },
-        { template: "add/auth/migrations/create_auth_tokens.down.sql.hbs", output: path.join("migrations", `${authTokensVersion}_create_auth_tokens.down.sql`) },
-      ],
-      {}
-    );
-  }
+  // Recovery tokens are always stored in Postgres so consumption and the user
+  // update can share one transaction, even when refresh rotation uses Redis.
+  const authTokensVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/create_auth_tokens.up.sql.hbs", output: path.join("migrations", `${authTokensVersion}_create_auth_tokens.up.sql`) },
+      { template: "add/auth/migrations/create_auth_tokens.down.sql.hbs", output: path.join("migrations", `${authTokensVersion}_create_auth_tokens.down.sql`) },
+    ],
+    {}
+  );
 
   // Only meaningful when there is a worker; readConfig fills this from the
   // adapter file on disk, so the only way it is still unknown is a project
@@ -178,8 +182,8 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
   );
   console.log(
     store === "postgres"
-      ? "tokens + rate-limit counters: Postgres (user_svc.auth_tokens) and in-process — no Redis"
-      : "tokens + rate-limit counters: Redis"
+      ? "refresh + recovery tokens: Postgres (user_svc.auth_tokens), rate-limit counters in-process — no Redis"
+      : "refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres (user_svc.auth_tokens)"
   );
   console.log(
     "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
@@ -189,7 +193,7 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
   );
   console.log(
     pc.dim(
-      "\nnext: go mod tidy, then apply the new migrations (AUTO_MIGRATE=true picks them up automatically in dev)\n" +
+      "\nnext: go mod tidy, then apply the new migrations with `make migrate-up` before production\n" +
         "seed an admin: SEED_ADMIN_EMAIL=... SEED_ADMIN_PASSWORD=... make seed"
     )
   );

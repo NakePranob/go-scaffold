@@ -46,17 +46,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("db handle: %w", err)
 	}
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			logger.Error("close db", "error", err)
+		}
+	}()
 	// go-scaffold:platform-init
 
-	// AutoMigrate creates tables but never the schema they live in — each
-	// domain gets its own (see model.go's TableName), so it has to exist
-	// before AutoMigrate runs. The versioned SQL migrations create the same
-	// schemas with CREATE SCHEMA IF NOT EXISTS, so this only matters for dev.
-	// go-scaffold:schemas
+	if !cfg.IsProd() {
+		// Development boot creates tables but never the schema they live in — each
+		// domain gets its own (see model.go's TableName), so it has to exist
+		// before the bootstrap runs. Production runs the versioned SQL migrations
+		// instead, so this entire branch is skipped there.
+		// go-scaffold:schemas
 
-	if cfg.AutoMigrate {
-		// ponytail: AutoMigrate is for dev only (add-only, locks the table once data grows)
-		// prod: set AUTO_MIGRATE=false and run golang-migrate as versioned SQL instead
 		if err := db.AutoMigrate(
 			// go-scaffold:models
 		); err != nil {

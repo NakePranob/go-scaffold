@@ -52,7 +52,7 @@ func (s *Service) PermissionsOf(ctx context.Context, roleCode string) (map[strin
 }
 
 // CodeExists reports whether code names a real role — used by user.Service's
-// SetRole to validate a role assignment: AutoMigrate-only test schemas never
+// SetRole to validate a role assignment: development-only test schemas never
 // create the users_role_fkey FK, so that alone can't be relied on to reject
 // an unknown code.
 func (s *Service) CodeExists(ctx context.Context, code string) (bool, error) {
@@ -75,7 +75,7 @@ type roleListItem struct {
 func (s *Service) List(ctx context.Context, limit, offset int) ([]roleListItem, error) {
 	roles, err := s.repo.FindAll(ctx, limit, offset)
 	if err != nil {
-		return nil, apperror.NewInternal()
+		return nil, apperror.NewInternal(err)
 	}
 	// ponytail: one query per role, not a join. A system has a handful of
 	// roles, so this is a handful of round trips on an admin screen nobody
@@ -88,7 +88,7 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]roleListItem, 
 	for i, r := range roles {
 		perms, err := s.repo.PermissionCodes(ctx, r.Code)
 		if err != nil {
-			return nil, apperror.NewInternal()
+			return nil, apperror.NewInternal(err)
 		}
 		out[i] = roleListItem{Role: r, Permissions: perms}
 	}
@@ -108,7 +108,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*roleListItem, er
 		if dberr.IsDuplicate(err) {
 			return nil, errConflict()
 		}
-		return nil, apperror.NewInternal()
+		return nil, apperror.NewInternal(err)
 	}
 	return &roleListItem{Role: *m, Permissions: []string{}}, nil
 }
@@ -127,7 +127,7 @@ func (s *Service) SetPermissions(ctx context.Context, code string, permissionCod
 	if !slices.Contains(permissionCodes, PermRoleManage) {
 		isLast, err := s.isLastRoleManager(ctx, code)
 		if err != nil {
-			return nil, apperror.NewInternal()
+			return nil, apperror.NewInternal(err)
 		}
 		if isLast {
 			return nil, errLastRoleManager()
@@ -139,18 +139,18 @@ func (s *Service) SetPermissions(ctx context.Context, code string, permissionCod
 		if dberr.IsForeignKey(err) {
 			return nil, errUnknownPermission()
 		}
-		return nil, apperror.NewInternal()
+		return nil, apperror.NewInternal(err)
 	}
 	return &roleListItem{Role: *m, Permissions: permissionCodes}, nil
 }
 
 // validatePermissionCodes checks every code against the actual permission
-// catalog — the DB's FK alone isn't enough (AutoMigrate, used in dev/tests,
+// catalog — the DB's FK alone isn't enough (the development bootstrap, used in dev/tests,
 // never creates it, only the raw migration SQL does).
 func (s *Service) validatePermissionCodes(ctx context.Context, codes []string) error {
 	all, err := s.repo.AllPermissionCodes(ctx)
 	if err != nil {
-		return apperror.NewInternal()
+		return apperror.NewInternal(err)
 	}
 	valid := make(map[string]struct{}, len(all))
 	for _, c := range all {
@@ -174,7 +174,7 @@ func (s *Service) Delete(ctx context.Context, code string) error {
 	}
 	isLast, err := s.isLastRoleManager(ctx, code)
 	if err != nil {
-		return apperror.NewInternal()
+		return apperror.NewInternal(err)
 	}
 	if isLast {
 		return errLastRoleManager()
@@ -183,7 +183,7 @@ func (s *Service) Delete(ctx context.Context, code string) error {
 		if dberr.IsForeignKey(err) {
 			return errHasReferences()
 		}
-		return apperror.NewInternal()
+		return apperror.NewInternal(err)
 	}
 	return nil
 }
@@ -204,7 +204,7 @@ func (s *Service) isLastRoleManager(ctx context.Context, code string) (bool, err
 func (s *Service) ListPermissions(ctx context.Context, limit, offset int) ([]model.Permission, error) {
 	items, err := s.repo.FindAllPermissions(ctx, limit, offset)
 	if err != nil {
-		return nil, apperror.NewInternal()
+		return nil, apperror.NewInternal(err)
 	}
 	return items, nil
 }
@@ -213,5 +213,5 @@ func wrapFindErr(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errNotFound()
 	}
-	return apperror.NewInternal()
+	return apperror.NewInternal(err)
 }

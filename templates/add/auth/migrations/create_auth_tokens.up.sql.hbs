@@ -1,4 +1,5 @@
--- Short-lived auth tokens, for projects scaffolded with `--store postgres`.
+-- Durable recovery tokens for both refresh-store choices. Refresh rotation may
+-- use Redis, but password reset and email verification share this DB contract.
 -- Only the SHA-256 hash is stored; see model/authtoken.go for what `kind`
 -- means and why the rotation tombstone is a separate row.
 CREATE TABLE user_svc.auth_tokens (
@@ -9,8 +10,7 @@ CREATE TABLE user_svc.auth_tokens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Named to match model.AuthToken's own `index:` tags exactly — GORM's
--- AutoMigrate (dev) reconciles against these names, and an index the
--- migration named differently is what stops the app booting.
+-- Named to match model.AuthToken's own `index:` tags exactly, so the
+-- development bootstrap and production migration describe the same indexes.
 CREATE INDEX idx_auth_tokens_user_kind ON user_svc.auth_tokens (user_id, kind);
 CREATE INDEX idx_auth_tokens_expires_at ON user_svc.auth_tokens (expires_at);

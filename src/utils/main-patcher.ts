@@ -26,24 +26,24 @@ export interface RoutePatch {
 // the exact lines patchMainGo inserts for a module — one source of truth so
 // unpatchMainGo removes precisely what patch added.
 //
-// The service gets its own named variable rather than being constructed
-// inline inside NewHandler(...). docs/architect/patterns.md tells you to wire
-// one domain's service into another's constructor when it needs behaviour
-// from it, which means editing this block by hand — and an inline expression
-// has nowhere to hold the result. With a named variable the edit is "add an
-// argument to the end of line one", and unpatchMainGo can still find the line
-// afterwards because it matches on the `<pkg>Svc :=` prefix, not the whole
-// text.
+// Generated features own their repository/service/handler composition. The
+// API binary supplies infrastructure and security dependencies, then only
+// registers the feature's handler.
 function mainGoLines(patch: RoutePatch) {
   const modelAlias = `${patch.pkg}model`; // every domain's model subpackage is named "model"
-  const svcVar = `${patch.pkg}Svc`;
-  const handlerArgs = [svcVar];
+  const handlerArgs = ["db"];
+  const legacyHandlerArgs = [`${patch.pkg}Svc`];
   if (patch.auth) handlerArgs.push("cfg.JWTSecret");
-  if (patch.permission) handlerArgs.push("authz");
+  // RBAC's Authz is owned by role/composition.go. wiring.go registers a
+  // permission-gated feature with that public capability; it no longer keeps a
+  // standalone root variable named `authz`.
+  if (patch.permission) handlerArgs.push("roleComposition.Authz");
+  if (patch.auth) legacyHandlerArgs.push("cfg.JWTSecret");
+  if (patch.permission) legacyHandlerArgs.push("roleComposition.Authz");
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
     modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`,
-    // AutoMigrate (dev) creates tables but not the schema they live in — see
+    // Development schema bootstrap creates tables but not the schema they live in — see
     // the comment on go-scaffold:schemas in main.go.hbs. One Exec per schema,
     // guarded by its own sentinel so two modules sharing a schema name only
     // ever produce one line (not expected today, but cheap to keep safe).
@@ -54,15 +54,17 @@ function mainGoLines(patch: RoutePatch) {
     ].join("\n"),
     schemaSentinel: `CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}`,
     migrateLine: `&${modelAlias}.${patch.pascalName}{},`,
-    serviceLine: `${svcVar} := ${patch.pkg}.NewService(${patch.pkg}.NewRepository(db))`,
-    // matches the service line however the user has since extended it
-    servicePrefix: `${svcVar} :=`,
+    // kept only so undo can clean projects generated before feature-local
+    // composition was introduced.
+    legacyServicePrefix: `${patch.pkg}Svc :=`,
+    legacyRouteLine: `${patch.pkg}.NewHandler(${legacyHandlerArgs.join(", ")}).Register(api)`,
     // `api` is the one route group declared by main.go.hbs, prefixed with
     // whatever apiPrefix the project chose at create time (e.g. /v1, /api,
     // or none) — every module registers on it, there is no per-module choice.
-    // `authz` only exists in main.go once `add rbac` has run — patch.permission
-    // is only ever set once that's already been verified by the caller.
-    routeLine: `${patch.pkg}.NewHandler(${handlerArgs.join(", ")}).Register(api)`,
+    // `roleComposition.Authz` only exists in main.go once `add rbac` has run —
+    // patch.permission is only ever set once that has been verified by the
+    // caller.
+    routeLine: `${patch.pkg}.NewHandlerFromDB(${handlerArgs.join(", ")}).Register(api)`,
   };
 }
 
@@ -89,13 +91,13 @@ export function assertMainGoPatchable(mainGoPath: string): void {
 }
 
 // patchMainGo wires a newly generated module into cmd/api/wiring.go: its
-// import, its model in the AutoMigrate call, and its route registration —
+// import, its model in the development bootstrap, and its route registration —
 // via marker comments rather than a Go AST rewrite (ponytail: text insertion
 // at a fixed marker is enough here; reach for go/ast if main.go ever needs
 // edits markers can't express).
 export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, schemaLines, schemaSentinel, migrateLine, serviceLine, servicePrefix, routeLine } =
+  const { importLine, modelImportLine, schemaLines, schemaSentinel, migrateLine, routeLine } =
     mainGoLines(patch);
 
   // each guarded by its own sentinel so re-running after only the module
@@ -105,9 +107,6 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
   content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
   content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
-  // sentinel is the prefix, not the whole line: a re-run must not add a
-  // second service line just because the first one gained a dependency.
-  content = insertBeforeMarkerOnce(content, ROUTE_MARKER, serviceLine, servicePrefix);
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = removeLines(content, [UNUSED_API_LINE]);
 
@@ -119,11 +118,12 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
 // main.go still compiles (api would otherwise be declared-and-unused).
 export function unpatchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, schemaLines, migrateLine, servicePrefix, routeLine } = mainGoLines(patch);
+  const { importLine, modelImportLine, schemaLines, migrateLine, legacyServicePrefix, legacyRouteLine, routeLine } = mainGoLines(patch);
 
-  content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine]);
-  // by prefix: the service line may have grown arguments since it was written
-  content = removeLinesByPrefix(content, [servicePrefix]);
+  content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine, legacyRouteLine]);
+  // by prefix: remove the named service line from projects generated before
+  // composition became feature-local.
+  content = removeLinesByPrefix(content, [legacyServicePrefix]);
   // by contiguous block, not removeLines: every module's schema block is
   // identical except the schema name, so a line-by-line removal would also
   // strip another module's matching lines.

@@ -1,0 +1,113 @@
+// Package application contains auth use cases and ports that are independent
+// of Gin, GORM models, and HTTP error payloads. Adapters in the parent user
+// package translate those contracts at the feature boundary.
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/google/uuid"
+)
+
+var ErrInvalidToken = errors.New("invalid or expired one-time token")
+
+type Identity struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	PasswordHash string
+}
+
+type User struct {
+	ID            uuid.UUID
+	EmailVerified bool
+}
+
+// RecoveryRepository is an outbound port owned by the recovery use case.
+// Implementations map persistence rows to these plain application values.
+type RecoveryRepository interface {
+	FindIdentity(context.Context, uuid.UUID) (*Identity, error)
+	UpdateIdentity(context.Context, *Identity) error
+	FindUser(context.Context, uuid.UUID) (*User, error)
+	UpdateUser(context.Context, *User) error
+}
+
+type RecoveryTokens interface {
+	WithTransaction(context.Context, func(context.Context) error) error
+	ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error)
+	ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error)
+}
+
+type PasswordHasher interface {
+	Hash(string) (string, error)
+}
+
+type Recovery struct {
+	repo   RecoveryRepository
+	tokens RecoveryTokens
+	hasher PasswordHasher
+}
+
+func NewRecovery(repo RecoveryRepository, tokens RecoveryTokens, hasher PasswordHasher) *Recovery {
+	return &Recovery{repo: repo, tokens: tokens, hasher: hasher}
+}
+
+// ResetPassword consumes the token and updates the identity in one unit of
+// work. Postgres-backed token adapters run both writes through the same DB
+// transaction; the contract is deliberately a port so another adapter can
+// provide an equivalent retry-safe boundary.
+func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword string) (uuid.UUID, error) {
+	hash, err := r.hasher.Hash(newPassword)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("hash password: %w", err)
+	}
+
+	var userID uuid.UUID
+	err = r.tokens.WithTransaction(ctx, func(txctx context.Context) error {
+		id, ok, err := r.tokens.ConsumePasswordResetToken(txctx, tokenHash)
+		if err != nil {
+			return fmt.Errorf("consume password reset token: %w", err)
+		}
+		if !ok {
+			return ErrInvalidToken
+		}
+
+		identity, err := r.repo.FindIdentity(txctx, id)
+		if err != nil {
+			return fmt.Errorf("find local identity: %w", err)
+		}
+		identity.PasswordHash = hash
+		if err := r.repo.UpdateIdentity(txctx, identity); err != nil {
+			return fmt.Errorf("update password: %w", err)
+		}
+		userID = id
+		return nil
+	})
+	return userID, err
+}
+
+func (r *Recovery) VerifyEmail(ctx context.Context, tokenHash string) (uuid.UUID, error) {
+	var userID uuid.UUID
+	err := r.tokens.WithTransaction(ctx, func(txctx context.Context) error {
+		id, ok, err := r.tokens.ConsumeEmailVerifyToken(txctx, tokenHash)
+		if err != nil {
+			return fmt.Errorf("consume email verification token: %w", err)
+		}
+		if !ok {
+			return ErrInvalidToken
+		}
+
+		user, err := r.repo.FindUser(txctx, id)
+		if err != nil {
+			return fmt.Errorf("find user for email verification: %w", err)
+		}
+		user.EmailVerified = true
+		if err := r.repo.UpdateUser(txctx, user); err != nil {
+			return fmt.Errorf("mark email verified: %w", err)
+		}
+		userID = id
+		return nil
+	})
+	return userID, err
+}

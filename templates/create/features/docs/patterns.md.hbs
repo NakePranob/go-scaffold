@@ -16,6 +16,9 @@ internal/app/<domain>/
 ├── errors.go          # domain error catalog (<DOMAIN>_NOT_FOUND, ...)
 ├── repository.go       # the only place that touches the DB for this domain, every method takes ctx
 ├── service.go          # business logic; declares the repository interface it needs (mockable in tests)
+├── commands.go         # optional: command port + state-changing application handlers (`--cqrs`)
+├── queries.go          # optional: query port + read-only application handlers (`--cqrs`)
+├── composition.go      # feature-local repository → service → handler wiring
 ├── handler.go          # HTTP: routing, bind, delegate, respond
 ├── service_test.go     # unit test, function-backed repository stub, no DB
 ├── handler_test.go     # HTTP unit test, service stub, no DB
@@ -35,8 +38,8 @@ internal/app/<domain>/
 - `TableName()` returns a schema-qualified name (`order_svc.orders`, not
   `orders`) — every domain gets its own Postgres schema, created by its own
   migration (`CREATE SCHEMA IF NOT EXISTS`) and by `cmd/api/wiring.go` before
-  `AutoMigrate` runs in dev (AutoMigrate creates tables, never the schema they
-  live in). A cross-domain FK is still fine — see the FK rules below — this
+  the development table bootstrap runs (the bootstrap creates tables, never
+  the schema they live in). A cross-domain FK is still fine — see the FK rules below — this
   only stops one domain's table from silently colliding with another's, or a
   raw SQL `JOIN` from reaching into a domain it doesn't own without at least
   naming the schema it's crossing into.
@@ -49,6 +52,20 @@ internal/app/<domain>/
 - Reads pagination via `pagination.Parse(c)`, wraps list responses with
   `p.Response(out)`
 - Reads the `:id` param via `httpx.ParseID(c)`
+
+### Commands and queries (opt-in CQRS)
+
+Use `go-scaffold generate module <name> --cqrs` when the feature has distinct
+write invariants, read projections, consistency requirements, or scaling
+needs. `commands.go` owns state-changing application ports and handlers;
+`queries.go` owns read-only ports and handlers. `composition.go` constructs
+both, and the HTTP adapter selects the matching port for each route. They may
+share the same repository/database in this modular monolith — separate storage
+or event sourcing is not implied.
+
+The generated `Service` remains a compatibility facade for tests and existing
+callers. New feature code should depend on the narrower command/query port it
+actually needs. For simple CRUD, omit `--cqrs` and keep the single service path.
 
 ### Service
 - Contains the business logic, knows nothing about HTTP
@@ -121,8 +138,8 @@ if this project has one):
    associations / belongs-to — that's what keeps one domain package from
    importing another.
 2. **Declare the FK constraint in migration SQL**
-   (`REFERENCES ... ON DELETE ...`), not a GORM tag — AutoMigrate doesn't
-   create the constraint, which would make dev and prod schemas diverge.
+   (`REFERENCES ... ON DELETE ...`), not a GORM tag — the development bootstrap
+   doesn't create the constraint, which would make dev and prod schemas diverge.
 3. **Map the FK error to the right status** via `dberr.IsForeignKey` —
    inserting a reference to a missing parent, or deleting a parent that
    still has children, is a client error (409/422), not a 500. Don't
@@ -148,24 +165,22 @@ type userLookup interface {
 }
 ```
 
-`cmd/api/wiring.go` is the one place that knows both domains, so the adapter
-lives there — a func literal, not a type:
+The feature keeps its own repository/service/handler composition in
+`composition.go`; `cmd/api/wiring.go` supplies the DB and any cross-feature
+security dependencies. For example, auth and RBAC are composed locally and
+the root passes only the role feature's public capabilities:
 
 ```go
-userSvc := user.NewService(userRepo, ...)
-orderSvc := order.NewService(orderRepo, order.UserLookupFunc(
-    func(ctx context.Context, id uuid.UUID) (string, error) {
-        u, err := userSvc.Get(ctx, id)
-        if err != nil {
-            return "", err
-        }
-        return u.Email, nil
-    },
-))
+roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.AuthzCacheTTL)
+user.NewHandlerFromDB(
+    db, cfg, roleComposition.Service, roleComposition.Authz,
+).Register(api)
 ```
 
-where `order` provides the usual func-to-interface shim next to its
-interface:
+For ordinary cross-domain behaviour, the caller still declares a narrow
+interface next to its application service. Its local composition accepts that
+port, while the root supplies an adapter; the root never reaches into the
+callee's repository or handler. A func-to-interface shim is one small option:
 
 ```go
 // order/service.go
@@ -198,12 +213,13 @@ own data.
 go-scaffold generate method <domain> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 ```
 
-Patches `handler.go`/`service.go` (and `repository.go` + the `repository`
-interface + its `repositoryStub` test stub, for a `get --get-mode one --field`
+Patches `handler.go`/`service.go` (and `commands.go` or `queries.go` for a
+module generated with `--cqrs`; plus `repository.go` + the relevant repository
+port + its `repositoryStub` test stub, for a `get --get-mode one --field`
 lookup) in place, at the `// go-scaffold:*` marker comments near the end of
 each file. **Don't delete those markers** — they're where the next
 `generate method` call inserts. The method body is always left as a `TODO`
-that compiles and returns a clean `500` (`apperror.NewInternal()`) rather
+that compiles and returns a clean `500` (`apperror.NewInternal(cause)`) rather
 than guessing at business logic — same spirit as `generate module`'s
 placeholder fields.
 
