@@ -1,0 +1,35 @@
+package role
+
+import (
+	"time"
+
+	"{{goModule}}/internal/shared/middleware"
+
+	"gorm.io/gorm"
+)
+
+// Composition groups role's service, authorization adapter, and HTTP handler
+// so cmd/api can register the feature without constructing its internals.
+type Composition struct {
+	Service *Service
+	Authz   *middleware.Authz
+	Handler *Handler
+}
+
+// NewServiceFromDB is the role feature's persistence composition boundary.
+func NewServiceFromDB(db *gorm.DB) *Service {
+	return NewService(NewRepository(db))
+}
+
+// NewCompositionFromDB builds role and its authorization middleware locally.
+// The API binary supplies the shared DB/config values and only registers the
+// returned handlers.
+func NewCompositionFromDB(db *gorm.DB, jwtSecret string, cacheTTL time.Duration) *Composition {
+	service := NewServiceFromDB(db)
+	authz := middleware.NewAuthz(service.PermissionsOf, cacheTTL)
+	return &Composition{
+		Service: service,
+		Authz:   authz,
+		Handler: NewHandler(service, jwtSecret, authz),
+	}
+}

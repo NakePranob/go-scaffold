@@ -24,15 +24,16 @@ import (
 const (
 	kindRefresh     = "refresh"
 	kindRefreshUsed = "refresh_used"
-	kindPasswordSet = "pwreset"
-	kindEmailVerify = "emailverify"
 )
 
 type pgTokenStore struct {
-	db *gorm.DB
+	db       *gorm.DB
+	recovery *recoveryTokenStore
 }
 
-func NewPgTokenStore(db *gorm.DB) *pgTokenStore { return &pgTokenStore{db: db} }
+func NewPgTokenStore(db *gorm.DB) *pgTokenStore {
+	return &pgTokenStore{db: db, recovery: newRecoveryTokenStore(db)}
+}
 
 // put writes a token row, replacing any row that already carries the same
 // hash — a collision is astronomically unlikely, but "upsert" is the right
@@ -61,15 +62,29 @@ func (s *pgTokenStore) lookup(ctx context.Context, hash, kind string) (uuid.UUID
 	return row.UserID, true, nil
 }
 
-// consume deletes and returns in one statement, which is what makes a
-// one-time token actually one-time: two requests racing on the same token
-// cannot both come away with a user id.
-func (s *pgTokenStore) consume(ctx context.Context, hash, kind string) (uuid.UUID, bool, error) {
+func (s *pgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindRefresh, userID, ttl)
+}
+
+func (s *pgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.lookup(ctx, tokenHash, kindRefresh)
+}
+
+// ConsumeRefreshToken removes the active row and writes the reuse-detection
+// tombstone in one statement. A concurrent caller can observe either the
+// active row or the tombstone, never the gap between separate operations.
+func (s *pgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string, ttl time.Duration) (uuid.UUID, bool, error) {
 	var userID uuid.UUID
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
-		`DELETE FROM user_svc.auth_tokens
-		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
-		 RETURNING user_id`, hash, kind).Row().Scan(&userID)
+		`WITH consumed AS (
+			DELETE FROM user_svc.auth_tokens
+			 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+			 RETURNING user_id
+		)
+		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, expires_at)
+		SELECT ?, user_id, ?, ? FROM consumed
+		RETURNING user_id`,
+		tokenHash, kindRefresh, tokenHash, kindRefreshUsed, time.Now().Add(ttl)).Row().Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, false, nil
 	}
@@ -77,14 +92,6 @@ func (s *pgTokenStore) consume(ctx context.Context, hash, kind string) (uuid.UUI
 		return uuid.Nil, false, err
 	}
 	return userID, true, nil
-}
-
-func (s *pgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.put(ctx, tokenHash, kindRefresh, userID, ttl)
-}
-
-func (s *pgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
-	return s.lookup(ctx, tokenHash, kindRefresh)
 }
 
 // DeleteRefreshToken removes the row outright and leaves nothing behind — see
@@ -105,28 +112,28 @@ func (s *pgTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.U
 		Delete(&model.AuthToken{}).Error
 }
 
-func (s *pgTokenStore) MarkRefreshTokenUsed(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.put(ctx, tokenHash, kindRefreshUsed, userID, ttl)
-}
-
 func (s *pgTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.lookup(ctx, tokenHash, kindRefreshUsed)
 }
 
 func (s *pgTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
+	return s.recovery.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
 }
 
 func (s *pgTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
-	return s.consume(ctx, tokenHash, kindPasswordSet)
+	return s.recovery.consume(ctx, tokenHash, kindPasswordSet)
 }
 
 func (s *pgTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.put(ctx, tokenHash, kindEmailVerify, userID, ttl)
+	return s.recovery.put(ctx, tokenHash, kindEmailVerify, userID, ttl)
 }
 
 func (s *pgTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
-	return s.consume(ctx, tokenHash, kindEmailVerify)
+	return s.recovery.consume(ctx, tokenHash, kindEmailVerify)
+}
+
+func (s *pgTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return s.recovery.withTransaction(ctx, fn)
 }
 
 // DeleteExpired drops rows nothing can use any more. Correctness never depends

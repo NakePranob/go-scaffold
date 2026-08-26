@@ -1,0 +1,23 @@
+package {{pkg}}
+
+import "gorm.io/gorm"
+{{#if permission}}
+import "{{goModule}}/internal/shared/middleware"
+{{/if}}
+
+// NewHandlerFromDB is this feature's local composition root. The API binary
+// only chooses infrastructure and registers the route; repository, application
+// handlers, and delivery construction stay next to the feature.
+func NewHandlerFromDB(db *gorm.DB{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+	{{#if cqrs}}
+	repo := NewRepository(db)
+	return NewHandlerFromCQRS(
+		NewCommandHandler(repo),
+		NewQueryHandler(repo){{#if auth}}, jwtSecret{{/if}}{{#if permission}}, authz{{/if}},
+	)
+	{{else}}
+	return NewHandler(
+		NewService(NewRepository(db)){{#if auth}}, jwtSecret{{/if}}{{#if permission}}, authz{{/if}},
+	)
+	{{/if}}
+}

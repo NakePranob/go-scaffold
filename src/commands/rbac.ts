@@ -131,9 +131,9 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   );
   console.log(
     pc.yellow(
-      "\n⚠ AUTO_MIGRATE=true does NOT seed the role/permission data — it only creates the\n" +
+      "\n⚠ The development table bootstrap does NOT seed role/permission data — it only creates the\n" +
         "  tables from the Go structs. The \"staff\"/\"admin\" roles and their permissions live\n" +
-        "  in the migration's SQL (INSERT statements), which AutoMigrate never runs. Without\n" +
+        "  in the migration's SQL (INSERT statements), which table creation never runs. Without\n" +
         "  applying it for real, `make seed` fails with \"unknown role code\" and nobody can be\n" +
         "  granted anything. Apply it before relying on RBAC, even in dev:\n" +
         "    migrate -path migrations -database \"$DB_DSN\" up   (or: make migrate-up)"

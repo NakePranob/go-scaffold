@@ -5,7 +5,12 @@ import { readConfig } from "../utils/config";
 import { migrationSlug, migrationSlugAliases, toDbName } from "../utils/naming";
 import { resolveProjectModuleNaming } from "../utils/module-location";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
-import { MODULE_FILES, MODULE_FILES_MINIMAL } from "../templates/module-manifest";
+import {
+  MODULE_FILES,
+  MODULE_FILES_CQRS,
+  MODULE_FILES_MINIMAL,
+  MODULE_FILES_MINIMAL_CQRS,
+} from "../templates/module-manifest";
 import { assertMainGoPatchable, patchMainGo } from "../utils/main-patcher";
 import { patchOpenapiIndex } from "../utils/openapi-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
@@ -15,6 +20,7 @@ import { promptModuleName } from "../prompts/generate-wizard";
 
 export interface GenerateModuleOptions {
   full?: boolean;
+  cqrs?: boolean;
   auth?: boolean;
   permission?: string;
 }
@@ -71,9 +77,16 @@ export async function generateModule(
     modulePath,
     auth: opts.auth,
     permission: opts.permission,
+    cqrs: opts.cqrs,
   };
 
-  const moduleFiles = opts.full ? MODULE_FILES : MODULE_FILES_MINIMAL;
+  const moduleFiles = opts.cqrs
+    ? opts.full
+      ? MODULE_FILES_CQRS
+      : MODULE_FILES_MINIMAL_CQRS
+    : opts.full
+      ? MODULE_FILES
+      : MODULE_FILES_MINIMAL;
   const moduleEntries = moduleFiles.map((f) => ({
     template: f.template,
     output: path.join("internal", "app", modulePath, f.output),
@@ -155,6 +168,9 @@ export async function generateModule(
 
   const routePath = config.apiPrefix ? `/${config.apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   console.log(pc.green(`\ngenerated internal/app/${modulePath}/`));
+  if (opts.cqrs) {
+    console.log("application boundary: CQRS command/query handlers in commands.go and queries.go");
+  }
   if (opts.full) {
     console.log(`registered route ${routePath} in cmd/api/wiring.go`);
   } else {
@@ -184,7 +200,7 @@ export async function generateModule(
   console.log(
     pc.dim(
       `\nnext: add real fields to model.go/dto.go, run \`go build ./...\`, then apply the migration ` +
-        `(AUTO_MIGRATE=true handles it in dev, or \`migrate -path migrations -database "$DB_DSN" up\`)`
+        `(use the development bootstrap locally, or \`migrate -path migrations -database "$DB_DSN" up\` before production)`
     )
   );
 }

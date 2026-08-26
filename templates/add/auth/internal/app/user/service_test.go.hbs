@@ -1,10 +1,11 @@
 package user
 
 import (
-	"fmt"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,9 +21,14 @@ import (
 // three-map shape (active / used-tombstone / per-user session set) closely
 // enough to exercise rotation + reuse-detection without a real Redis.
 type fakeTokenStore struct {
+	mu       sync.Mutex
+	txMu     sync.Mutex
 	active   map[string]uuid.UUID
 	used     map[string]uuid.UUID
 	sessions map[uuid.UUID]map[string]struct{}
+	reset    map[string]uuid.UUID
+	verify   map[string]uuid.UUID
+	revokeAllErr error
 }
 
 func newFakeTokenStore() *fakeTokenStore {
@@ -30,10 +36,14 @@ func newFakeTokenStore() *fakeTokenStore {
 		active:   map[string]uuid.UUID{},
 		used:     map[string]uuid.UUID{},
 		sessions: map[uuid.UUID]map[string]struct{}{},
+		reset:    map[string]uuid.UUID{},
+		verify:   map[string]uuid.UUID{},
 	}
 }
 
 func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.active[hash] = userID
 	if f.sessions[userID] == nil {
 		f.sessions[userID] = map[string]struct{}{}
@@ -42,49 +52,138 @@ func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, userID 
 	return nil
 }
 func (f *fakeTokenStore) GetRefreshToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	id, ok := f.active[hash]
 	return id, ok, nil
 }
+
+func (f *fakeTokenStore) ConsumeRefreshToken(_ context.Context, hash string, _ time.Duration) (uuid.UUID, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.active[hash]
+	if !ok {
+		return uuid.Nil, false, nil
+	}
+	delete(f.active, hash)
+	delete(f.sessions[id], hash)
+	f.used[hash] = id
+	return id, true, nil
+}
+
 func (f *fakeTokenStore) DeleteRefreshToken(_ context.Context, hash string, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.active, hash)
 	delete(f.sessions[userID], hash)
 	return nil
 }
 func (f *fakeTokenStore) RevokeAllRefreshTokens(_ context.Context, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.revokeAllErr != nil {
+		err := f.revokeAllErr
+		f.revokeAllErr = nil
+		return err
+	}
 	for h := range f.sessions[userID] {
 		delete(f.active, h)
 	}
 	delete(f.sessions, userID)
 	return nil
 }
-func (f *fakeTokenStore) MarkRefreshTokenUsed(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
-	f.used[hash] = userID
-	return nil
-}
 func (f *fakeTokenStore) IsRefreshTokenUsed(_ context.Context, hash string) (uuid.UUID, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	id, ok := f.used[hash]
 	return id, ok, nil
 }
-func (f *fakeTokenStore) SetPasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error {
+
+func (f *fakeTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
+	// A real DB transaction serializes the single-token DELETE against another
+	// consumer. Keep the fake's rollback snapshot isolated the same way so a
+	// losing concurrent transaction cannot restore the winner's consume.
+	f.txMu.Lock()
+	defer f.txMu.Unlock()
+
+	f.mu.Lock()
+	active := cloneTokenMap(f.active)
+	used := cloneTokenMap(f.used)
+	reset := cloneTokenMap(f.reset)
+	verify := cloneTokenMap(f.verify)
+	sessions := cloneSessions(f.sessions)
+	f.mu.Unlock()
+
+	err := fn(ctx)
+	if err == nil {
+		return nil
+	}
+	f.mu.Lock()
+	f.active, f.used, f.reset, f.verify, f.sessions = active, used, reset, verify, sessions
+	f.mu.Unlock()
+	return err
+}
+
+func cloneTokenMap(in map[string]uuid.UUID) map[string]uuid.UUID {
+	out := make(map[string]uuid.UUID, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneSessions(in map[uuid.UUID]map[string]struct{}) map[uuid.UUID]map[string]struct{} {
+	out := make(map[uuid.UUID]map[string]struct{}, len(in))
+	for userID, hashes := range in {
+		out[userID] = map[string]struct{}{}
+		for hash := range hashes {
+			out[userID][hash] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (f *fakeTokenStore) SetPasswordResetToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reset[hash] = userID
 	return nil
 }
-func (f *fakeTokenStore) ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error) {
-	return uuid.Nil, false, nil
+func (f *fakeTokenStore) ConsumePasswordResetToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.reset[hash]
+	if ok {
+		delete(f.reset, hash)
+	}
+	return id, ok, nil
 }
-func (f *fakeTokenStore) SetEmailVerifyToken(context.Context, string, uuid.UUID, time.Duration) error {
+func (f *fakeTokenStore) SetEmailVerifyToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verify[hash] = userID
 	return nil
 }
-func (f *fakeTokenStore) ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error) {
-	return uuid.Nil, false, nil
+func (f *fakeTokenStore) ConsumeEmailVerifyToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.verify[hash]
+	if ok {
+		delete(f.verify, hash)
+	}
+	return id, ok, nil
 }
 
 // fakeRepo = mock of the repository interface — only FindByID is exercised
 // by the tests below (Refresh looks the user up after validating the
 // token), the rest just satisfy the interface.
 type fakeRepo struct {
-	user *model.User
-	failures    map[string]int
-	lockedUntil map[string]time.Time
+	user              *model.User
+	identity          *model.Identity
+	updateIdentityErr error
+	updateUserErr     error
+	failures          map[string]int
+	lockedUntil       map[string]time.Time
 }
 
 // throttle: the fake keeps the counter in memory so the lockout path can be
@@ -125,9 +224,19 @@ func (f *fakeRepo) FindByID(_ context.Context, id uuid.UUID) (*model.User, error
 	}
 	return nil, gorm.ErrRecordNotFound
 }
-func (f *fakeRepo) UpdateUser(context.Context, *model.User) error { return nil }
+func (f *fakeRepo) UpdateUser(_ context.Context, u *model.User) error {
+	if f.updateUserErr != nil {
+		return f.updateUserErr
+	}
+	f.user = u
+	return nil
+}
 func (f *fakeRepo) FindAll(context.Context, int, int) ([]model.User, error) { return nil, nil }
-func (f *fakeRepo) FindIdentity(context.Context, uuid.UUID, model.Provider) (*model.Identity, error) {
+func (f *fakeRepo) FindIdentity(_ context.Context, userID uuid.UUID, _ model.Provider) (*model.Identity, error) {
+	if f.identity != nil && f.identity.UserID == userID {
+		copy := *f.identity
+		return &copy, nil
+	}
 	return nil, gorm.ErrRecordNotFound
 }
 func (f *fakeRepo) FindIdentityByProviderUID(context.Context, model.Provider, string) (*model.Identity, error) {
@@ -135,7 +244,13 @@ func (f *fakeRepo) FindIdentityByProviderUID(context.Context, model.Provider, st
 }
 func (f *fakeRepo) CreateUserWithIdentity(context.Context, *model.User, *model.Identity) error { return nil }
 func (f *fakeRepo) CreateIdentity(context.Context, *model.Identity) error                      { return nil }
-func (f *fakeRepo) UpdateIdentity(context.Context, *model.Identity) error                      { return nil }
+func (f *fakeRepo) UpdateIdentity(_ context.Context, i *model.Identity) error {
+	if f.updateIdentityErr != nil {
+		return f.updateIdentityErr
+	}
+	f.identity = i
+	return nil
+}
 
 type fakeMailer struct{}
 
@@ -188,6 +303,41 @@ func TestService_Refresh_RotatesTheToken(t *testing.T) {
 	}
 	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(auth.RefreshToken)); !ok {
 		t.Fatal("expected the newly rotated refresh token to be active")
+	}
+}
+
+func TestService_Refresh_ConcurrentPresentationHasOneWinner(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	raw := "one-refresh-token"
+	if err := tokens.SetRefreshToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID, Email: "a@example.com"}}, tokens)
+
+	const callers = 32
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			_, err := svc.Refresh(ctx, raw)
+			results <- err
+		}()
+	}
+	close(start)
+
+	winners := 0
+	for i := 0; i < callers; i++ {
+		if err := <-results; err == nil {
+			winners++
+		} else if code(err) != "AUTH_INVALID_TOKEN" {
+			t.Fatalf("unexpected loser error: %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly one refresh winner, got %d", winners)
 	}
 }
 
@@ -265,6 +415,198 @@ func TestService_LogoutAll_RevokesEverySessionButLeavesOthersAlone(t *testing.T)
 	}
 	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawOther)); !ok {
 		t.Fatal("expected a different user's session to be untouched by LogoutAll")
+	}
+}
+
+func TestService_ResetPassword_DBFailureAllowsRetry(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	passwordHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &model.User{ID: userID},
+		identity: &model.Identity{ID: uuid.New(), UserID: userID, Provider: model.ProviderLocal, PasswordHash: &passwordHash},
+		updateIdentityErr: errors.New("database unavailable"),
+	}
+	tokens := newFakeTokenStore()
+	raw := "reset-token"
+	if err := tokens.SetPasswordResetToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+
+	if err := svc.ResetPassword(ctx, raw, "new-password"); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("expected a 500 on the simulated DB failure, got %v", err)
+	}
+	repo.updateIdentityErr = nil
+	if err := svc.ResetPassword(ctx, raw, "new-password"); err != nil {
+		t.Fatalf("retry should succeed after the transaction rollback: %v", err)
+	}
+}
+
+func TestService_ResetPassword_SessionRevokeFailureRestoresTokenForRetry(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	passwordHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &model.User{ID: userID},
+		identity: &model.Identity{ID: uuid.New(), UserID: userID, Provider: model.ProviderLocal, PasswordHash: &passwordHash},
+	}
+	tokens := newFakeTokenStore()
+	raw := "reset-token-session-store-outage"
+	if err := tokens.SetPasswordResetToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tokens.revokeAllErr = errors.New("redis unavailable")
+	svc := newTestService(repo, tokens)
+
+	if err := svc.ResetPassword(ctx, raw, "new-password"); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("expected a 500 while the session store is unavailable, got %v", err)
+	}
+	if _, ok := tokens.reset[hashToken(raw)]; !ok {
+		t.Fatal("expected the reset token to be restored so the caller can retry")
+	}
+	if err := svc.ResetPassword(ctx, raw, "new-password"); err != nil {
+		t.Fatalf("retry should complete the password reset and session revoke: %v", err)
+	}
+	if _, ok := tokens.reset[hashToken(raw)]; ok {
+		t.Fatal("expected the reset token to be consumed after the retry succeeds")
+	}
+}
+
+func TestService_VerifyEmail_DBFailureAllowsRetry(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	repo := &fakeRepo{
+		user:          &model.User{ID: userID},
+		updateUserErr: errors.New("database unavailable"),
+	}
+	tokens := newFakeTokenStore()
+	raw := "verify-token"
+	if err := tokens.SetEmailVerifyToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+
+	if err := svc.VerifyEmail(ctx, raw); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("expected a 500 on the simulated DB failure, got %v", err)
+	}
+	repo.updateUserErr = nil
+	if err := svc.VerifyEmail(ctx, raw); err != nil {
+		t.Fatalf("retry should succeed after the transaction rollback: %v", err)
+	}
+}
+
+func TestService_ResetPassword_DuplicateTokenIsRejected(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	passwordHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &model.User{ID: userID},
+		identity: &model.Identity{ID: uuid.New(), UserID: userID, Provider: model.ProviderLocal, PasswordHash: &passwordHash},
+	}
+	tokens := newFakeTokenStore()
+	raw := "one-time-reset-token"
+	if err := tokens.SetPasswordResetToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+	if err := svc.ResetPassword(ctx, raw, "new-password"); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	if err := svc.ResetPassword(ctx, raw, "another-password"); code(err) != "AUTH_INVALID_TOKEN" {
+		t.Fatalf("second use should be rejected as invalid, got %v", err)
+	}
+}
+
+func TestService_ResetPassword_ConcurrentPresentationHasOneWinner(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	passwordHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &model.User{ID: userID},
+		identity: &model.Identity{ID: uuid.New(), UserID: userID, Provider: model.ProviderLocal, PasswordHash: &passwordHash},
+	}
+	tokens := newFakeTokenStore()
+	raw := "concurrent-reset-token"
+	if err := tokens.SetPasswordResetToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+
+	const callers = 8
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			results <- svc.ResetPassword(ctx, raw, "new-password")
+		}()
+	}
+	close(start)
+
+	winners := 0
+	for i := 0; i < callers; i++ {
+		if err := <-results; err == nil {
+			winners++
+		} else if code(err) != "AUTH_INVALID_TOKEN" {
+			t.Fatalf("unexpected loser error: %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly one reset winner, got %d", winners)
+	}
+}
+
+func TestService_VerifyEmail_DuplicateTokenIsRejected(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	repo := &fakeRepo{user: &model.User{ID: userID}}
+	tokens := newFakeTokenStore()
+	raw := "one-time-verification-token"
+	if err := tokens.SetEmailVerifyToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+	if err := svc.VerifyEmail(ctx, raw); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	if err := svc.VerifyEmail(ctx, raw); code(err) != "AUTH_INVALID_TOKEN" {
+		t.Fatalf("second use should be rejected as invalid, got %v", err)
+	}
+}
+
+func TestService_VerifyEmail_ConcurrentPresentationHasOneWinner(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	repo := &fakeRepo{user: &model.User{ID: userID}}
+	tokens := newFakeTokenStore()
+	raw := "concurrent-verification-token"
+	if err := tokens.SetEmailVerifyToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+
+	const callers = 32
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			results <- svc.VerifyEmail(ctx, raw)
+		}()
+	}
+	close(start)
+
+	winners := 0
+	for i := 0; i < callers; i++ {
+		if err := <-results; err == nil {
+			winners++
+		} else if code(err) != "AUTH_INVALID_TOKEN" {
+			t.Fatalf("unexpected loser error: %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected exactly one verification winner, got %d", winners)
 	}
 }
 

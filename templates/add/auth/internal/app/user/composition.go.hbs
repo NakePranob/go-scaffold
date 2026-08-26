@@ -1,0 +1,116 @@
+package user
+
+import (
+	"context"
+	"fmt"
+
+	"{{goModule}}/internal/app/user/application"
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/platform/mail"
+	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/internal/shared/middleware"
+
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	{{#if redis}}
+	"github.com/redis/go-redis/v9"
+	{{/if}}
+	{{#if worker}}
+	"{{goModule}}/internal/platform/queue"
+	{{/if}}
+	"gorm.io/gorm"
+)
+
+// recoveryRepositoryAdapter maps persistence models to the plain values used
+// by the application recovery use case. The adapter is the only layer that
+// knows both the GORM model and the application port.
+type recoveryRepositoryAdapter struct {
+	repo repository
+}
+
+func (a recoveryRepositoryAdapter) FindIdentity(ctx context.Context, userID uuid.UUID) (*application.Identity, error) {
+	identity, err := a.repo.FindIdentity(ctx, userID, model.ProviderLocal)
+	if err != nil {
+		return nil, err
+	}
+	if identity.PasswordHash == nil {
+		return nil, fmt.Errorf("local identity has no password")
+	}
+	return &application.Identity{ID: identity.ID, UserID: identity.UserID, PasswordHash: *identity.PasswordHash}, nil
+}
+
+func (a recoveryRepositoryAdapter) UpdateIdentity(ctx context.Context, identity *application.Identity) error {
+	current, err := a.repo.FindIdentity(ctx, identity.UserID, model.ProviderLocal)
+	if err != nil {
+		return err
+	}
+	current.PasswordHash = &identity.PasswordHash
+	return a.repo.UpdateIdentity(ctx, current)
+}
+
+func (a recoveryRepositoryAdapter) FindUser(ctx context.Context, userID uuid.UUID) (*application.User, error) {
+	user, err := a.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &application.User{ID: user.ID, EmailVerified: user.EmailVerified}, nil
+}
+
+func (a recoveryRepositoryAdapter) UpdateUser(ctx context.Context, user *application.User) error {
+	current, err := a.repo.FindByID(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	current.EmailVerified = user.EmailVerified
+	return a.repo.UpdateUser(ctx, current)
+}
+
+type bcryptPasswordHasher struct{}
+
+func (bcryptPasswordHasher) Hash(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func newRecovery(repo repository, tokens tokenStore) *application.Recovery {
+	return application.NewRecovery(recoveryRepositoryAdapter{repo: repo}, tokens, bcryptPasswordHasher{})
+}
+
+// NewHandlerFromDB is auth's local composition root. cmd/api owns shared
+// infrastructure and cross-feature dependencies; repository, token store,
+// mailer, service, limiter, and handler construction stays in this package.
+func NewHandlerFromDB(
+	db *gorm.DB,
+	cfg config.Config,
+{{#if redis}}
+	rdb *redis.Client,
+{{/if}}
+{{#if worker}}
+	q queue.Enqueuer,
+	{{/if}}
+	roleChecker RoleChecker,
+	authz authorizer,
+) *Handler {
+{{#if redis}}
+tokens := NewRedisTokenStore(rdb, db)
+{{else}}
+tokens := NewPgTokenStore(db)
+{{/if}}
+
+{{#if worker}}
+outbound := mail.NewAsyncClient(q)
+{{else}}
+outbound := mail.NewSyncClient(mail.Open(cfg))
+{{/if}}
+
+	service := NewService(NewRepository(db), tokens, outbound, cfg, roleChecker)
+{{#if redis}}
+	limiter := middleware.NewRedisLimiter(rdb)
+{{else}}
+	limiter := middleware.NewMemoryLimiter()
+{{/if}}
+	return NewHandler(service, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, limiter, authz)
+}

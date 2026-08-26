@@ -10,6 +10,6 @@ CREATE TABLE user_svc.identities (
 
 -- Named unique indexes matching model.Identity's own
 -- `uniqueIndex:idx_identities_*` tags — see create_users.up.sql for why an
--- anonymous UNIQUE constraint breaks AutoMigrate.
+-- anonymous UNIQUE constraint breaks schema parity.
 CREATE UNIQUE INDEX idx_identities_user_provider ON user_svc.identities (user_id, provider);
 CREATE UNIQUE INDEX idx_identities_provider_uid ON user_svc.identities (provider, provider_uid);

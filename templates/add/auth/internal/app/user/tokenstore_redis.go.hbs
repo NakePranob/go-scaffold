@@ -5,27 +5,53 @@ package user
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
 
 const (
-	refreshKeyPrefix     = "user:refresh:"      // +hash -> userID, TTL = refreshTTL
-	refreshUserKeyPrefix = "user:refresh:user:" // +userID -> SET of active token hashes
-	refreshUsedKeyPrefix = "user:refresh:used:" // +hash -> userID, TTL = refreshTTL, reuse-detection tombstone
-	pwresetKeyPrefix     = "user:pwreset:"      // +hash -> userID, TTL = resetTTL, GETDEL on consume
-	emailVerifyKeyPrefix = "user:emailverify:"  // +hash -> userID, TTL = emailVerifyTTL, GETDEL on consume
+	// The shared {refresh} hash tag keeps all keys touched by the Lua rotation
+	// script on one Redis Cluster slot as well as making the operation atomic.
+	refreshKeyPrefix     = "user:{refresh}:"      // +hash -> userID, TTL = refreshTTL
+	refreshUserKeyPrefix = "user:{refresh}:user:" // +userID -> SET of active token hashes
+	refreshUsedKeyPrefix = "user:{refresh}:used:" // +hash -> userID, TTL = refreshTTL, reuse-detection tombstone
 )
 
 type redisTokenStore struct {
-	rdb *redis.Client
+	rdb      *redis.Client
+	recovery *recoveryTokenStore
 }
 
-func NewRedisTokenStore(rdb *redis.Client) *redisTokenStore {
-	return &redisTokenStore{rdb: rdb}
+func NewRedisTokenStore(rdb *redis.Client, db *gorm.DB) *redisTokenStore {
+	return &redisTokenStore{rdb: rdb, recovery: newRecoveryTokenStore(db)}
 }
+
+var consumeRefreshScript = redis.NewScript(`
+local user_id = redis.call("GET", KEYS[1])
+if not user_id then
+	-- An empty bulk string maps to a normal "not found" result in go-redis;
+	-- Lua false would be surfaced as redis.Nil and look like an infrastructure
+	-- failure to Service.Refresh.
+	return ""
+end
+redis.call("DEL", KEYS[1])
+redis.call("SREM", KEYS[3] .. user_id, ARGV[1])
+redis.call("SET", KEYS[2], user_id, "PX", ARGV[2])
+return user_id
+`)
+
+var revokeAllRefreshScript = redis.NewScript(`
+local hashes = redis.call("SMEMBERS", KEYS[1])
+for _, hash in ipairs(hashes) do
+  redis.call("DEL", KEYS[2] .. hash)
+end
+redis.call("DEL", KEYS[1])
+return #hashes
+`)
 
 func (s *redisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
 	pipe := s.rdb.TxPipeline()
@@ -50,6 +76,32 @@ func (s *redisTokenStore) GetRefreshToken(ctx context.Context, tokenHash string)
 	return id, true, nil
 }
 
+// ConsumeRefreshToken uses one Lua script for active-token deletion,
+// per-user-session cleanup, and the reuse tombstone. A concurrent caller
+// cannot observe the active value after another caller has won the rotation.
+func (s *redisTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string, ttl time.Duration) (uuid.UUID, bool, error) {
+	ms := ttl.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	result, err := consumeRefreshScript.Run(ctx, s.rdb,
+		[]string{refreshKeyPrefix + tokenHash, refreshUsedKeyPrefix + tokenHash, refreshUserKeyPrefix},
+		tokenHash, ms,
+	).Result()
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	raw, ok := result.(string)
+	if !ok || raw == "" {
+		return uuid.Nil, false, nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("parse consumed refresh token owner: %w", err)
+	}
+	return id, true, nil
+}
+
 func (s *redisTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error {
 	pipe := s.rdb.TxPipeline()
 	pipe.Del(ctx, refreshKeyPrefix+tokenHash)
@@ -58,35 +110,18 @@ func (s *redisTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash stri
 	return err
 }
 
-// RevokeAllRefreshTokens walks the per-user session set and deletes every
-// active refresh token for that user — used when reuse of an already-rotated
-// token is detected (see Service.Refresh): that means the raw token leaked,
-// so every session, not just the replayed one, is treated as compromised.
-//
-// ponytail: the per-user set has no per-member TTL cleanup of its own — a
-// member outlives its key's TTL as a stale entry until the next revoke or
-// rotation touches it. Self-heals over time; revisit if a single user's
-// session count grows large enough to matter.
+// RevokeAllRefreshTokens snapshots the per-user session set, deletes every
+// active refresh token, and removes the set in one Lua invocation. This is
+// important because SetRefreshToken updates two keys: a SMEMBERS followed by
+// a separate pipeline could miss a token added between those operations and
+// leave an active token with no session-set member.
 func (s *redisTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
 	setKey := refreshUserKeyPrefix + userID.String()
-	hashes, err := s.rdb.SMembers(ctx, setKey).Result()
-	if err != nil {
-		return err
-	}
-	if len(hashes) == 0 {
-		return nil
-	}
-	pipe := s.rdb.TxPipeline()
-	for _, h := range hashes {
-		pipe.Del(ctx, refreshKeyPrefix+h)
-	}
-	pipe.Del(ctx, setKey)
-	_, err = pipe.Exec(ctx)
+	_, err := revokeAllRefreshScript.Run(ctx, s.rdb,
+		[]string{setKey, refreshKeyPrefix},
+		userID.String(),
+	).Result()
 	return err
-}
-
-func (s *redisTokenStore) MarkRefreshTokenUsed(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.rdb.Set(ctx, refreshUsedKeyPrefix+tokenHash, userID.String(), ttl).Err()
 }
 
 func (s *redisTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
@@ -105,43 +140,25 @@ func (s *redisTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash stri
 }
 
 func (s *redisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.rdb.Set(ctx, pwresetKeyPrefix+tokenHash, userID.String(), ttl).Err()
+	return s.recovery.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
 }
 
-// ConsumePasswordResetToken is one-time-use by construction: GETDEL is
-// atomic, so a token can't be raced into being consumed twice.
+// ConsumePasswordResetToken is one-time-use by construction: the SQL DELETE
+// runs inside the same transaction as the user update.
 func (s *redisTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
-	raw, err := s.rdb.GetDel(ctx, pwresetKeyPrefix+tokenHash).Result()
-	if err == redis.Nil {
-		return uuid.Nil, false, nil
-	}
-	if err != nil {
-		return uuid.Nil, false, err
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, false, err
-	}
-	return id, true, nil
+	return s.recovery.consume(ctx, tokenHash, kindPasswordSet)
 }
 
 func (s *redisTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.rdb.Set(ctx, emailVerifyKeyPrefix+tokenHash, userID.String(), ttl).Err()
+	return s.recovery.put(ctx, tokenHash, kindEmailVerify, userID, ttl)
 }
 
 // ConsumeEmailVerifyToken is one-time-use by construction, same as
-// ConsumePasswordResetToken — GETDEL is atomic.
+// ConsumePasswordResetToken — the SQL delete participates in the transaction.
 func (s *redisTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
-	raw, err := s.rdb.GetDel(ctx, emailVerifyKeyPrefix+tokenHash).Result()
-	if err == redis.Nil {
-		return uuid.Nil, false, nil
-	}
-	if err != nil {
-		return uuid.Nil, false, err
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, false, err
-	}
-	return id, true, nil
+	return s.recovery.consume(ctx, tokenHash, kindEmailVerify)
+}
+
+func (s *redisTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return s.recovery.withTransaction(ctx, fn)
 }

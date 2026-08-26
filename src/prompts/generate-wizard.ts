@@ -96,6 +96,13 @@ export async function promptModuleShape(): Promise<boolean> {
   });
 }
 
+export async function promptModuleCqrs(): Promise<boolean> {
+  return confirm({
+    message: "Split application commands and queries for this module?",
+    default: false,
+  });
+}
+
 export async function promptModuleAuth(): Promise<boolean> {
   return confirm({
     message: "Require a valid access token for this module's routes?",

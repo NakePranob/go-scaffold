@@ -9,6 +9,7 @@ export const RBAC_FILES: { template: string; output: string }[] = [
   { template: "add/rbac/internal/app/role/service.go.hbs", output: "internal/app/role/service.go" },
   { template: "add/rbac/internal/app/role/service_test.go.hbs", output: "internal/app/role/service_test.go" },
   { template: "add/rbac/internal/app/role/repository_test.go.hbs", output: "internal/app/role/repository_test.go" },
+  { template: "add/rbac/internal/app/role/composition.go.hbs", output: "internal/app/role/composition.go" },
   { template: "add/rbac/internal/app/role/handler.go.hbs", output: "internal/app/role/handler.go" },
   { template: "add/rbac/internal/app/role/dto.go.hbs", output: "internal/app/role/dto.go" },
   { template: "add/rbac/internal/app/role/errors.go.hbs", output: "internal/app/role/errors.go" },

@@ -23,7 +23,13 @@ export function ensureImport(content: string, importPath: string): string {
   // the search argument is a plain string, not a regex — collapsing any "$$"
   // that happens to appear in importLine. A function's return value is spliced
   // in literally, so this holds regardless of what importPath contains.
-  return content.replace(/import \(\n/, () => `import (\n\t${importLine}\n`);
+  if (content.includes("import (\n")) {
+    return content.replace(/import \(\n/, () => `import (\n\t${importLine}\n`);
+  }
+  // A minimal CQRS service has no imports until the first method is added.
+  // Create a complete block after the package clause so later generated
+  // methods can use the same idempotent path.
+  return content.replace(/^(package [^\n]+\n)/, (_match, packageLine: string) => `${packageLine}\nimport (\n\t${importLine}\n)\n`);
 }
 
 // insertBeforeMarkerOnce: like insertBeforeMarker but a no-op if `sentinel`

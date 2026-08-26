@@ -24,8 +24,8 @@ import (
 // gets a plain rejection instead of tripping reuse detection and nuking every
 // session the user has.
 //
-// No foreign key to users on purpose: GORM's AutoMigrate (dev) wouldn't create
-// one from these tags, and a constraint that exists in production but not in
+// No foreign key to users on purpose: the development bootstrap wouldn't
+// create one from these tags, and a constraint that exists in production but not in
 // development is the exact mismatch that stops the app booting. A token whose
 // user is gone simply fails the lookup that follows.
 type AuthToken struct {

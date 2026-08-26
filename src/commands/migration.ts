@@ -30,8 +30,8 @@ export async function generateMigration(rawName: string | undefined, projectDir:
   console.log(pc.green(`\ngenerated migrations/${version}_${name}.{up,down}.sql`));
   console.log(
     pc.dim(
-      `\nnext: write the SQL, then \`make migrate-up\` (dev) or apply it as a deploy step ` +
-        `(AUTO_MIGRATE=true also picks up model changes automatically in dev — this file matters most for prod)`
+      `\nnext: write the SQL, then apply it with \`make migrate-up\` before production ` +
+        `(APP_ENV=development only enables the convenience bootstrap)`
     )
   );
 }

@@ -19,10 +19,11 @@ import (
 type tokenStore interface {
 	SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
 	GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	ConsumeRefreshToken(ctx context.Context, tokenHash string, ttl time.Duration) (uuid.UUID, bool, error)
 	DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error
 	RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error
-	MarkRefreshTokenUsed(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
 	IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	WithTransaction(ctx context.Context, fn func(context.Context) error) error
 	SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
 	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 	SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error

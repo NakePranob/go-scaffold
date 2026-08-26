@@ -1,6 +1,6 @@
 import { AuthStore } from "../types";
 import fs from "fs-extra";
-import { authWiringLines } from "./auth-patcher";
+import { authHandlerLineFor, authWiringLines } from "./auth-patcher";
 import { insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
@@ -79,17 +79,25 @@ export function patchUserServiceForRbac(serviceGoPath: string): void {
   let content = fs.readFileSync(serviceGoPath, "utf8");
 
   const roleCheckerInterface = [
-    "// roleChecker = what the service needs from the role domain to validate a",
+    "// RoleChecker is what the service needs from the role domain to validate a",
     "// role assignment — declared consumer-side, same convention as repository/mailer.",
-    "type roleChecker interface {",
+    "type RoleChecker interface {",
     "\tCodeExists(ctx context.Context, code string) (bool, error)",
     "}",
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-interfaces", roleCheckerInterface, "type roleChecker interface");
+  if (!content.includes("type RoleChecker interface") && !content.includes("type roleChecker interface")) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-interfaces", roleCheckerInterface, "type RoleChecker interface");
+  }
 
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-fields", "roles roleChecker", "roles roleChecker");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-params", "roles roleChecker,", "roles roleChecker,");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-init", "roles: roles,", "roles: roles,");
+  if (!/\broles\s+RoleChecker\b/.test(content) && !/\broles\s+roleChecker\b/.test(content)) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-fields", "roles RoleChecker", "roles RoleChecker");
+  }
+  if (!/\broles\s+\.\.\.RoleChecker\s*,/.test(content) && !/\broles\s+roleChecker\s*,/.test(content)) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-params", "roles RoleChecker,", "roles RoleChecker,");
+  }
+  if (!/roles:\s+roleChecker,/.test(content) && !/roles:\s+roles,/.test(content)) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-init", "roles: roles,", "roles: roles,");
+  }
   content = insertBeforeMarkerOnce(content, "// go-scaffold:issue-access-token-args", "u.Role,", "u.Role,");
 
   const setRoleMethod = [
@@ -103,18 +111,18 @@ export function patchUserServiceForRbac(serviceGoPath: string): void {
     "\t\tif errors.Is(err, gorm.ErrRecordNotFound) {",
     "\t\t\treturn nil, errNotFound()",
     "\t\t}",
-    "\t\treturn nil, apperror.NewInternal()",
+    "\t\treturn nil, apperror.NewInternal(err)",
     "\t}",
     "\texists, err := s.roles.CodeExists(ctx, roleCode)",
     "\tif err != nil {",
-    "\t\treturn nil, apperror.NewInternal()",
+    "\t\treturn nil, apperror.NewInternal(err)",
     "\t}",
     "\tif !exists {",
     "\t\treturn nil, errUnknownRole()",
     "\t}",
     "\tu.Role = roleCode",
     "\tif err := s.repo.UpdateUser(ctx, u); err != nil {",
-    "\t\treturn nil, apperror.NewInternal()",
+    "\t\treturn nil, apperror.NewInternal(err)",
     "\t}",
     "\treturn u, nil",
     "}",
@@ -171,9 +179,15 @@ export function patchUserHandlerForRbac(handlerGoPath: string, goModule: string)
   const paginationImport = `"${goModule}/internal/shared/pagination"`;
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-imports", paginationImport, "internal/shared/pagination");
 
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-fields", "authz *middleware.Authz", "authz *middleware.Authz");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-params", "authz *middleware.Authz,", "authz *middleware.Authz,");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-init", "authz: authz,", "authz: authz,");
+  if (!/\bauthz\s+(?:\*middleware\.Authz|authorizer)\b/.test(content)) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-fields", "authz *middleware.Authz", "authz *middleware.Authz");
+  }
+  if (!/\bauthz\s+\.\.\.(?:\*middleware\.Authz|authorizer)\s*,/.test(content) && !/\bauthz\s+\*middleware\.Authz\s*,/.test(content)) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-params", "authz *middleware.Authz,", "authz *middleware.Authz,");
+  }
+  if (!/authz:\s+authzMiddleware,/.test(content) && !/authz:\s+authz,/.test(content)) {
+    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-init", "authz: authz,", "authz: authz,");
+  }
 
   content = insertBeforeMarkerOnce(
     content,
@@ -258,29 +272,25 @@ export function patchUserErrorsForRbac(errorsGoPath: string): void {
   fs.writeFileSync(errorsGoPath, content);
 }
 
-// patchMainGoForRbac wires the role domain into cmd/api: its import, its
-// three models in the AutoMigrate call, and — the one place a plain insert
-// isn't enough — REPLACES the `add auth` PR's user.NewHandler(...) call with
-// a version that also builds roleSvc/authz and passes them through, plus
-// registers role's own routes right after it.
-// userSvcLineFor rebuilds the exact line `add auth` wrote, from the same
-// helper it used. Exported so the command can check for it *before* it starts
-// patching: every other file rbac touches is edited first, and until this
-// existed a mismatch here threw after user.NewService had already grown a
-// roleChecker parameter — leaving a project that no longer compiled and an
-// error telling you to restore a line that wouldn't have fixed it.
+// userSvcLineFor rebuilds the legacy line `add auth` wrote before auth got a
+// feature-local composition root. It remains here so `add rbac` can upgrade an
+// older generated project without pulling the old construction shape into new
+// output.
 export function userSvcLineFor(goModule: string, store: AuthStore, worker: boolean): string {
   const { tokenStore, mailer } = authWiringLines({ goModule, queueBackend: "river", store, worker });
   return `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, ${mailer}, cfg)`;
 }
 
 export function assertRbacPatchable(mainGoPath: string, goModule: string, store: AuthStore, worker: boolean): void {
-  const expected = userSvcLineFor(goModule, store, worker);
-  if (fs.readFileSync(mainGoPath, "utf8").includes(expected)) return;
+  const wiring = { goModule, queueBackend: "river" as const, store, worker };
+  const content = fs.readFileSync(mainGoPath, "utf8");
+  const expected = authHandlerLineFor(wiring);
+  const legacyRoute = `user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, ${authWiringLines(wiring).limiter}).Register(api)`;
+  if (content.includes(expected) || content.includes(userSvcLineFor(goModule, store, worker)) || content.includes(legacyRoute)) return;
   throw new Error(
-    "cmd/api/wiring.go's userSvc line doesn't match what `add auth` wrote, so `add rbac` can't extend it.\n" +
+    "cmd/api/wiring.go's auth route doesn't match what `add auth` wrote, so `add rbac` can't extend it.\n" +
       `Expected to find:\n  ${expected}\n\n` +
-      "It was probably hand-edited. Restore that line and re-run — nothing has been changed yet."
+      "It was probably hand-edited. Restore that route and re-run — nothing has been changed yet."
   );
 }
 
@@ -304,44 +314,36 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
     content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
   }
 
-  // roleSvc and authz have to be declared *above* userSvc, which now takes
-  // roleSvc — so this rewrites the service line in place rather than
-  // appending at the marker (which would land below it).
-  // Rebuilt from the same helper `add auth` used, so a project on either store
-  // gets its own line matched rather than a hardcoded guess at one of them.
-  const { limiter } = authWiringLines({ goModule, queueBackend: "river", store, worker });
-  const userSvcLine = userSvcLineFor(goModule, store, worker);
-  // Throw rather than skip: the roleSvc/authz declarations this rewrite adds
-  // are what the unconditional patches below refer to. Skipping quietly still
-  // emits `roleSvc`/`authz` references with nothing declaring them, so the
-  // command reports success over a main.go that doesn't compile.
-  if (!content.includes(userSvcLine)) {
-    throw new Error(
-      `cmd/api/wiring.go's userSvc line doesn't match what \`add auth\` wrote, so \`add rbac\` can't extend it.\n` +
-        `Expected to find:\n  ${userSvcLine}\n\n` +
-        `It was probably hand-edited. Restore that line (add rbac will re-extend it), or apply the rbac wiring by hand:\n` +
-        `  roleSvc := role.NewService(role.NewRepository(db))\n` +
-        `  authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)\n` +
-        `  ...then pass roleSvc as user.NewService's last argument.`
-    );
+  const wiring = { goModule, queueBackend: "river" as const, store, worker };
+  const authRouteLine = authHandlerLineFor(wiring);
+  const roleCompositionLine = "roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.AuthzCacheTTL)";
+  const roleHandlerLine = "roleComposition.Handler.Register(api)";
+
+  if (content.includes(authRouteLine)) {
+    const authWithRoleLine = authHandlerLineFor(wiring, ["roleComposition.Service", "roleComposition.Authz"]);
+    content = content.replace(authRouteLine, [roleCompositionLine, authWithRoleLine, roleHandlerLine].join("\n"));
+  } else {
+    // Upgrade projects generated before auth's local composition root. The
+    // role feature is still constructed locally; only the legacy user service
+    // call needs an adapter until that project is regenerated.
+    const userSvcLine = userSvcLineFor(goModule, store, worker);
+    if (!content.includes(userSvcLine)) {
+      throw new Error(
+        `cmd/api/wiring.go's auth route doesn't match what \`add auth\` wrote, so \`add rbac\` can't extend it.\n` +
+          `Expected to find:\n  ${authRouteLine}\n\n` +
+          "It was probably hand-edited. Restore that route and re-run — nothing has been changed yet."
+      );
+    }
+    content = content.replace(userSvcLine, [roleCompositionLine, `${userSvcLine.slice(0, -1)}, roleComposition.Service)`].join("\n"));
+    const limiter = authWiringLines(wiring).limiter;
+    const legacyRoute = `user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, ${limiter}).Register(api)`;
+    const tail = ").Register(api)";
+    if (!content.includes(legacyRoute)) {
+      throw new Error("cmd/api/wiring.go is missing auth's legacy handler route while adding RBAC");
+    }
+    content = content.replace(legacyRoute, `${legacyRoute.slice(0, -tail.length)}, roleComposition.Authz${tail}`);
+    content = insertBeforeMarkerOnce(content, ROUTE_MARKER, roleHandlerLine, roleHandlerLine);
   }
-  content = content.replace(
-    userSvcLine,
-    [
-      "roleSvc := role.NewService(role.NewRepository(db))",
-      "authz := middleware.NewAuthz(roleSvc.PermissionsOf, cfg.AuthzCacheTTL)",
-      `${userSvcLine.slice(0, -1)}, roleSvc)`,
-    ].join("\n")
-  );
-
-  const userRouteLine = `user.NewHandler(userSvc, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, ${limiter}).Register(api)`;
-  // strip the trailing `).Register(api)` — not just `.Register(api)` — so authz
-  // lands inside NewHandler's argument list rather than after its closing paren
-  const tail = ").Register(api)";
-  content = content.replace(userRouteLine, `${userRouteLine.slice(0, -tail.length)}, authz${tail}`);
-
-  const roleRouteLine = "role.NewHandler(roleSvc, cfg.JWTSecret, authz).Register(api)";
-  content = insertBeforeMarkerOnce(content, ROUTE_MARKER, roleRouteLine, roleRouteLine);
 
   fs.writeFileSync(mainGoPath, content);
 }
@@ -356,7 +358,7 @@ export function patchCmdSeedForRbac(seedMainGoPath: string, goModule: string): v
   const importLine = `"${goModule}/internal/app/role"`;
   content = insertBeforeMarkerOnce(content, "// go-scaffold:seed-imports", importLine, importLine);
 
-  const roleSvcLine = "roleSvc := role.NewService(role.NewRepository(db))";
+  const roleSvcLine = "roleSvc := role.NewServiceFromDB(db)";
   content = insertBeforeMarkerOnce(content, "// go-scaffold:seed-services", roleSvcLine, roleSvcLine);
   content = insertBeforeMarkerOnce(content, "// go-scaffold:seed-user-service-args", "roleSvc,", "roleSvc,");
 

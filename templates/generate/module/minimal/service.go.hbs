@@ -1,5 +1,30 @@
 package {{pkg}}
 
+{{#if cqrs}}
+// repository is the complete data dependency retained for the compatibility
+// facade below. CQRS handlers consume the narrower command/query ports.
+type repository interface {
+	commandRepository
+	queryRepository
+	// go-scaffold:repository-interface
+}
+
+// Service is a compatibility facade. New code should depend on
+// commandService or queryService directly.
+type Service struct {
+	commands commandService
+	queries  queryService
+}
+
+func NewService(repo repository) *Service {
+	return &Service{
+		commands: NewCommandHandler(repo),
+		queries:  NewQueryHandler(repo),
+	}
+}
+
+// go-scaffold:service-methods
+{{else}}
 import (
 	"context"
 	"errors"
@@ -39,7 +64,8 @@ func wrapFindErr(err error) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errNotFound()
 	}
-	return apperror.NewInternal()
+	return apperror.NewInternal(err)
 }
 
 // go-scaffold:service-methods
+{{/if}}

@@ -9,6 +9,10 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/model/user.go.hbs", output: "internal/app/user/model/user.go" },
   { template: "add/auth/internal/app/user/model/identity.go.hbs", output: "internal/app/user/model/identity.go" },
   { template: "add/auth/internal/app/user/model/loginthrottle.go.hbs", output: "internal/app/user/model/loginthrottle.go" },
+  { template: "add/auth/internal/app/user/model/authtoken.go.hbs", output: "internal/app/user/model/authtoken.go" },
+  { template: "add/auth/internal/app/user/application/recovery.go.hbs", output: "internal/app/user/application/recovery.go" },
+  { template: "add/auth/internal/app/user/composition.go.hbs", output: "internal/app/user/composition.go" },
+  { template: "add/auth/internal/app/user/tokenstore_recovery.go.hbs", output: "internal/app/user/tokenstore_recovery.go" },
   { template: "add/auth/internal/app/user/dto.go.hbs", output: "internal/app/user/dto.go" },
   { template: "add/auth/internal/app/user/errors.go.hbs", output: "internal/app/user/errors.go" },
   { template: "add/auth/internal/app/user/jwt.go.hbs", output: "internal/app/user/jwt.go" },
@@ -25,13 +29,14 @@ const SHARED: Entry[] = [
 // go-redis into every project's go.mod for a file it never constructs — the
 // same reason `add worker` writes one queue adapter, not two.
 const POSTGRES: Entry[] = [
-  { template: "add/auth/internal/app/user/model/authtoken.go.hbs", output: "internal/app/user/model/authtoken.go" },
   { template: "add/auth/internal/app/user/tokenstore_pg.go.hbs", output: "internal/app/user/tokenstore_pg.go" },
+  { template: "add/auth/internal/app/user/tokenstore_pg_test.go.hbs", output: "internal/app/user/tokenstore_pg_test.go" },
   { template: "add/auth/internal/shared/middleware/ratelimit_memory.go.hbs", output: "internal/shared/middleware/ratelimit_memory.go" },
 ];
 
 const REDIS: Entry[] = [
   { template: "add/auth/internal/app/user/tokenstore_redis.go.hbs", output: "internal/app/user/tokenstore_redis.go" },
+  { template: "add/auth/internal/app/user/tokenstore_redis_test.go.hbs", output: "internal/app/user/tokenstore_redis_test.go" },
   { template: "add/auth/internal/shared/middleware/ratelimit_redis.go.hbs", output: "internal/shared/middleware/ratelimit_redis.go" },
 ];
 

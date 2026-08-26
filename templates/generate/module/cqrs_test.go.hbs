@@ -1,0 +1,7 @@
+package {{pkg}}
+
+// These compile-time assertions make the generated boundary visible to both
+// users and tooling: commands and queries are separate application ports even
+// when they share one Postgres adapter in this modular monolith.
+var _ commandService = (*CommandHandler)(nil)
+var _ queryService = (*QueryHandler)(nil)

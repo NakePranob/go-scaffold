@@ -29,14 +29,24 @@ func Error(exposeDetail bool) gin.HandlerFunc {
 		if !errors.As(err.Err, &appErr) {
 			// Unexpected error: log the real thing, answer the client generically.
 			slog.Error("unhandled error", "error", err.Err, "request_id", c.GetString(RequestIDKey))
-			appErr = apperror.NewInternal()
+			appErr = apperror.NewInternal(err.Err)
 			if exposeDetail {
 				appErr.Details = err.Err.Error()
 			}
-		} else if !exposeDetail {
-			// Known AppError (e.g. VALIDATION_ERROR): still strip Details in
-			// prod, so a direct API call doesn't get field-level hints.
-			appErr.Details = nil
+		} else {
+			// Internal AppErrors carry a technical cause for one structured log;
+			// known domain errors (validation, not-found, etc.) stay quiet.
+			if cause := appErr.Unwrap(); cause != nil {
+				slog.Error("request failed", "error", cause, "request_id", c.GetString(RequestIDKey))
+				if exposeDetail {
+					appErr.Details = cause.Error()
+				}
+			}
+			if !exposeDetail {
+				// Known AppError (e.g. VALIDATION_ERROR): still strip Details in
+				// prod, so a direct API call doesn't get field-level hints.
+				appErr.Details = nil
+			}
 		}
 
 		appErr.RequestID = c.GetString(RequestIDKey)

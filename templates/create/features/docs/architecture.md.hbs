@@ -6,10 +6,12 @@
 do lives in `cmd/api/wiring.go`, in a `run() error` — the one function that sees
 every module and hands them what they need.
 
-Modules never import one another. A domain that needs another's behaviour
-declares a narrow interface for exactly what it needs and receives the concrete
-service from `run()`; `.golangci.yml` has a depguard rule per domain that fails
-the build if anyone shortcuts that.
+Modules never import one another. Each generated domain owns its local
+repository → service → handler composition in `composition.go`; `wiring.go`
+supplies the DB and any cross-feature security dependencies. A domain that
+needs another's behaviour declares a narrow interface for exactly what it
+needs and receives the concrete service from `run()`; `.golangci.yml` has a
+depguard rule per domain that fails the build if anyone shortcuts that.
 
 Two things the split buys. `run()` returns an error instead of calling
 `os.Exit`, so the deferred cleanup below it actually runs — `os.Exit` skips
@@ -63,7 +65,23 @@ no per-domain versioning; a domain that needs a real breaking change gets a
 new domain package (or a new field on the existing DTO), not a duplicated
 model pointed at the same table under a different URL.
 
-## 4. Response and Error Model
+## 4. Application boundaries
+
+**Decision:** Keep the simple service path as the default and make CQRS an
+explicit per-feature choice with `generate module <name> --cqrs`.
+**Rationale:** A feature with meaningful write invariants or a different read
+shape benefits from separate `CommandHandler` and `QueryHandler` ports while
+remaining inside this modular monolith. A small CRUD feature does not benefit
+from empty command/query wrappers, so it keeps one service until its business
+needs justify the split. CQRS here does not require a second database, broker,
+or event-sourcing runtime.
+
+When enabled, `commands.go` owns state-changing application use cases,
+`queries.go` owns read use cases, and `composition.go` constructs both. The
+HTTP handler is still an inbound adapter and `cmd/api/wiring.go` still only
+selects infrastructure and registers the feature.
+
+## 5. Response and Error Model
 
 **Decision:** Central `apperror.AppError` (HTTP status + machine-readable
 `code` + message), rendered once by `middleware.Error()`.
@@ -75,24 +93,24 @@ call site, no error-shape drift between domains.
 - DB errors are classified once in `shared/dberr` (`IsDuplicate`,
   `IsForeignKey`) and mapped to the right HTTP status per domain
 
-## 5. Pagination
+## 6. Pagination
 
 **Decision:** Shared `limit`/`offset` parsing and response envelope
 (`shared/pagination`), used by every list endpoint.
 **Rationale:** One implementation, one response shape (`{data, limit,
 offset}`) — no per-domain reinvention.
 
-## 6. Persistence
+## 7. Persistence
 
 **Decision:** PostgreSQL + GORM, schema managed by
 [golang-migrate](https://github.com/golang-migrate/migrate).
-**Rationale:** `AUTO_MIGRATE=true` runs GORM's AutoMigrate in dev for speed;
-prod runs `migrate up` as a separate, versioned, rollback-capable step —
-AutoMigrate is add-only and locks tables once there's real data.
+**Rationale:** `APP_ENV=development` allows a convenience table bootstrap;
+`APP_ENV=production` runs only after `migrate up` has applied the separate,
+versioned, rollback-capable SQL migrations.
 
 {{#if docker}}- `docker-compose.yml` provides the local Postgres instance
 {{/if}}
-## 7. IDs
+## 8. IDs
 
 **Decision:** UUID v7 for every entity, generated app-side
 (`shared/id.New()`), not by a DB default.
@@ -101,7 +119,7 @@ splits versus random v4 under heavy writes — and the app has the ID before
 insert, so it doesn't need `gen_random_uuid()`.
 
 {{#if openapiDocs}}
-## 8. API Documentation
+## 9. API Documentation
 
 **Decision:** Hand-written OpenAPI spec (`docs/openapi.yaml`), split by
 domain module, read from the working copy only — the server serves no `/docs`
@@ -112,7 +130,7 @@ comment-generated (swaggo) if hand-updates start drifting.
 {{/if}}
 
 {{#if observability}}
-## 9. Observability
+## 10. Observability
 
 **Decision:** Prometheus metrics (`GET /metrics`, request count + latency
 per route) always-on when this feature is enabled; OpenTelemetry tracing

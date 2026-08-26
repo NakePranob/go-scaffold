@@ -945,7 +945,6 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   // held in a ref because the rate-limit assertions below restart it
   const authApiRef = { api: startApi(fullApp, "auth-api", fullDb, {
     REDIS_URL: sharedRedisUrl,
-    AUTO_MIGRATE: "true",
   }) };
   execFileSync("sleep", ["3"]);
 
@@ -1112,7 +1111,6 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     stopApi(authApiRef.api);
     authApiRef.api = startApi(fullApp, "auth-api-ratelimit", fullDb, {
       REDIS_URL: sharedRedisUrl,
-      AUTO_MIGRATE: "true",
     });
     execFileSync("sleep", ["3"]);
   };
@@ -1444,10 +1442,9 @@ step(
 );
 
 // `add rbac` requires real seed data (roles/permissions rows), which only
-// the SQL migration provides — AUTO_MIGRATE=true creates the tables via
-// AutoMigrate but never runs the migration's INSERT statements, so this
-// step applies the real migration via the `migrate` CLI rather than
-// AUTO_MIGRATE=true like earlier steps.
+// the SQL migration provides — the development table bootstrap creates the
+// tables but never runs the migration's INSERT statements, so this step
+// applies the real migration via the `migrate` CLI.
 step(
   hasDocker && (hasPsql || dockerPgContainer) && hasMigrate
     ? "add rbac: default role, list/view/set-role admin routes, last-role-manager lockout guard, configurable authz cache TTL, logout-all, cmd/seed promotes to admin"
@@ -1456,12 +1453,12 @@ step(
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
 
     const rbacOut = goScaffold(["add", "rbac", "--yes"], fullApp);
-    // AUTO_MIGRATE=true creates the tables but never runs the migration's
-    // seed INSERTs — a dev following the normal AUTO_MIGRATE=true dev flow
+    // The development bootstrap creates tables but never runs the migration's
+    // seed INSERTs — a dev following the normal APP_ENV=development flow
     // would otherwise hit "unknown role code" from `make seed` with no clue
     // why, so `add rbac` must say so loudly, not just in a doc.
-    if (!rbacOut.includes("AUTO_MIGRATE=true") || !rbacOut.includes("does NOT seed")) {
-      throw new Error(`expected \`add rbac\` to warn that AUTO_MIGRATE=true doesn't seed role/permission data, got:\n${rbacOut}`);
+    if (!rbacOut.includes("does NOT seed")) {
+      throw new Error(`expected \`add rbac\` to warn that the development bootstrap doesn't seed role/permission data, got:\n${rbacOut}`);
     }
     run("go", ["mod", "tidy"], fullApp);
     run("go", ["build", "./..."], fullApp);
@@ -1485,7 +1482,7 @@ step(
     // very next request instead of needing to wait out any cache window.
     const rbacApi = startApi(fullApp, "rbac-api", fullDb, {
       REDIS_URL: sharedRedisUrl,
-      AUTO_MIGRATE: "false",
+      APP_ENV: "development",
       AUTHZ_CACHE_TTL_MIN: "0",
     });
     execFileSync("sleep", ["3"]);
@@ -1725,7 +1722,7 @@ step(
 
     const genmodApi = startApi(fullApp, "genmod-api", fullDb, {
       REDIS_URL: sharedRedisUrl,
-      AUTO_MIGRATE: "false",
+      APP_ENV: "development",
     });
     execFileSync("sleep", ["3"]);
 
@@ -1811,7 +1808,7 @@ step("re-generating after deleting only the folder doesn't duplicate wiring (wou
   rmSync(path.join(fullApp, "internal", "app", "order"), { recursive: true, force: true });
   goScaffold(["generate", "module", "order", "--full", "--defaults"], fullApp);
   const mainGo = readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8");
-  const registers = (mainGo.match(/order\.NewHandler\(/g) ?? []).length;
+  const registers = (mainGo.match(/order\.NewHandlerFromDB\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected exactly 1 order route registration, got ${registers}`);
   const openapi = readFileSync(path.join(fullApp, "docs", "openapi.yaml"), "utf8");
   const paths = (openapi.match(/\/v1\/orders:/g) ?? []).length;
@@ -1869,14 +1866,14 @@ step(
   }
 );
 
-// The whole point of CheckMigrationVersion: AUTO_MIGRATE=false must not boot
+// The whole point of CheckMigrationVersion: APP_ENV=production must not boot
 // against a DB nothing has migrated yet, and must boot fine once `migrate up`
 // has actually run — proven here against the real compiled server, not just a
 // unit test of the function. Invokes `migrate` directly rather than through
 // `make migrate-up`, so this step exercises only this PR's own code.
 step(
   (hasPsql || dockerPgContainer) && hasMigrate
-    ? "AUTO_MIGRATE=false refuses to boot with no migrations applied, boots once `migrate up` has run"
+    ? "APP_ENV=production refuses to boot with no migrations applied, boots once `migrate up` has run"
     : "migration guard: skipped (needs psql/a Postgres container, and the migrate CLI)",
   () => {
     if (!((hasPsql || dockerPgContainer) && hasMigrate)) return;
@@ -1893,7 +1890,9 @@ step(
     // re-exports .env's REDIS_URL line and clobbers it. Bake the real URL
     // into .env itself instead.
     let envContent = readFileSync(path.join(fullApp, ".env.example"), "utf8")
-      .replace("AUTO_MIGRATE=true", "AUTO_MIGRATE=false")
+      .replace(/^APP_ENV=.*/m, "APP_ENV=production")
+      .replace(/^JWT_SECRET=.*/m, "JWT_SECRET=smoke-test-secret")
+      .replace(/^SMTP_HOST=.*/m, "SMTP_HOST=localhost")
       .replace(/^DB_DSN=.*/m, `DB_DSN=${fullDb.dbDsn}`)
       .replace(/^PORT=.*/m, `PORT=${smoke.port}`);
     if (sharedRedisUrl) envContent = envContent.replace(/REDIS_URL=.*/, `REDIS_URL=${sharedRedisUrl}`);
@@ -1968,26 +1967,21 @@ step(
       throw new Error(`expected a stale update to be refused with 409 *_STALE, got: ${stalePut}`);
     }
 
-    // AutoMigrate on top of a database the SQL migrations already built — the
-    // default dev setup for anyone who followed `add rbac`'s "apply it before
-    // relying on RBAC, even in dev" and left .env.example's AUTO_MIGRATE=true
-    // alone. GORM reconciles its struct tags against the existing schema, and
-    // a unique index the migration named differently from the tag made it try
-    // to DROP a constraint under GORM's own name:
-    //   constraint "uni_users_email" of relation "users" does not exist
-    // which is a fatal boot error, not a warning.
+    // Development bootstrap remains idempotent when it starts from a schema
+    // already built by the SQL migrations. This is a convenience check only;
+    // production stays on the migration-version guard above.
     writeFileSync(
       path.join(fullApp, ".env"),
-      readFileSync(path.join(fullApp, ".env"), "utf8").replace("AUTO_MIGRATE=false", "AUTO_MIGRATE=true")
+      readFileSync(path.join(fullApp, ".env"), "utf8").replace(/^APP_ENV=.*/m, "APP_ENV=development")
     );
-    const bothApi = startMakeRun(fullApp, "migration-automigrate-over-sql", true);
+    const bothApi = startMakeRun(fullApp, "migration-development-over-sql", true);
     execFileSync("sleep", ["3"]);
     const bothReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
     stopApi(bothApi);
     if (bothReady !== "200") {
       throw new Error(
-        `AUTO_MIGRATE=true over an already-migrated schema failed to boot (READYZ=${bothReady}):\n` +
-          readFileSync(logPath("migration-automigrate-over-sql"), "utf8")
+        `APP_ENV=development over an already-migrated schema failed to boot (READYZ=${bothReady}):\n` +
+          readFileSync(logPath("migration-development-over-sql"), "utf8")
       );
     }
 
@@ -2006,6 +2000,75 @@ for (const [name, args] of Object.entries({
     goScaffold(["generate", "method", "order", ...args], fullApp);
   });
 }
+
+// A generated PUT/PATCH action is deliberately a 501 stub. Proving only the
+// source route and OpenAPI response is not enough: the handler must return
+// before touching the repository, so this exercises the real server and checks
+// the persisted row's complete observable state on both sides.
+step(
+  hasPsql || dockerPgContainer
+    ? "generated PATCH action returns 501 and leaves the persisted row unchanged"
+    : "generated PATCH action runtime state check: skipped (needs psql/a Postgres container)",
+  () => {
+    if (!hasPsql && !dockerPgContainer) return;
+
+    stopAllApis();
+    runMake(["db-create"], fullApp);
+    let api = null;
+    try {
+      api = startApi(fullApp, "generated-method-501", fullDb, {
+        APP_ENV: "development",
+        REDIS_URL: sharedRedisUrl,
+      });
+      execFileSync("sleep", ["3"]);
+
+      const createdOutput = run("curl", [
+        "-s",
+        "-w",
+        "HTTPSTATUS:%{http_code}",
+        "-X",
+        "POST",
+        `${smoke.baseURL}/v1/orders`,
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        "{}",
+      ], fullApp);
+      const createdStatus = createdOutput.match(/HTTPSTATUS:(\d+)/)?.[1];
+      if (createdStatus !== "201") throw new Error(`expected 201 creating the action-smoke row, got: ${createdOutput}`);
+      const created = JSON.parse(createdOutput.replace(/HTTPSTATUS:\d+\s*$/, ""));
+      const rowState = () => psqlExec(
+        fullDb.dbName,
+        `SELECT id::text || '|' || created_at::text || '|' || updated_at::text || '|' || version::text FROM order_svc.orders WHERE id = '${created.id}'`
+      ).trim();
+      const before = rowState();
+      if (!before) throw new Error(`could not read the created order row before PATCH (id=${created.id})`);
+
+      const patchOutput = run("curl", [
+        "-s",
+        "-w",
+        "HTTPSTATUS:%{http_code}",
+        "-X",
+        "PATCH",
+        `${smoke.baseURL}/v1/orders/${created.id}/approve`,
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        "{}",
+      ], fullApp);
+      const patchStatus = patchOutput.match(/HTTPSTATUS:(\d+)/)?.[1];
+      const after = rowState();
+
+      if (patchStatus !== "501") throw new Error(`expected generated PATCH action to return 501, got: ${patchOutput}`);
+      if (after !== before) {
+        throw new Error(`generated PATCH action changed the persisted row:\nbefore: ${before}\nafter:  ${after}`);
+      }
+    } finally {
+      stopApi(api);
+      runMake(["db-drop"], fullApp);
+    }
+  }
+);
 
 step("after 5 generate method calls: build + vet + gofmt + test + OpenAPI bundle", () => {
   run("go", ["build", "./..."], fullApp);
@@ -2082,7 +2145,7 @@ step("undo module reverses wiring, deletes its migrations, and re-generating sta
   if (openapi.includes("/v1/widgets:")) throw new Error("openapi still lists widgets after undo");
   run("go", ["build", "./..."], fullApp); // must still compile with widget gone
   goScaffold(["generate", "module", "widget", "--defaults"], fullApp); // re-adding must not duplicate
-  const registers = (readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8").match(/widget\.NewHandler\(/g) ?? []).length;
+  const registers = (readFileSync(path.join(fullApp, "cmd", "api", "wiring.go"), "utf8").match(/widget\.NewHandlerFromDB\(/g) ?? []).length;
   if (registers !== 1) throw new Error(`expected 1 widget registration after re-add, got ${registers}`);
   run("go", ["build", "./..."], fullApp);
 });

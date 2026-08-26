@@ -22,6 +22,12 @@ const (
 
 // go-scaffold:user-handler-consts
 
+// authorizer is the optional capability RBAC supplies to protect admin
+// routes. Auth itself does not import the RBAC middleware implementation.
+type authorizer interface {
+	Require(string) gin.HandlerFunc
+}
+
 type Handler struct {
 	svc            *Service
 	jwtSecret      string
@@ -31,6 +37,7 @@ type Handler struct {
 	// limiter, not a *redis.Client: which backing store counts the requests is
 	// decided by `add auth --store`, and this file must not care.
 	limiter middleware.Limiter
+	authz   authorizer
 	// go-scaffold:user-handler-fields
 }
 
@@ -41,8 +48,13 @@ func NewHandler(
 	cookieSecure bool,
 	cookieSameSite string,
 	limiter middleware.Limiter,
+	authz ...authorizer,
 	// go-scaffold:user-handler-params
 ) *Handler {
+	var authzMiddleware authorizer
+	if len(authz) > 0 {
+		authzMiddleware = authz[0]
+	}
 	return &Handler{
 		svc:            svc,
 		jwtSecret:      jwtSecret,
@@ -50,6 +62,7 @@ func NewHandler(
 		cookieSecure:   cookieSecure,
 		cookieSameSite: cookieSameSite,
 		limiter:        limiter,
+		authz:          authzMiddleware,
 		// go-scaffold:user-handler-init
 	}
 }

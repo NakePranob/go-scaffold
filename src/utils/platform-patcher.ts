@@ -7,7 +7,6 @@ const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 const PLATFORM_INIT_MARKER = "// go-scaffold:platform-init";
 const READYZ_MARKER = "// go-scaffold:readyz-checks";
-const SHUTDOWN_MARKER = "// go-scaffold:shutdown";
 
 // patchComposeForRedis adds a redis service to docker-compose.yml. Whatever
 // pulls Redis in — `add worker --queue redis`, or `add auth`'s refresh-token
@@ -152,6 +151,15 @@ export function patchMainGoForWorker(mainGoPath: string, goModule: string): void
   const initBlock = ["rdb, err := cache.Open(cfg)", "if err != nil {", '\treturn fmt.Errorf("open redis: %w", err)', "}"].join("\n");
   content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, initBlock, "rdb, err := cache.Open(cfg)");
 
+  const cleanupBlock = [
+    "defer func() {",
+    '\tif err := rdb.Close(); err != nil {',
+    '\t\tlogger.Error("close redis", "error", err)',
+    "\t}",
+    "}()",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, cleanupBlock, "defer func() {\n\tif err := rdb.Close()");
+
   const readyzBlock = [
     "if err := rdb.Ping(c.Request.Context()).Err(); err != nil {",
     '\tc.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})',
@@ -159,9 +167,6 @@ export function patchMainGoForWorker(mainGoPath: string, goModule: string): void
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, READYZ_MARKER, readyzBlock, "if err := rdb.Ping(");
-
-  const shutdownBlock = ["if err := rdb.Close(); err != nil {", '\tlogger.Error("close redis", "error", err)', "}"].join("\n");
-  content = insertBeforeMarkerOnce(content, SHUTDOWN_MARKER, shutdownBlock, "if err := rdb.Close()");
 
   fs.writeFileSync(mainGoPath, content);
 }
