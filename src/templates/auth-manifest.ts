@@ -11,7 +11,10 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/model/loginthrottle.go.hbs", output: "internal/app/user/model/loginthrottle.go" },
   { template: "add/auth/internal/app/user/model/authtoken.go.hbs", output: "internal/app/user/model/authtoken.go" },
   { template: "add/auth/internal/app/user/application/recovery.go.hbs", output: "internal/app/user/application/recovery.go" },
+  { template: "add/auth/internal/app/user/application/oauth.go.hbs", output: "internal/app/user/application/oauth.go" },
   { template: "add/auth/internal/app/user/composition.go.hbs", output: "internal/app/user/composition.go" },
+  { template: "add/auth/internal/app/user/provider_test.go.hbs", output: "internal/app/user/provider_test.go" },
+  { template: "add/auth/internal/app/user/handler_test.go.hbs", output: "internal/app/user/handler_test.go" },
   { template: "add/auth/internal/app/user/tokenstore_recovery.go.hbs", output: "internal/app/user/tokenstore_recovery.go" },
   { template: "add/auth/internal/app/user/dto.go.hbs", output: "internal/app/user/dto.go" },
   { template: "add/auth/internal/app/user/errors.go.hbs", output: "internal/app/user/errors.go" },
@@ -22,6 +25,8 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/service_test.go.hbs", output: "internal/app/user/service_test.go" },
   { template: "add/auth/internal/app/user/repository_test.go.hbs", output: "internal/app/user/repository_test.go" },
   { template: "add/auth/internal/app/user/handler.go.hbs", output: "internal/app/user/handler.go" },
+  { template: "add/auth/internal/platform/authprovider/google/google.go.hbs", output: "internal/platform/authprovider/google/google.go" },
+  { template: "add/auth/internal/platform/authprovider/google/google_test.go.hbs", output: "internal/platform/authprovider/google/google_test.go" },
   { template: "add/auth/cmd/seed/main.go.hbs", output: "cmd/seed/main.go" },
 ];
 

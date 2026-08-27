@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -46,7 +45,7 @@ func TestRedisTokenStore_ConsumeRefreshToken_ConcurrentRealRedis(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 	hash := "real-redis-refresh-" + uuid.NewString()
-	if err := store.SetRefreshToken(ctx, hash, userID, time.Hour); err != nil {
+	if err := store.SetRefreshToken(ctx, hash, testRefreshTokenRecord(userID)); err != nil {
 		t.Fatalf("seed refresh token: %v", err)
 	}
 	t.Cleanup(func() { _ = store.RevokeAllRefreshTokens(ctx, userID) })
@@ -54,19 +53,19 @@ func TestRedisTokenStore_ConsumeRefreshToken_ConcurrentRealRedis(t *testing.T) {
 	const callers = 32
 	start := make(chan struct{})
 	results := make(chan struct {
-		id  uuid.UUID
-		ok  bool
-		err error
+		token refreshTokenRecord
+		ok    bool
+		err   error
 	}, callers)
 	for i := 0; i < callers; i++ {
 		go func() {
 			<-start
-			id, ok, err := store.ConsumeRefreshToken(ctx, hash, time.Hour)
+			token, ok, err := store.ConsumeRefreshToken(ctx, hash)
 			results <- struct {
-				id  uuid.UUID
-				ok  bool
-				err error
-			}{id: id, ok: ok, err: err}
+				token refreshTokenRecord
+				ok    bool
+				err   error
+			}{token: token, ok: ok, err: err}
 		}()
 	}
 	close(start)
@@ -79,8 +78,8 @@ func TestRedisTokenStore_ConsumeRefreshToken_ConcurrentRealRedis(t *testing.T) {
 		}
 		if got.ok {
 			winners++
-			if got.id != userID {
-				t.Fatalf("winner returned user %s, want %s", got.id, userID)
+			if got.token.UserID != userID {
+				t.Fatalf("winner returned user %s, want %s", got.token.UserID, userID)
 			}
 		}
 	}
@@ -104,7 +103,7 @@ func TestRedisTokenStore_RevokeAllRefreshTokens_IsAtomicWithSet(t *testing.T) {
 	for i := 0; i < 128; i++ {
 		existingHash := fmt.Sprintf("real-redis-existing-%s-%d", userID, i)
 		newHash := fmt.Sprintf("real-redis-racing-%s-%d", userID, i)
-		if err := store.SetRefreshToken(ctx, existingHash, userID, time.Hour); err != nil {
+		if err := store.SetRefreshToken(ctx, existingHash, testRefreshTokenRecord(userID)); err != nil {
 			t.Fatalf("seed existing token: %v", err)
 		}
 
@@ -116,7 +115,7 @@ func TestRedisTokenStore_RevokeAllRefreshTokens_IsAtomicWithSet(t *testing.T) {
 		}()
 		go func() {
 			<-start
-			errs <- store.SetRefreshToken(ctx, newHash, userID, time.Hour)
+			errs <- store.SetRefreshToken(ctx, newHash, testRefreshTokenRecord(userID))
 		}()
 		close(start)
 		for j := 0; j < 2; j++ {

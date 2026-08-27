@@ -14,9 +14,10 @@ const (
 )
 
 // Identity = how you log in (one row per login method). PasswordHash is set
-// for a "local" identity; ProviderUID is set for "google" (the provider's own
-// subject id). Split from User so adding a login method never touches the
-// profile row — one person can have both and resolve to the same account.
+// for a "local" identity; ProviderUID is set for an external provider (the
+// provider's own stable subject id). Split from User so adding a login method
+// never touches the profile row — one person can have several methods and
+// resolve to the same account.
 type Identity struct {
 	ID           uuid.UUID `json:"id" gorm:"type:uuid;primaryKey"`
 	UserID       uuid.UUID `json:"user_id" gorm:"type:uuid;not null;uniqueIndex:idx_identities_user_provider,priority:1"`

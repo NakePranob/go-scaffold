@@ -172,6 +172,54 @@ When a complex auth or recovery flow is generated, keep its transport adapter
 separate from its application ports. Application use cases must not import
 Gin, GORM models, or HTTP error payloads.
 
+## Authentication and browser OAuth contract
+
+`add auth` provides email/password authentication and a generic provider
+boundary. For browser OAuth, preserve this client-owned callback contract:
+
+- The browser frontend owns one provider callback route. The API exposes
+  `GET /auth/{provider}/login` to start authorization and
+  `POST /auth/{provider}/exchange` to finish it; do not add an API callback
+  route or a server-side browser handoff after the exchange.
+- The frontend creates `state` and an S256 PKCE verifier/challenge. It sends
+  `state`, `code_challenge`, and `code_challenge_method=S256` to the login
+  endpoint, handles provider success/cancel/error in its callback route, then
+  sends `code`, `state`, and `code_verifier` to the exchange endpoint.
+- Provider adapters own OAuth configuration, code exchange, and claims/userinfo
+  validation. The application service persists a one-time server-side
+  transaction binding provider, state, S256 challenge, and OIDC nonce, then
+  consumes it before completion. Application services depend on the
+  `LoginProvider` port, provider registry, and normalized identity DTOs; they
+  must not branch on Google or import a provider's `oauth2.Config`.
+- The server uses the exact provider-registered redirect URI from environment
+  configuration (`GOOGLE_OAUTH_REDIRECT_URI` for the Google adapter), validates
+  the provider response plus state, PKCE, and nonce, resolves the local
+  identity, creates the local session, sets an HttpOnly refresh cookie, and
+  returns JSON. Google is OIDC: validate the signed ID token's issuer,
+  audience/authorized party, time claims, nonce, and subject, and reconcile its
+  subject with UserInfo. Token responses must use `Cache-Control: no-store` and
+  `Pragma: no-cache`.
+  Never accept a request-supplied redirect destination or place an access token,
+  refresh token, authorization code, or state in a URI.
+- Map provider and validation failures to controlled public codes only:
+  `oauth_denied`, `oauth_state_invalid`, `oauth_provider_unavailable`, and
+  `oauth_failed`. Do not expose raw provider descriptions or technical causes.
+- `AUTH_BROWSER_TOPOLOGY` is the cookie/CORS deployment policy, not the
+  provider redirect configuration. Keep `CORS_ALLOWED_ORIGINS` as an exact
+  origin allowlist. Cross-site browser deployments require HTTPS,
+  `COOKIE_SAMESITE=none`, and `COOKIE_SECURE=true`; production browser cookies
+  always require `COOKIE_SECURE=true`. Because CORS is not CSRF protection,
+  cookie-authenticated state-changing endpoints also require an exact allowed
+  `Origin` (or equivalent validated `Referer`) when SameSite=None is used.
+- Native/mobile OAuth is out of scope for this scaffold phase. Do not infer a
+  native callback or token handoff contract from the browser flow.
+
+When adding auth from a script, pass the choices explicitly, for example:
+
+~~~bash
+go-scaffold add auth --store postgres --browser-topology same-site --defaults --yes
+~~~
+
 ## Runtime, migration, and security guardrails
 
 - APP_ENV is the only environment gate and accepts development or production.

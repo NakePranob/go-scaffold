@@ -6,6 +6,7 @@ import (
 
 	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/app/user/model"
+	googleprovider "{{goModule}}/internal/platform/authprovider/google"
 	"{{goModule}}/internal/platform/mail"
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/internal/shared/middleware"
@@ -106,11 +107,30 @@ outbound := mail.NewAsyncClient(q)
 outbound := mail.NewSyncClient(mail.Open(cfg))
 {{/if}}
 
-	service := NewService(NewRepository(db), tokens, outbound, cfg, roleChecker)
+	var providers []application.LoginProvider
+	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleOAuthRedirectURI != "" {
+		providers = append(providers, googleprovider.New(googleprovider.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleOAuthRedirectURI,
+		}))
+	}
+	providerRegistry := application.NewProviderRegistry(providers...)
+	if err := validateBrowserCookiePolicy(cfg.AuthBrowserTopology, cfg.CookieSameSite, cfg.CookieSecure, cfg.IsProd()); err != nil {
+		panic(err)
+	}
+	if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 {
+		panic(fmt.Errorf("JWT refresh token lifetimes must be positive"))
+	}
+	if cfg.OAuthStateTTL <= 0 {
+		panic(fmt.Errorf("OAUTH_STATE_TTL_MIN must be positive"))
+	}
+
+	service := NewService(NewRepository(db), tokens, outbound, cfg, providerRegistry, roleChecker)
 {{#if redis}}
 	limiter := middleware.NewRedisLimiter(rdb)
 {{else}}
 	limiter := middleware.NewMemoryLimiter()
 {{/if}}
-	return NewHandler(service, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, limiter, authz)
+	return NewHandlerWithOrigins(service, cfg.JWTSecret, cfg.JWTRefreshTTL, cfg.CookieSecure, cfg.CookieSameSite, cfg.CORSAllowedOrigins, limiter, authz)
 }

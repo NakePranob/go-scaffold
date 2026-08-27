@@ -1,0 +1,253 @@
+package google
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"{{goModule}}/internal/app/user/application"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/oauth2"
+)
+
+const oidcFixtureNonce = "server-nonce"
+
+func newOIDCProviderFixture(t *testing.T, userInfoStatus int) (*Provider, *httptest.Server) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate OIDC test key: %v", err)
+	}
+	const kid = "test-key"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			idToken, err := signOIDCTestToken(privateKey, server.URL, "client-id", oidcFixtureNonce, kid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token", "id_token": idToken, "token_type": "Bearer", "expires_in": 3600})
+		case "/jwks":
+			w.Header().Set("Content-Type", "application/json")
+			key := jsonWebKey{
+				Kid: kid,
+				Kty: "RSA",
+				Alg: jwt.SigningMethodRS256.Name,
+				Use: "sig",
+				N:   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+				E:   base64.RawURLEncoding.EncodeToString(bigIntBytes(privateKey.E)),
+			}
+			_ = json.NewEncoder(w).Encode(jsonWebKeySet{Keys: []jsonWebKey{key}})
+		case "/userinfo":
+			if userInfoStatus != 0 {
+				http.Error(w, "userinfo unavailable", userInfoStatus)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "subject-1", "email": "User@Example.com", "email_verified": true, "name": "User", "picture": "https://img.example/user"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
+		UserInfoURL:  server.URL + "/userinfo",
+		Issuer:       server.URL,
+		JWKSURL:      server.URL + "/jwks",
+		HTTPClient:   server.Client(),
+	})
+	return provider, server
+}
+
+func signOIDCTestToken(privateKey *rsa.PrivateKey, issuer, audience, nonce, kid string) (string, error) {
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, idTokenClaims{
+		Nonce:           nonce,
+		AuthorizedParty: audience,
+		Email:           "User@Example.com",
+		EmailVerified:   true,
+		Name:            "User",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    issuer,
+			Subject:   "subject-1",
+			Audience:  jwt.ClaimStrings{audience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	})
+	token.Header["kid"] = kid
+	return token.SignedString(privateKey)
+}
+
+func bigIntBytes(value int) []byte {
+	return []byte{byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value)}
+}
+
+func TestProvider_Begin_UsesStateAndS256PKCE(t *testing.T) {
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://provider.example.test/authorize",
+			TokenURL: "https://provider.example.test/token",
+		},
+	})
+
+	authorization, err := provider.Begin(context.Background(), application.LoginStartInput{
+		State:               "signed-state",
+		CodeChallenge:       "s256-challenge",
+		CodeChallengeMethod: "S256",
+		Nonce:               "signed-nonce",
+	})
+	if err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	parsed, err := url.Parse(authorization.URL)
+	if err != nil {
+		t.Fatalf("parse authorization URL: %v", err)
+	}
+	if got := parsed.Query().Get("state"); got != "signed-state" {
+		t.Fatalf("state = %q, want signed-state", got)
+	}
+	if got := parsed.Query().Get("code_challenge"); got != "s256-challenge" {
+		t.Fatalf("code_challenge = %q, want s256-challenge", got)
+	}
+	if got := parsed.Query().Get("code_challenge_method"); got != "S256" {
+		t.Fatalf("code_challenge_method = %q, want S256", got)
+	}
+	if got := parsed.Query().Get("nonce"); got != "signed-nonce" {
+		t.Fatalf("nonce = %q, want signed-nonce", got)
+	}
+	if got := parsed.Query().Get("redirect_uri"); got != "https://app.example.test/oauth/callback/google" {
+		t.Fatalf("redirect_uri = %q, want the exact configured frontend callback URI", got)
+	}
+}
+
+func TestProvider_Complete_ExchangesCodeAndNormalizesIdentity(t *testing.T) {
+	const verifier = "verifier-that-the-service-bound-to-state"
+	provider, server := newOIDCProviderFixture(t, 0)
+	defer server.Close()
+
+	identity, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: verifier, Nonce: oidcFixtureNonce})
+	if err != nil {
+		t.Fatalf("complete login: %v", err)
+	}
+	if identity.Provider != "google" || identity.Subject != "subject-1" || identity.Email != "User@Example.com" || !identity.EmailVerified || identity.Name != "User" || identity.AvatarURL == "" {
+		t.Fatalf("unexpected normalized identity: %+v", identity)
+	}
+}
+
+func TestProvider_Complete_RejectsAnOIDCNonceMismatch(t *testing.T) {
+	provider, server := newOIDCProviderFixture(t, 0)
+	defer server.Close()
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: "wrong-nonce"})
+	if err == nil || application.IsProviderUnavailable(err) {
+		t.Fatalf("expected a controlled OIDC validation failure, got %T: %v", err, err)
+	}
+}
+
+func TestProvider_Complete_RejectsMissingIDToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-token","token_type":"Bearer"}`))
+	}))
+	defer server.Close()
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
+		HTTPClient:   server.Client(),
+	})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: "nonce"})
+	if err == nil || application.IsProviderUnavailable(err) {
+		t.Fatalf("expected missing ID token to be a provider failure, got %T: %v", err, err)
+	}
+}
+
+func TestProvider_Complete_MapsAccessDeniedToControlledOAuthCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"provider detail must not be public"}`))
+	}))
+	defer server.Close()
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
+		HTTPClient:   server.Client(),
+	})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: "nonce"})
+	var oauthErr *application.OAuthError
+	if !errors.As(err, &oauthErr) || oauthErr.Code != application.OAuthDenied || strings.Contains(err.Error(), "provider detail") {
+		t.Fatalf("expected controlled oauth_denied without provider detail, got %T: %v", err, err)
+	}
+}
+
+func TestProvider_Begin_UnconfiguredProviderIsUnavailable(t *testing.T) {
+	provider := New(Config{})
+	_, err := provider.Begin(context.Background(), application.LoginStartInput{State: "state", CodeChallenge: "challenge", CodeChallengeMethod: "S256"})
+	if !application.IsProviderUnavailable(err) {
+		t.Fatalf("expected provider unavailable error, got %T: %v", err, err)
+	}
+}
+
+func TestProvider_Complete_ClassifiesExchangeUpstreamFailureAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
+		HTTPClient:   server.Client(),
+	})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier"})
+	if !application.IsProviderUnavailable(err) {
+		t.Fatalf("expected exchange upstream failure to be unavailable, got %T: %v", err, err)
+	}
+}
+
+func TestProvider_Complete_ClassifiesUserInfoUpstreamFailureAsUnavailable(t *testing.T) {
+	provider, server := newOIDCProviderFixture(t, http.StatusServiceUnavailable)
+	defer server.Close()
+
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: oidcFixtureNonce})
+	if !application.IsProviderUnavailable(err) {
+		t.Fatalf("expected userinfo upstream failure to be unavailable, got %T: %v", err, err)
+	}
+}

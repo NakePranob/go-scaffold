@@ -9,6 +9,13 @@ post:
   responses:
     "200":
       description: ok, a new refresh_token cookie is set
+      headers:
+        Cache-Control:
+          description: token responses are never cacheable
+          schema: { type: string, example: no-store }
+        Pragma:
+          description: legacy cache prevention for token responses
+          schema: { type: string, example: no-cache }
       content:
         application/json:
           schema: { $ref: './schemas.yaml#/AuthResponse' }

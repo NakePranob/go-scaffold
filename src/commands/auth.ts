@@ -5,7 +5,7 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { authFiles } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
-import { AuthStore } from "../types";
+import { AuthStore, BrowserTopology } from "../types";
 import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchConfigForSMTP, patchMainGoForWorker } from "../utils/platform-patcher";
 import { MAIL_CLIENT_ONLY } from "../templates/worker-manifest";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
@@ -13,6 +13,7 @@ import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
+import { DEFAULT_BROWSER_TOPOLOGY, validateBrowserTopology } from "../prompts/auth-wizard";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
 // route `add auth` registers — kept next to AUTH_FILES's route list so the
@@ -25,8 +26,8 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/auth/forgot-password", file: "./auth/forgot-password.yaml" },
   { urlPath: "/auth/reset-password", file: "./auth/reset-password.yaml" },
   { urlPath: "/auth/verify-email", file: "./auth/verify-email.yaml" },
-  { urlPath: "/auth/google/login", file: "./auth/google-login.yaml" },
-  { urlPath: "/auth/google/callback", file: "./auth/google-callback.yaml" },
+  { urlPath: "/auth/{provider}/login", file: "./auth/provider-login.yaml" },
+  { urlPath: "/auth/{provider}/exchange", file: "./auth/provider-exchange.yaml" },
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
   { urlPath: "/users/me/resend-verification", file: "./auth/users-me-resend-verification.yaml" },
   { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
@@ -38,8 +39,13 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 // (no roles/permissions) — that's a separate opt-in on top of this, since
 // most projects need "is this caller logged in" long before they need "can
 // this caller do X".
-export async function addAuth(store: AuthStore = "postgres", projectDir: string = process.cwd()): Promise<void> {
+export async function addAuth(
+  store: AuthStore = "postgres",
+  projectDir: string = process.cwd(),
+  browserTopology: BrowserTopology = DEFAULT_BROWSER_TOPOLOGY
+): Promise<void> {
   const config = readConfig(projectDir);
+  const browser = validateBrowserTopology(browserTopology);
 
   // No longer a prerequisite. Without a worker the verification and reset mail
   // goes out inline instead of through a queue — a real trade (those two
@@ -149,7 +155,7 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
     // go-redis only when something in this project actually constructs a client
     ...(store === "redis" ? ["github.com/redis/go-redis/v9 v9.22.0"] : []),
   ]);
-  patchEnvExample(path.join(projectDir, ".env.example"));
+  patchEnvExample(path.join(projectDir, ".env.example"), browser);
   patchMakefile(path.join(projectDir, "Makefile"));
 
   let docsMessage = "";
@@ -186,8 +192,8 @@ export async function addAuth(store: AuthStore = "postgres", projectDir: string 
       : "refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres (user_svc.auth_tokens)"
   );
   console.log(
-    "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
-      "GET /auth/google/{login,callback}, GET /users/me, and " +
+      "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
+      "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
       "POST /users/me/{resend-verification,logout-all} in cmd/api/wiring.go" +
       docsMessage
   );
@@ -233,7 +239,7 @@ function patchMakefile(makefilePath: string): void {
   fs.writeFileSync(makefilePath, content);
 }
 
-function patchEnvExample(envExamplePath: string): void {
+function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopology): void {
   if (!fs.existsSync(envExamplePath)) return;
   let content = fs.readFileSync(envExamplePath, "utf8");
   if (content.includes("JWT_SECRET")) return; // already added
@@ -244,13 +250,15 @@ function patchEnvExample(envExamplePath: string): void {
     "JWT_SECRET=dev-secret-change-me\n" +
     "JWT_ACCESS_TTL_MIN=15\n" +
     "JWT_REFRESH_TTL_MIN=43200\n" +
-    "COOKIE_SECURE=false\n" +
+    "JWT_REFRESH_MAX_TTL_MIN=43200\n" +
+    "OAUTH_STATE_TTL_MIN=10\n" +
+    `COOKIE_SECURE=${browserTopology === "cross-site" ? "true" : "false"}\n` +
     "# strict | lax | none — the refresh cookie's SameSite. Keep strict while the\n" +
     "# frontend is the same site as this API (localhost:3000 -> localhost:8080 is,\n" +
     "# and so is app.example.com -> api.example.com). A frontend on a different\n" +
     "# site entirely needs none, together with COOKIE_SECURE=true, or the browser\n" +
     "# never sends the cookie to /auth/refresh and sessions die at every expiry.\n" +
-    "COOKIE_SAMESITE=strict\n" +
+    `COOKIE_SAMESITE=${browserTopology === "cross-site" ? "none" : "strict"}\n` +
     "\nPASSWORD_RESET_TTL_MIN=30\n" +
     "PASSWORD_RESET_URL=http://localhost:3000/reset-password\n" +
     "\nEMAIL_VERIFY_TTL_MIN=1440\n" +
@@ -258,7 +266,10 @@ function patchEnvExample(envExamplePath: string): void {
     "\n# leave the Google vars unset to disable Google login (register/login/refresh still work)\n" +
     "GOOGLE_CLIENT_ID=\n" +
     "GOOGLE_CLIENT_SECRET=\n" +
-    "GOOGLE_REDIRECT_URL=\n";
+    "# exact browser callback URI registered with the provider (frontend-owned route)\n" +
+    "GOOGLE_OAUTH_REDIRECT_URI=\n" +
+    "\n# cookie/CORS deployment topology; the frontend owns its provider callback route\n" +
+    `AUTH_BROWSER_TOPOLOGY=${browserTopology}\n`;
   fs.writeFileSync(envExamplePath, content);
 }
 

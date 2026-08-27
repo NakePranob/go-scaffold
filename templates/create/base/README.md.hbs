@@ -134,6 +134,20 @@ make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql befo
 | `DB_CONN_MAX_LIFETIME_MIN` | `5` | minutes |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | comma-separated frontend origins allowed to call this API with credentials (cookies) |
 
+After `go-scaffold add auth`, `.env.example` also contains
+`GOOGLE_OAUTH_REDIRECT_URI` (the exact browser callback URI registered with
+Google), `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_TTL_MIN`, and
+`AUTH_BROWSER_TOPOLOGY`. Refresh rotation uses the configured inactivity TTL
+but never moves a token past its absolute lifetime. The backend stores a
+one-time OAuth transaction binding provider, state, S256 challenge, and OIDC
+nonce; the frontend still owns the callback route and sends the code to the
+exchange endpoint. The provider redirect URI is separate from
+`CORS_ALLOWED_ORIGINS`; the latter remains an exact-origin credentialed API
+policy. Token responses use `Cache-Control: no-store` and `Pragma: no-cache`.
+For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
+`COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
+guard independently of CORS.
+
 ## Tests
 
 Handler and service tests are fast unit tests: handlers depend on a narrow
@@ -217,6 +231,8 @@ Before the first deploy of a release:
 | migrations | `migrate -path migrations -database "$DB_DSN" up` as its own step, before the new binaries roll |
 | `TRUSTED_PROXIES` | the CIDRs of your ingress, or the auth rate limiter keys on a header anyone can send |
 | `COOKIE_SECURE` | `true` · `COOKIE_SAMESITE=none` as well if your frontend is on a different site |
+| `JWT_REFRESH_MAX_TTL_MIN` | `43200` | absolute refresh-token lifetime; rotation cannot extend beyond it |
+| `OAUTH_STATE_TTL_MIN` | `10` | lifetime of the one-time server-side OAuth state transaction |
 | `/metrics` | reachable in-cluster for Prometheus, blocked at the ingress |
 | `JWT_SECRET`, `SMTP_HOST` | the app refuses to start in production without real values |
 

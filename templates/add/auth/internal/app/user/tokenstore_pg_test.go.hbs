@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/driver/postgres"
@@ -51,7 +50,7 @@ func TestPgTokenStore_ConsumeRefreshToken_ConcurrentRealDatabase(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 	hash := "real-pg-refresh-" + uuid.NewString()
-	if err := store.SetRefreshToken(ctx, hash, userID, time.Hour); err != nil {
+	if err := store.SetRefreshToken(ctx, hash, testRefreshTokenRecord(userID)); err != nil {
 		t.Fatalf("seed refresh token: %v", err)
 	}
 	t.Cleanup(func() {
@@ -60,17 +59,17 @@ func TestPgTokenStore_ConsumeRefreshToken_ConcurrentRealDatabase(t *testing.T) {
 
 	const callers = 32
 	type result struct {
-		id  uuid.UUID
-		ok  bool
-		err error
+		token refreshTokenRecord
+		ok    bool
+		err   error
 	}
 	start := make(chan struct{})
 	results := make(chan result, callers)
 	for i := 0; i < callers; i++ {
 		go func() {
 			<-start
-			id, ok, err := store.ConsumeRefreshToken(ctx, hash, time.Hour)
-			results <- result{id: id, ok: ok, err: err}
+			token, ok, err := store.ConsumeRefreshToken(ctx, hash)
+			results <- result{token: token, ok: ok, err: err}
 		}()
 	}
 	close(start)
@@ -83,8 +82,8 @@ func TestPgTokenStore_ConsumeRefreshToken_ConcurrentRealDatabase(t *testing.T) {
 		}
 		if got.ok {
 			winners++
-			if got.id != userID {
-				t.Fatalf("winner returned user %s, want %s", got.id, userID)
+			if got.token.UserID != userID {
+				t.Fatalf("winner returned user %s, want %s", got.token.UserID, userID)
 			}
 		}
 	}

@@ -17,15 +17,36 @@ import (
 //
 // Service never learns which one it got.
 type tokenStore interface {
-	SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
+	SetRefreshToken(ctx context.Context, tokenHash string, token refreshTokenRecord) error
 	GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
-	ConsumeRefreshToken(ctx context.Context, tokenHash string, ttl time.Duration) (uuid.UUID, bool, error)
+	ConsumeRefreshToken(ctx context.Context, tokenHash string) (refreshTokenRecord, bool, error)
 	DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error
 	RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error
 	IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+	SetLoginTransaction(ctx context.Context, stateHash string, transaction loginTransaction) error
+	ConsumeLoginTransaction(ctx context.Context, stateHash string) (loginTransaction, bool, error)
 	WithTransaction(ctx context.Context, fn func(context.Context) error) error
 	SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
 	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 	SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
 	ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+}
+
+// refreshTokenRecord carries both the sliding inactivity expiry and the fixed
+// absolute expiry. A rotation may move ExpiresAt forward, but it must never
+// move AbsoluteExpiresAt forward.
+type refreshTokenRecord struct {
+	UserID            uuid.UUID
+	ExpiresAt         time.Time
+	AbsoluteExpiresAt time.Time
+}
+
+// loginTransaction is the server-owned binding for a browser authorization
+// attempt. State itself is only hashed before storage; the provider receives
+// the original value so the frontend callback can compare it unchanged.
+type loginTransaction struct {
+	Provider      string
+	CodeChallenge string
+	Nonce         string
+	ExpiresAt     time.Time
 }

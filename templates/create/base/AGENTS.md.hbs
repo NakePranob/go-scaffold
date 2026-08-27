@@ -84,9 +84,11 @@ Pass every value as a flag. In a non-interactive shell, omitted values prompt
 and the command exits without writing. `--defaults` means minimal, no CQRS, no
 auth; add `--full`, `--cqrs`, `--auth`, and `--permission <code>` deliberately.
 `--get-mode`
-is required for `--type get`, and `undo module` needs `-y`. For `add auth`
-and `add worker`, choose the backing store/queue with `--defaults` or an
-explicit flag as well as the confirmation flag.
+is required for `--type get`, and `undo module` needs `-y`. For `add auth`,
+choose the backing store and browser topology with `--defaults` or explicit
+flags (`--store`, `--browser-topology`) as well as the confirmation flag.
+For `add worker`, choose the backing queue with `--defaults` or an explicit
+flag.
 
 Recognize indirect requests as generation work:
 
@@ -150,13 +152,21 @@ approval before changing their contract.
   secrets, OAuth client secrets, or authorization headers.
 - Refresh rotation is an atomic consume: Postgres uses one SQL unit and Redis
   uses one Lua operation, including active-session cleanup and the reuse
-  tombstone. Never replace it with a read-then-delete sequence.
+  tombstone. Its inactivity expiry may move on rotation, but its persisted
+  absolute expiry never moves. Never replace it with a read-then-delete
+  sequence.
 - Password reset and email verification consume a one-time token in the same
   retry-safe transaction as the user/identity update. A failed post-commit
   session revocation must not make a successful reset impossible to retry.
 - Keep auth transport adapters separate from auth application ports. A use
   case should not import Gin, GORM models, or HTTP error payloads merely to
   perform its workflow.
+- Browser provider exchange consumes a one-time server-side transaction bound
+  to provider, state, S256 PKCE challenge, and OIDC nonce. Google ID tokens
+  must be signature, issuer, audience/azp, time-claim, nonce, and subject
+  validated before identity resolution. Token responses use
+  `Cache-Control: no-store` and `Pragma: no-cache`; SameSite=None also needs an
+  exact allowed Origin guard in addition to CORS.
 - Return a stable, generic client error for unexpected failures. Wrap causes
   with `%w` or pass them to `apperror.NewInternal(cause)` so middleware can
   log the server-side cause with `request_id`; production responses must not

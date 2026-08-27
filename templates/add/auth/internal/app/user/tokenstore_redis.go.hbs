@@ -5,6 +5,7 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -16,9 +17,10 @@ import (
 const (
 	// The shared {refresh} hash tag keeps all keys touched by the Lua rotation
 	// script on one Redis Cluster slot as well as making the operation atomic.
-	refreshKeyPrefix     = "user:{refresh}:"      // +hash -> userID, TTL = refreshTTL
+	refreshKeyPrefix     = "user:{refresh}:"      // +hash -> refreshTokenRecord, TTL = ExpiresAt
 	refreshUserKeyPrefix = "user:{refresh}:user:" // +userID -> SET of active token hashes
-	refreshUsedKeyPrefix = "user:{refresh}:used:" // +hash -> userID, TTL = refreshTTL, reuse-detection tombstone
+	refreshUsedKeyPrefix = "user:{refresh}:used:" // +hash -> refreshTokenRecord, TTL = source token expiry
+	oauthStateKeyPrefix  = "user:{oauth}:state:"
 )
 
 type redisTokenStore struct {
@@ -31,17 +33,19 @@ func NewRedisTokenStore(rdb *redis.Client, db *gorm.DB) *redisTokenStore {
 }
 
 var consumeRefreshScript = redis.NewScript(`
-local user_id = redis.call("GET", KEYS[1])
-if not user_id then
+local token = redis.call("GET", KEYS[1])
+local ttl = redis.call("PTTL", KEYS[1])
+if not token or ttl < 1 then
 	-- An empty bulk string maps to a normal "not found" result in go-redis;
 	-- Lua false would be surfaced as redis.Nil and look like an infrastructure
 	-- failure to Service.Refresh.
 	return ""
 end
 redis.call("DEL", KEYS[1])
-redis.call("SREM", KEYS[3] .. user_id, ARGV[1])
-redis.call("SET", KEYS[2], user_id, "PX", ARGV[2])
-return user_id
+local token_data = cjson.decode(token)
+redis.call("SREM", KEYS[3] .. token_data.user_id, ARGV[1])
+redis.call("SET", KEYS[2], token, "PX", ttl)
+return token
 `)
 
 var revokeAllRefreshScript = redis.NewScript(`
@@ -53,11 +57,19 @@ redis.call("DEL", KEYS[1])
 return #hashes
 `)
 
-func (s *redisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+func (s *redisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token refreshTokenRecord) error {
+	ttl := time.Until(token.ExpiresAt)
+	if token.UserID == uuid.Nil || ttl <= 0 || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
+		return fmt.Errorf("refresh token expiry is invalid")
+	}
+	payload, err := json.Marshal(token)
+	if err != nil {
+		return fmt.Errorf("encode refresh token record: %w", err)
+	}
 	pipe := s.rdb.TxPipeline()
-	pipe.Set(ctx, refreshKeyPrefix+tokenHash, userID.String(), ttl)
-	pipe.SAdd(ctx, refreshUserKeyPrefix+userID.String(), tokenHash)
-	_, err := pipe.Exec(ctx)
+	pipe.Set(ctx, refreshKeyPrefix+tokenHash, payload, ttl)
+	pipe.SAdd(ctx, refreshUserKeyPrefix+token.UserID.String(), tokenHash)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
@@ -69,37 +81,33 @@ func (s *redisTokenStore) GetRefreshToken(ctx context.Context, tokenHash string)
 	if err != nil {
 		return uuid.Nil, false, err
 	}
-	id, err := uuid.Parse(raw)
+	token, err := decodeRefreshTokenRecord(raw)
 	if err != nil {
-		return uuid.Nil, false, err
+		return uuid.Nil, false, fmt.Errorf("decode refresh token record: %w", err)
 	}
-	return id, true, nil
+	return token.UserID, true, nil
 }
 
 // ConsumeRefreshToken uses one Lua script for active-token deletion,
 // per-user-session cleanup, and the reuse tombstone. A concurrent caller
 // cannot observe the active value after another caller has won the rotation.
-func (s *redisTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string, ttl time.Duration) (uuid.UUID, bool, error) {
-	ms := ttl.Milliseconds()
-	if ms < 1 {
-		ms = 1
-	}
+func (s *redisTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string) (refreshTokenRecord, bool, error) {
 	result, err := consumeRefreshScript.Run(ctx, s.rdb,
 		[]string{refreshKeyPrefix + tokenHash, refreshUsedKeyPrefix + tokenHash, refreshUserKeyPrefix},
-		tokenHash, ms,
+		tokenHash,
 	).Result()
 	if err != nil {
-		return uuid.Nil, false, err
+		return refreshTokenRecord{}, false, err
 	}
 	raw, ok := result.(string)
 	if !ok || raw == "" {
-		return uuid.Nil, false, nil
+		return refreshTokenRecord{}, false, nil
 	}
-	id, err := uuid.Parse(raw)
+	token, err := decodeRefreshTokenRecord(raw)
 	if err != nil {
-		return uuid.Nil, false, fmt.Errorf("parse consumed refresh token owner: %w", err)
+		return refreshTokenRecord{}, false, fmt.Errorf("decode consumed refresh token record: %w", err)
 	}
-	return id, true, nil
+	return token, true, nil
 }
 
 func (s *redisTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error {
@@ -132,11 +140,48 @@ func (s *redisTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash stri
 	if err != nil {
 		return uuid.Nil, false, err
 	}
-	id, err := uuid.Parse(raw)
+	token, err := decodeRefreshTokenRecord(raw)
 	if err != nil {
-		return uuid.Nil, false, err
+		return uuid.Nil, false, fmt.Errorf("decode used refresh token record: %w", err)
 	}
-	return id, true, nil
+	return token.UserID, true, nil
+}
+
+func (s *redisTokenStore) SetLoginTransaction(ctx context.Context, stateHash string, transaction loginTransaction) error {
+	if !transaction.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("oauth login transaction expiry is invalid")
+	}
+	payload, err := json.Marshal(transaction)
+	if err != nil {
+		return fmt.Errorf("encode oauth login transaction: %w", err)
+	}
+	return s.rdb.Set(ctx, oauthStateKeyPrefix+stateHash, payload, time.Until(transaction.ExpiresAt)).Err()
+}
+
+func (s *redisTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash string) (loginTransaction, bool, error) {
+	raw, err := s.rdb.GetDel(ctx, oauthStateKeyPrefix+stateHash).Result()
+	if err == redis.Nil {
+		return loginTransaction{}, false, nil
+	}
+	if err != nil {
+		return loginTransaction{}, false, err
+	}
+	var transaction loginTransaction
+	if err := json.Unmarshal([]byte(raw), &transaction); err != nil {
+		return loginTransaction{}, false, fmt.Errorf("decode oauth login transaction: %w", err)
+	}
+	return transaction, true, nil
+}
+
+func decodeRefreshTokenRecord(raw string) (refreshTokenRecord, error) {
+	var token refreshTokenRecord
+	if err := json.Unmarshal([]byte(raw), &token); err != nil {
+		return refreshTokenRecord{}, err
+	}
+	if token.UserID == uuid.Nil || token.ExpiresAt.IsZero() || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
+		return refreshTokenRecord{}, fmt.Errorf("refresh token record is incomplete")
+	}
+	return token, nil
 }
 
 func (s *redisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {

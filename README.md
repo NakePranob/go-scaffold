@@ -272,16 +272,41 @@ tx.Do(ctx, db, func(ctx context.Context) error {
 ### `add auth` — add email/password authentication
 
 ```bash
-go-scaffold add auth                    # asks where tokens should live, then confirms
+go-scaffold add auth                    # asks token store + browser topology, then confirms
 go-scaffold add auth --store postgres   # tokens in Postgres, no extra service
 go-scaffold add auth --store redis      # tokens in Redis, exact across replicas
-go-scaffold add auth --defaults         # Postgres, no prompt at all (CI/scripting)
+go-scaffold add auth --defaults         # Postgres + local same-site topology (CI/scripting)
+go-scaffold add auth --browser-topology cross-site --yes
 ```
 
 Adds JWT access tokens, refresh-token rotation with reuse detection,
 registration/login/logout, password reset, email verification, failed-login
-lockout, and Google OAuth routes. Apply the generated migrations. Development
-may bootstrap tables for convenience; production must run `migrate up` first.
+lockout, and generic provider OAuth routes (Google is the first adapter). Apply
+the generated migrations. Development may bootstrap tables for convenience;
+production must run `migrate up` first.
+
+The browser frontend owns its single provider callback route. It generates
+`state` and an S256 PKCE verifier/challenge, starts
+`GET /auth/{provider}/login`, handles both success and provider-cancel/error
+responses in that route, then sends `code`, `state`, and `code_verifier` to
+`POST /auth/{provider}/exchange`. The API uses the exact
+`GOOGLE_OAUTH_REDIRECT_URI` registered with the provider, creates the local
+session, sets the HttpOnly refresh cookie, and returns JSON. The backend also
+consumes a one-time transaction binding provider, state, S256 challenge, and
+OIDC nonce before completing the exchange. It never accepts a
+request-supplied `redirect_uri`/`return_to`, redirects to a configured frontend
+URL, or places tokens/code/state in a URI. Native/mobile flow is out of scope
+for this scaffold phase.
+
+`AUTH_BROWSER_TOPOLOGY` is only the cookie/CORS deployment policy, separate
+from the provider redirect URI. For a genuinely cross-site frontend use
+`--browser-topology cross-site`, deploy over HTTPS, set
+`COOKIE_SAMESITE=none` and `COOKIE_SECURE=true`, and add the exact frontend
+origin to `CORS_ALLOWED_ORIGINS` separately. SameSite=None requests also pass
+an exact Origin guard because CORS alone is not CSRF protection. Token
+responses use `Cache-Control: no-store` and `Pragma: no-cache`; configure
+`JWT_REFRESH_MAX_TTL_MIN` so refresh rotation cannot extend beyond its absolute
+lifetime.
 
 No prerequisites. On a project with no worker the verification and reset mail
 is sent inline, and `add worker` later moves it onto the queue for you — the
