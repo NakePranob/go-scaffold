@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+  background: #f4f6f8;
+  color: #1f2933;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  box-sizing: border-box;
+  max-width: 42rem;
+  margin: 2rem auto;
+  padding: 2rem;
+  background: white;
+  border-radius: 0.75rem;
+  box-shadow: 0 0.25rem 1.5rem rgb(31 41 51 / 12%);
+}
+
+section {
+  margin-top: 2rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+label {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+}
+
+.result {
+  min-height: 4rem;
+  padding: 1rem;
+  background: #eef2ff;
+  border-radius: 0.5rem;
+}
