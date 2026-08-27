@@ -89,9 +89,9 @@ jobs:
             test -f "$f" || { echo "missing $f — the tarball dropped a template"; exit 1; }
           done
           ../$CLI add worker --defaults
-          ../$CLI add auth
-          ../$CLI add rbac
-          ../$CLI generate module order --full --auth --permission orders:manage
+          ../$CLI add auth --defaults
+          ../$CLI add rbac --yes
+          ../$CLI generate module order --full --auth --permission orders:manage --defaults
           ../$CLI generate method order approve --type post
           go mod tidy
           go build ./...
