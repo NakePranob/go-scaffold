@@ -12,6 +12,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"{{goModule}}/internal/app/user/model"
@@ -24,6 +26,7 @@ import (
 const (
 	kindRefresh     = "refresh"
 	kindRefreshUsed = "refresh_used"
+	kindOAuthState  = "oauth_state"
 )
 
 type pgTokenStore struct {
@@ -33,17 +36,6 @@ type pgTokenStore struct {
 
 func NewPgTokenStore(db *gorm.DB) *pgTokenStore {
 	return &pgTokenStore{db: db, recovery: newRecoveryTokenStore(db)}
-}
-
-// put writes a token row, replacing any row that already carries the same
-// hash — a collision is astronomically unlikely, but "upsert" is the right
-// semantic for "this hash now means this" either way.
-func (s *pgTokenStore) put(ctx context.Context, hash, kind string, userID uuid.UUID, ttl time.Duration) error {
-	row := model.AuthToken{TokenHash: hash, UserID: userID, Kind: kind, ExpiresAt: time.Now().Add(ttl)}
-	return tx.From(ctx, s.db).WithContext(ctx).
-		Where("token_hash = ?", hash).
-		Assign(map[string]any{"user_id": userID, "kind": kind, "expires_at": row.ExpiresAt}).
-		FirstOrCreate(&row).Error
 }
 
 // lookup finds a live token of the given kind. Expiry is enforced here rather
@@ -62,8 +54,28 @@ func (s *pgTokenStore) lookup(ctx context.Context, hash, kind string) (uuid.UUID
 	return row.UserID, true, nil
 }
 
-func (s *pgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
-	return s.put(ctx, tokenHash, kindRefresh, userID, ttl)
+func (s *pgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token refreshTokenRecord) error {
+	if token.UserID == uuid.Nil || token.ExpiresAt.IsZero() || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
+		return fmt.Errorf("refresh token record expiry is invalid")
+	}
+	row := model.AuthToken{
+		TokenHash:         tokenHash,
+		UserID:            token.UserID,
+		Kind:              kindRefresh,
+		ExpiresAt:         token.ExpiresAt,
+		AbsoluteExpiresAt: &token.AbsoluteExpiresAt,
+	}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ?", tokenHash).
+		Assign(map[string]any{
+			"user_id":             token.UserID,
+			"kind":                kindRefresh,
+			"expires_at":          token.ExpiresAt,
+			"absolute_expires_at": token.AbsoluteExpiresAt,
+			"provider":            "",
+			"code_challenge":      "",
+			"nonce":               "",
+		}).FirstOrCreate(&row).Error
 }
 
 func (s *pgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
@@ -73,25 +85,26 @@ func (s *pgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (u
 // ConsumeRefreshToken removes the active row and writes the reuse-detection
 // tombstone in one statement. A concurrent caller can observe either the
 // active row or the tombstone, never the gap between separate operations.
-func (s *pgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string, ttl time.Duration) (uuid.UUID, bool, error) {
-	var userID uuid.UUID
+func (s *pgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string) (refreshTokenRecord, bool, error) {
+	var token refreshTokenRecord
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
 		`WITH consumed AS (
 			DELETE FROM user_svc.auth_tokens
-			 WHERE token_hash = ? AND kind = ? AND expires_at > now()
-			 RETURNING user_id
+				 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+				   AND (absolute_expires_at IS NULL OR absolute_expires_at > now())
+				 RETURNING user_id, expires_at, absolute_expires_at
 		)
-		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, expires_at)
-		SELECT ?, user_id, ?, ? FROM consumed
-		RETURNING user_id`,
-		tokenHash, kindRefresh, tokenHash, kindRefreshUsed, time.Now().Add(ttl)).Row().Scan(&userID)
+		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, expires_at, absolute_expires_at)
+		SELECT ?, user_id, ?, expires_at, COALESCE(absolute_expires_at, expires_at) FROM consumed
+		RETURNING user_id, expires_at, absolute_expires_at`,
+		tokenHash, kindRefresh, tokenHash, kindRefreshUsed).Row().Scan(&token.UserID, &token.ExpiresAt, &token.AbsoluteExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return uuid.Nil, false, nil
+		return refreshTokenRecord{}, false, nil
 	}
 	if err != nil {
-		return uuid.Nil, false, err
+		return refreshTokenRecord{}, false, err
 	}
-	return userID, true, nil
+	return token, true, nil
 }
 
 // DeleteRefreshToken removes the row outright and leaves nothing behind — see
@@ -114,6 +127,51 @@ func (s *pgTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.U
 
 func (s *pgTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.lookup(ctx, tokenHash, kindRefreshUsed)
+}
+
+func (s *pgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string, transaction loginTransaction) error {
+	if strings.TrimSpace(stateHash) == "" || strings.TrimSpace(transaction.Provider) == "" || strings.TrimSpace(transaction.CodeChallenge) == "" || strings.TrimSpace(transaction.Nonce) == "" || !transaction.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("oauth login transaction is invalid")
+	}
+	row := model.AuthToken{
+		TokenHash:     stateHash,
+		Kind:          kindOAuthState,
+		ExpiresAt:     transaction.ExpiresAt,
+		Provider:      transaction.Provider,
+		CodeChallenge: transaction.CodeChallenge,
+		Nonce:         transaction.Nonce,
+	}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ?", stateHash).
+		Assign(map[string]any{
+			"user_id":        uuid.Nil,
+			"kind":           kindOAuthState,
+			"expires_at":     transaction.ExpiresAt,
+			"provider":       transaction.Provider,
+			"code_challenge": transaction.CodeChallenge,
+			"nonce":          transaction.Nonce,
+		}).FirstOrCreate(&row).Error
+}
+
+func (s *pgTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash string) (loginTransaction, bool, error) {
+	var transaction loginTransaction
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`DELETE FROM user_svc.auth_tokens
+		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+		 RETURNING provider, code_challenge, nonce, expires_at`,
+		stateHash, kindOAuthState).Row().Scan(
+		&transaction.Provider,
+		&transaction.CodeChallenge,
+		&transaction.Nonce,
+		&transaction.ExpiresAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return loginTransaction{}, false, nil
+	}
+	if err != nil {
+		return loginTransaction{}, false, err
+	}
+	return transaction, true, nil
 }
 
 func (s *pgTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {

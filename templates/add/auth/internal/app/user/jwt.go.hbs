@@ -3,7 +3,6 @@ package user
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"time"
 
@@ -12,19 +11,13 @@ import (
 )
 
 const (
-	tokenTypeAccess     = "access"
-	tokenTypeOAuthState = "oauth_state"
-	oauthStateTTL       = 10 * time.Minute
+	tokenTypeAccess = "access"
 )
 
 // accessClaims — see internal/shared/middleware/auth.go for why this struct
-// is duplicated there instead of imported. Also reused (with no Subject) for
-// the Google OAuth CSRF state token below — Typ is what stops one kind being
-// presented where the other is expected.
+// is duplicated there instead of imported.
 type accessClaims struct {
 	Typ string `json:"typ"`
-	// Nonce is only set on the OAuth state token — see issueOAuthState.
-	Nonce string `json:"nonce,omitempty"`
 	// go-scaffold:jwt-claims
 	jwt.RegisteredClaims
 }
@@ -43,52 +36,6 @@ func (s *Service) issueAccessToken(
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.jwtSecret))
-}
-
-// issueOAuthState / verifyOAuthState round-trip a short-lived CSRF token
-// through Google's own redirect. The signature and TTL are not the whole
-// protection: a signed-but-unbound state is one anyone can fetch from
-// GET /auth/google/login and then replay in a victim's browser, which is
-// exactly the login-CSRF the state parameter exists to stop. So the token
-// carries a nonce that the handler also drops in a short-lived httpOnly
-// cookie, and the callback only proceeds when the two agree — the state is
-// then usable in one browser only, the one that started the flow.
-//
-// Returns the state and the nonce to put in that cookie.
-func (s *Service) issueOAuthState() (string, string, error) {
-	nonce, err := randomToken()
-	if err != nil {
-		return "", "", err
-	}
-	claims := accessClaims{
-		Typ:   tokenTypeOAuthState,
-		Nonce: nonce,
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(oauthStateTTL)),
-		},
-	}
-	state, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.jwtSecret))
-	if err != nil {
-		return "", "", err
-	}
-	return state, nonce, nil
-}
-
-func (s *Service) verifyOAuthState(raw, nonce string) error {
-	var claims accessClaims
-	_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) {
-		return []byte(s.jwtSecret), nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}))
-	if err != nil || claims.Typ != tokenTypeOAuthState {
-		return errInvalidToken()
-	}
-	// A missing cookie is a mismatch, not a pass — otherwise stripping the
-	// cookie is all it takes to get the old, unbound behavior back.
-	if nonce == "" || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 {
-		return errInvalidToken()
-	}
-	return nil
 }
 
 // randomToken generates an opaque refresh token — deliberately not a JWT:

@@ -42,6 +42,8 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.match(agents, /REQUIRE_TEST_DB=true/);
     assert.match(agents, /request_id/);
     assert.match(agents, /atomic consume/);
+    assert.match(agents, /absolute\s+expiry never moves/);
+    assert.match(agents, /one-time server-side transaction/);
     assert.doesNotMatch(agents, /missing AutoMigrate wiring/);
     assert.doesNotMatch(agents, /finds the record by id, TODO before saving/);
 
@@ -52,6 +54,22 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.match(skill, /go test -race \.\/\.\.\./);
     assert.match(skill, /pnpm run verify/);
     assert.match(skill, /REQUIRE_TEST_REDIS=true/);
+    assert.match(skill, /Authentication and browser OAuth contract/);
+    assert.match(skill, /GET \/auth\/\{provider\}\/login/);
+    assert.match(skill, /POST \/auth\/\{provider\}\/exchange/);
+    assert.match(skill, /S256 PKCE/);
+    assert.match(skill, /GOOGLE_OAUTH_REDIRECT_URI/);
+    assert.match(skill, /LoginProvider/);
+    assert.match(skill, /oauth_denied/);
+    assert.match(skill, /CORS_ALLOWED_ORIGINS/);
+    assert.match(skill, /COOKIE_SAMESITE=none/);
+    assert.match(skill, /COOKIE_SECURE=true/);
+    assert.match(skill, /one-time server-side/);
+    assert.match(skill, /OIDC/);
+    assert.match(skill, /Cache-Control: no-store/);
+    assert.match(skill, /exact allowed\s+`Origin`/);
+    assert.match(skill, /Native\/mobile OAuth is out of scope/);
+    assert.doesNotMatch(skill, /AUTH_FRONTEND_SUCCESS_URL|AUTH_FRONTEND_ERROR_URL|RedirectTargetResolver/);
     assert.doesNotMatch(skill, /missing AutoMigrate wiring/);
     assert.doesNotMatch(skill, /finds the record by id, TODO before saving/);
 

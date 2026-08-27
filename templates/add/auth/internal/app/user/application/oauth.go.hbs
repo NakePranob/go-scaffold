@@ -1,0 +1,132 @@
+// Package application contains auth use cases and ports that are independent
+// of Gin, GORM models, OAuth SDKs, and HTTP error payloads.
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// LoginProvider is the outbound port for an external authorization-code
+// provider. Implementations own provider SDKs, token exchange, claims/userinfo
+// validation, and provider-specific HTTP details. The user application only
+// sees these small, provider-neutral values.
+type LoginProvider interface {
+	Name() string
+	Begin(context.Context, LoginStartInput) (Authorization, error)
+	Complete(context.Context, LoginCompleteInput) (ExternalIdentity, error)
+}
+
+type LoginStartInput struct {
+	State               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	Nonce               string
+}
+
+type Authorization struct {
+	URL string
+}
+
+type LoginCompleteInput struct {
+	Code         string
+	CodeVerifier string
+	Nonce        string
+}
+
+// ExternalIdentity is the normalized identity returned by every provider
+// adapter. Provider must be the registry name and Subject must be the
+// provider's stable subject identifier, never an email address.
+type ExternalIdentity struct {
+	Provider      string
+	Subject       string
+	Email         string
+	EmailVerified bool
+	Name          string
+	AvatarURL     string
+}
+
+// ProviderRegistry is an immutable-by-convention lookup boundary. It is
+// assembled in the composition root from providers whose configuration is
+// complete; an absent provider is therefore an expected unavailable state,
+// not an invitation to construct an empty redirect URL.
+type ProviderRegistry struct {
+	providers map[string]LoginProvider
+}
+
+func NewProviderRegistry(providers ...LoginProvider) ProviderRegistry {
+	byName := make(map[string]LoginProvider, len(providers))
+	for _, provider := range providers {
+		if provider == nil || provider.Name() == "" {
+			continue
+		}
+		byName[provider.Name()] = provider
+	}
+	return ProviderRegistry{providers: byName}
+}
+
+func (r ProviderRegistry) Lookup(name string) (LoginProvider, bool) {
+	provider, ok := r.providers[name]
+	return provider, ok
+}
+
+type OAuthErrorCode string
+
+const (
+	OAuthDenied             OAuthErrorCode = "oauth_denied"
+	OAuthStateInvalid       OAuthErrorCode = "oauth_state_invalid"
+	OAuthProviderUnavailable OAuthErrorCode = "oauth_provider_unavailable"
+	OAuthFailed             OAuthErrorCode = "oauth_failed"
+)
+
+// OAuthError is the public, controlled error contract for the browser login
+// start/exchange boundary. Cause is retained only for server-side logs and
+// unwrapping; handlers never serialize Error() to the browser.
+type OAuthError struct {
+	Code  OAuthErrorCode
+	Cause error
+}
+
+func (e *OAuthError) Error() string {
+	if e.Cause == nil {
+		return string(e.Code)
+	}
+	return fmt.Sprintf("%s: %v", e.Code, e.Cause)
+}
+
+func (e *OAuthError) Unwrap() error { return e.Cause }
+
+func NewOAuthError(code OAuthErrorCode, cause error) *OAuthError {
+	return &OAuthError{Code: code, Cause: cause}
+}
+
+type ProviderError struct {
+	Unavailable bool
+	Cause       error
+}
+
+func (e *ProviderError) Error() string {
+	if e.Cause == nil {
+		if e.Unavailable {
+			return "oauth provider unavailable"
+		}
+		return "oauth provider failed"
+	}
+	return e.Cause.Error()
+}
+
+func (e *ProviderError) Unwrap() error { return e.Cause }
+
+func NewProviderUnavailable(cause error) error {
+	return &ProviderError{Unavailable: true, Cause: cause}
+}
+
+func NewProviderFailure(cause error) error {
+	return &ProviderError{Cause: cause}
+}
+
+func IsProviderUnavailable(err error) bool {
+	var providerErr *ProviderError
+	return errors.As(err, &providerErr) && providerErr.Unavailable
+}

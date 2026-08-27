@@ -57,6 +57,10 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "internal/shared/middleware/cors.go",
   },
   {
+    template: "create/base/internal/shared/middleware/cors_test.go.hbs",
+    output: "internal/shared/middleware/cors_test.go",
+  },
+  {
     template: "create/base/internal/shared/middleware/error.go.hbs",
     output: "internal/shared/middleware/error.go",
   },
@@ -127,4 +131,3 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     when: (ctx) => ctx.openapiDocs,
   },
 ];
-

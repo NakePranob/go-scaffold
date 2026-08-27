@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>go-scaffold auth browser fixture</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Auth browser fixture</h1>
+      <p>
+        This page is a test-only client-owned OAuth callback. It keeps the
+        verifier per tab, stores access state in memory, and never renders
+        provider query values.
+      </p>
+
+      <section aria-labelledby="oauth-heading">
+        <h2 id="oauth-heading">Google OIDC</h2>
+        <div class="actions">
+          <button data-testid="google-success" type="button">Continue with Google</button>
+          <button data-testid="google-cancel" type="button">Cancel at provider</button>
+          <button data-testid="google-provider-error" type="button">Provider error</button>
+          <button data-testid="google-unavailable" type="button">Provider unavailable</button>
+          <button data-testid="google-expired" type="button">Expired transaction</button>
+          <button data-testid="google-wrong-verifier" type="button">Wrong verifier</button>
+        </div>
+      </section>
+
+      <section aria-labelledby="email-heading">
+        <h2 id="email-heading">Email auth regression</h2>
+        <label>
+          Email
+          <input data-testid="email" type="email" autocomplete="username" value="browser-fixture@example.test" />
+        </label>
+        <label>
+          Password
+          <input data-testid="password" type="password" autocomplete="current-password" value="fixture-password" />
+        </label>
+        <div class="actions">
+          <button data-testid="email-register" type="button">Register</button>
+          <button data-testid="email-login" type="button">Login</button>
+          <button data-testid="email-refresh" type="button">Refresh</button>
+          <button data-testid="email-logout" type="button">Logout</button>
+        </div>
+      </section>
+
+      <section aria-live="polite" aria-atomic="true" class="result">
+        <p data-testid="status">idle</p>
+        <p data-testid="message"></p>
+        <p data-testid="error-code"></p>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -23,6 +23,8 @@
     "test:unit": "node --test tests/unit/*.test.mjs",
     "test:integration": "node --test tests/integration/*.test.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
+    "test:e2e": "playwright test --config=playwright.config.mjs",
+    "test:e2e:install": "playwright install chromium",
     "verify": "pnpm run build && pnpm run test",
     "prepack": "rm -rf dist && pnpm run build",
     "prepublishOnly": "pnpm run verify"
@@ -49,6 +51,7 @@
     "pluralize": "^8.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.55.0",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.0.0",
     "@types/pluralize": "^0.0.33",

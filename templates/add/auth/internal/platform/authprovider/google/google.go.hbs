@@ -1,0 +1,355 @@
+// Package google adapts Google's OAuth authorization-code flow to auth's
+// provider-neutral LoginProvider port.
+package google
+
+import (
+	"context"
+	"crypto"
+	"crypto/rsa"
+	"crypto/subtle"
+	"encoding/json"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"math/big"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"{{goModule}}/internal/app/user/application"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/oauth2"
+	oauthgoogle "golang.org/x/oauth2/google"
+)
+
+const (
+	defaultIssuer       = "https://accounts.google.com"
+	defaultJWKSURL     = "https://www.googleapis.com/oauth2/v3/certs"
+	defaultUserInfoURL = "https://openidconnect.googleapis.com/v1/userinfo"
+	jwksCacheTTL       = time.Hour
+)
+
+type Config struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+	Endpoint     oauth2.Endpoint
+	UserInfoURL  string
+	Issuer       string
+	JWKSURL      string
+	HTTPClient   *http.Client
+}
+
+type Provider struct {
+	oauth       *oauth2.Config
+	userInfoURL string
+	issuer      string
+	jwksURL     string
+	httpClient  *http.Client
+	keysMu      sync.RWMutex
+	keysFetched time.Time
+	keys        map[string]crypto.PublicKey
+}
+
+func New(cfg Config) *Provider {
+	endpoint := cfg.Endpoint
+	if endpoint.AuthURL == "" || endpoint.TokenURL == "" {
+		endpoint = oauthgoogle.Endpoint
+	}
+	userInfoURL := cfg.UserInfoURL
+	if userInfoURL == "" {
+		userInfoURL = defaultUserInfoURL
+	}
+	issuer := cfg.Issuer
+	if issuer == "" {
+		issuer = defaultIssuer
+	}
+	jwksURL := cfg.JWKSURL
+	if jwksURL == "" {
+		jwksURL = defaultJWKSURL
+	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	return &Provider{
+		oauth: &oauth2.Config{
+			ClientID:     cfg.ClientID,
+			ClientSecret: cfg.ClientSecret,
+			RedirectURL:  cfg.RedirectURL,
+			Scopes:       []string{"openid", "email", "profile"},
+			Endpoint:     endpoint,
+		},
+		userInfoURL: userInfoURL,
+		issuer:      issuer,
+		jwksURL:     jwksURL,
+		httpClient:  httpClient,
+		keys:        make(map[string]crypto.PublicKey),
+	}
+}
+
+func (p *Provider) Name() string { return "google" }
+
+func (p *Provider) Begin(_ context.Context, in application.LoginStartInput) (application.Authorization, error) {
+	if p == nil || p.oauth == nil || p.oauth.ClientID == "" || p.oauth.ClientSecret == "" || p.oauth.RedirectURL == "" {
+		return application.Authorization{}, application.NewProviderUnavailable(fmt.Errorf("google oauth is not configured"))
+	}
+	if in.State == "" || in.CodeChallenge == "" || in.CodeChallengeMethod != "S256" || in.Nonce == "" {
+		return application.Authorization{}, application.NewProviderFailure(fmt.Errorf("invalid oauth state or PKCE parameters"))
+	}
+	return application.Authorization{
+		URL: p.oauth.AuthCodeURL(
+			in.State,
+			oauth2.SetAuthURLParam("code_challenge", in.CodeChallenge),
+			oauth2.SetAuthURLParam("code_challenge_method", in.CodeChallengeMethod),
+			oauth2.SetAuthURLParam("nonce", in.Nonce),
+		),
+	}, nil
+}
+
+type userInfo struct {
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+	Picture       string `json:"picture"`
+}
+
+type idTokenClaims struct {
+	Nonce           string `json:"nonce"`
+	AuthorizedParty string `json:"azp"`
+	Email           string `json:"email"`
+	EmailVerified   bool   `json:"email_verified"`
+	Name            string `json:"name"`
+	Picture         string `json:"picture"`
+	jwt.RegisteredClaims
+}
+
+type jsonWebKeySet struct {
+	Keys []jsonWebKey `json:"keys"`
+}
+
+type jsonWebKey struct {
+	Kid string `json:"kid"`
+	Kty string `json:"kty"`
+	Alg string `json:"alg"`
+	Use string `json:"use"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+func (p *Provider) Complete(ctx context.Context, in application.LoginCompleteInput) (application.ExternalIdentity, error) {
+	if p == nil || p.oauth == nil {
+		return application.ExternalIdentity{}, application.NewProviderUnavailable(fmt.Errorf("google oauth is not configured"))
+	}
+	if strings.TrimSpace(in.Code) == "" || in.CodeVerifier == "" {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("authorization code and PKCE verifier are required"))
+	}
+
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
+	tok, err := p.oauth.Exchange(ctx, in.Code, oauth2.SetAuthURLParam("code_verifier", in.CodeVerifier))
+	if err != nil {
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) && retrieveErr.ErrorCode == "access_denied" {
+			return application.ExternalIdentity{}, application.NewOAuthError(application.OAuthDenied, fmt.Errorf("google authorization was denied"))
+		}
+		if isProviderUnavailable(err) {
+			return application.ExternalIdentity{}, application.NewProviderUnavailable(fmt.Errorf("exchange google authorization code: %w", err))
+		}
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("exchange google authorization code: %w", err))
+	}
+	if tok.AccessToken == "" {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("google token response is missing an access token"))
+	}
+	rawIDToken, ok := tok.Extra("id_token").(string)
+	if !ok || strings.TrimSpace(rawIDToken) == "" {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("google token response is missing an id token"))
+	}
+	claims, err := p.validateIDToken(ctx, rawIDToken, in.Nonce)
+	if err != nil {
+		if application.IsProviderUnavailable(err) {
+			return application.ExternalIdentity{}, err
+		}
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("validate google id token: %w", err))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.userInfoURL, nil)
+	if err != nil {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("build google userinfo request: %w", err))
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return application.ExternalIdentity{}, application.NewProviderUnavailable(fmt.Errorf("request google userinfo: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests {
+		return application.ExternalIdentity{}, application.NewProviderUnavailable(fmt.Errorf("google userinfo returned %s", resp.Status))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("google userinfo returned %s", resp.Status))
+	}
+
+	var info userInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("decode google userinfo: %w", err))
+	}
+	if strings.TrimSpace(info.Sub) == "" || info.Sub != claims.Subject {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("google userinfo subject does not match id token"))
+	}
+	email := strings.TrimSpace(info.Email)
+	if email == "" {
+		email = strings.TrimSpace(claims.Email)
+	}
+	if email == "" {
+		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("google userinfo is missing subject or email"))
+	}
+	name := info.Name
+	if name == "" {
+		name = claims.Name
+	}
+	picture := info.Picture
+	if picture == "" {
+		picture = claims.Picture
+	}
+	return application.ExternalIdentity{
+		Provider:      p.Name(),
+		Subject:       claims.Subject,
+		Email:         email,
+		EmailVerified: info.EmailVerified || claims.EmailVerified,
+		Name:          name,
+		AvatarURL:     picture,
+	}, nil
+}
+
+func (p *Provider) validateIDToken(ctx context.Context, raw, expectedNonce string) (idTokenClaims, error) {
+	if strings.TrimSpace(expectedNonce) == "" {
+		return idTokenClaims{}, fmt.Errorf("oidc nonce is missing")
+	}
+	var claims idTokenClaims
+	token, err := jwt.ParseWithClaims(raw, &claims, func(token *jwt.Token) (any, error) {
+		if token.Method == nil || token.Method.Alg() != jwt.SigningMethodRS256.Name {
+			return nil, fmt.Errorf("unsupported google id token signing method")
+		}
+		kid, ok := token.Header["kid"].(string)
+		if !ok || strings.TrimSpace(kid) == "" {
+			return nil, fmt.Errorf("google id token is missing a key id")
+		}
+		return p.publicKey(ctx, kid)
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Name}), jwt.WithIssuer(p.issuer), jwt.WithAudience(p.oauth.ClientID), jwt.WithLeeway(time.Minute))
+	if err != nil {
+		return idTokenClaims{}, err
+	}
+	if token == nil || !token.Valid {
+		return idTokenClaims{}, fmt.Errorf("google id token is invalid")
+	}
+	if claims.ExpiresAt == nil || claims.IssuedAt == nil || strings.TrimSpace(claims.Subject) == "" {
+		return idTokenClaims{}, fmt.Errorf("google id token is missing required claims")
+	}
+	if claims.AuthorizedParty != "" && claims.AuthorizedParty != p.oauth.ClientID {
+		return idTokenClaims{}, fmt.Errorf("google id token authorized party is invalid")
+	}
+	if len(claims.Audience) > 1 && claims.AuthorizedParty != p.oauth.ClientID {
+		return idTokenClaims{}, fmt.Errorf("google id token authorized party is required")
+	}
+	if subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1 {
+		return idTokenClaims{}, fmt.Errorf("google id token nonce does not match")
+	}
+	return claims, nil
+}
+
+func (p *Provider) publicKey(ctx context.Context, kid string) (crypto.PublicKey, error) {
+	now := time.Now()
+	p.keysMu.RLock()
+	key, found := p.keys[kid]
+	fresh := now.Sub(p.keysFetched) < jwksCacheTTL
+	p.keysMu.RUnlock()
+	if found && fresh {
+		return key, nil
+	}
+
+	keys, err := p.fetchKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.keysMu.Lock()
+	p.keys = keys
+	p.keysFetched = now
+	key, found = keys[kid]
+	p.keysMu.Unlock()
+	if !found {
+		return nil, fmt.Errorf("google jwks does not contain requested key")
+	}
+	return key, nil
+}
+
+func (p *Provider) fetchKeys(ctx context.Context) (map[string]crypto.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.jwksURL, nil)
+	if err != nil {
+		return nil, application.NewProviderFailure(fmt.Errorf("build google jwks request: %w", err))
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, application.NewProviderUnavailable(fmt.Errorf("request google jwks: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests {
+		return nil, application.NewProviderUnavailable(fmt.Errorf("google jwks returned %s", resp.Status))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, application.NewProviderFailure(fmt.Errorf("google jwks returned %s", resp.Status))
+	}
+	var document jsonWebKeySet
+	if err := json.NewDecoder(resp.Body).Decode(&document); err != nil {
+		return nil, application.NewProviderFailure(fmt.Errorf("decode google jwks: %w", err))
+	}
+	keys := make(map[string]crypto.PublicKey, len(document.Keys))
+	for _, jwk := range document.Keys {
+		key, err := rsaPublicKey(jwk)
+		if err != nil {
+			return nil, application.NewProviderFailure(fmt.Errorf("decode google jwks key: %w", err))
+		}
+		keys[jwk.Kid] = key
+	}
+	if len(keys) == 0 {
+		return nil, application.NewProviderFailure(fmt.Errorf("google jwks contains no signing keys"))
+	}
+	return keys, nil
+}
+
+func rsaPublicKey(jwk jsonWebKey) (*rsa.PublicKey, error) {
+	if jwk.Kty != "RSA" || jwk.Alg != jwt.SigningMethodRS256.Name || strings.TrimSpace(jwk.Kid) == "" || (jwk.Use != "" && jwk.Use != "sig") {
+		return nil, fmt.Errorf("unsupported jwk")
+	}
+	modulus, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil || len(modulus) == 0 {
+		return nil, fmt.Errorf("invalid rsa modulus")
+	}
+	exponent, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil || len(exponent) == 0 || len(exponent) > 4 {
+		return nil, fmt.Errorf("invalid rsa exponent")
+	}
+	e := 0
+	for _, b := range exponent {
+		e = e<<8 | int(b)
+	}
+	if e < 2 {
+		return nil, fmt.Errorf("invalid rsa exponent")
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: e}, nil
+}
+
+func isProviderUnavailable(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		return retrieveErr.Response == nil || retrieveErr.Response.StatusCode >= http.StatusInternalServerError || retrieveErr.Response.StatusCode == http.StatusRequestTimeout || retrieveErr.Response.StatusCode == http.StatusTooManyRequests
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr)
+}

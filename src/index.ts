@@ -12,9 +12,14 @@ import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
-import { MethodType, GetMethodMode, QueueBackend, AuthStore } from "./types";
+import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
-import { promptAuthStore } from "./prompts/auth-wizard";
+import {
+  DEFAULT_BROWSER_TOPOLOGY,
+  promptAuthStore,
+  promptBrowserTopology,
+  validateBrowserTopology,
+} from "./prompts/auth-wizard";
 import { promptModuleName, promptModuleShape, promptModuleCqrs, promptModuleAuth, promptModulePermission } from "./prompts/generate-wizard";
 import { isProjectDir, readConfig } from "./utils/config";
 
@@ -276,7 +281,7 @@ async function runAddWizard(): Promise<void> {
     // all), so the menu has to ask it the same way the worker menu asks for
     // its queue backend — a choice only reachable by knowing the flag name
     // isn't a choice for anyone driving this from the menu.
-    await runAddAuth(await promptAuthStore(), {});
+    await runAddAuth(await promptAuthStore(), await promptBrowserTopology(), {});
   } else if (target === "rbac") {
     await runAddRbac({});
   } else {
@@ -309,11 +314,12 @@ async function runAddWorker(backend: QueueBackend, opts: AddOpts): Promise<void>
   await addWorker(backend);
 }
 
-async function runAddAuth(store: AuthStore, opts: AddOpts): Promise<void> {
+async function runAddAuth(store: AuthStore, browserTopology: BrowserTopology, opts: AddOpts): Promise<void> {
   const config = readConfig(process.cwd());
   await confirmAdd(
     [
       "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
+      `browser OAuth: frontend-owned callback with server-side provider redirect URI (${browserTopology})`,
       store === "postgres"
         ? "refresh + recovery tokens: Postgres (user_svc.auth_tokens), rate-limit counters in-process — no extra service"
         : pc.yellow("refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres — requires Redis"),
@@ -323,7 +329,23 @@ async function runAddAuth(store: AuthStore, opts: AddOpts): Promise<void> {
     ],
     opts
   );
-  await addAuth(store);
+  await addAuth(store, process.cwd(), browserTopology);
+}
+
+type BrowserAuthFlagOpts = {
+  browserTopology?: string;
+  defaults?: boolean;
+  yes?: boolean;
+};
+
+// Explicit browser flags are intentionally resolved before the confirmation
+// summary. `--defaults` is the stable non-TTY escape hatch; `--yes` with no
+// browser flags also uses the local default so existing CI invocations such as
+// `add auth --store postgres --yes` do not unexpectedly start prompting.
+async function resolveBrowserTopology(opts: BrowserAuthFlagOpts): Promise<BrowserTopology> {
+  if (opts.browserTopology !== undefined) return validateBrowserTopology(opts.browserTopology);
+  if (opts.defaults || opts.yes) return DEFAULT_BROWSER_TOPOLOGY;
+  return promptBrowserTopology();
 }
 
 async function runAddRbac(opts: AddOpts): Promise<void> {
@@ -407,30 +429,42 @@ add
     "--store <store>",
     'where tokens and rate-limit counters live: "postgres" (default, no extra service) or "redis" (exact across replicas)'
   )
-  .option("--defaults", "skip the prompt, use the Postgres-backed store (for CI/scripting)")
+  .option(
+    "--browser-topology <topology>",
+    "browser deployment topology for cookie/CORS policy: same-origin, same-site (different origin), or cross-site (requires HTTPS deployment)"
+  )
+  .option("--defaults", "skip prompts, use the Postgres store and local same-site topology (for CI/scripting)")
   .option("-y, --yes", "skip the confirmation summary")
-  .action(async (opts: { store?: string; defaults?: boolean; yes?: boolean }) => {
-    try {
-      // Same shape as `add worker`: an explicit flag wins, --defaults takes
-      // the documented default silently, and anything else asks rather than
-      // picking a store the caller never saw a choice about.
-      let store: AuthStore;
-      if (opts.store !== undefined) {
-        const normalized = opts.store.trim().toLowerCase();
-        if (normalized !== "postgres" && normalized !== "redis") {
-          throw new Error(`unknown --store ${opts.store} — use "postgres" or "redis"`);
+  .action(
+    async (opts: {
+      store?: string;
+      browserTopology?: string;
+      defaults?: boolean;
+      yes?: boolean;
+    }) => {
+      try {
+        // Same shape as `add worker`: an explicit flag wins, --defaults takes
+        // the documented default silently, and anything else asks rather than
+        // picking a store the caller never saw a choice about.
+        let store: AuthStore;
+        if (opts.store !== undefined) {
+          const normalized = opts.store.trim().toLowerCase();
+          if (normalized !== "postgres" && normalized !== "redis") {
+            throw new Error(`unknown --store ${opts.store} — use "postgres" or "redis"`);
+          }
+          store = normalized;
+        } else if (opts.defaults) {
+          store = "postgres";
+        } else {
+          store = await promptAuthStore();
         }
-        store = normalized;
-      } else if (opts.defaults) {
-        store = "postgres";
-      } else {
-        store = await promptAuthStore();
+        const browserTopology = await resolveBrowserTopology(opts);
+        await runAddAuth(store, browserTopology, { yes: opts.yes || opts.defaults });
+      } catch (err) {
+        fail(err);
       }
-      await runAddAuth(store, { yes: opts.yes || opts.defaults });
-    } catch (err) {
-      fail(err);
     }
-  });
+  );
 
 add
   .command("rbac")

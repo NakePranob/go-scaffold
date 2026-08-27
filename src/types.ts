@@ -21,6 +21,13 @@ export type QueueBackend = "river" | "asynq";
  */
 export type AuthStore = "postgres" | "redis";
 
+/**
+ * How the browser frontend and generated API are deployed relative to one
+ * another. This is an application cookie/CORS policy, not an OAuth protocol
+ * value.
+ */
+export type BrowserTopology = "same-origin" | "same-site" | "cross-site";
+
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;

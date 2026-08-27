@@ -2,11 +2,12 @@ package user
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 
@@ -19,8 +20,6 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 	"gorm.io/gorm"
 )
 
@@ -67,13 +66,16 @@ type Service struct {
 	jwtSecret  string
 	accessTTL  time.Duration
 	refreshTTL time.Duration
+	refreshMaxTTL time.Duration
+	oauthStateTTL time.Duration
 	resetTTL   time.Duration
 	resetURL   string
 	verifyTTL  time.Duration
 	verifyURL  string
-	googleOAuth *oauth2.Config
+	providers  application.ProviderRegistry
 	recovery    *application.Recovery
 	roles       RoleChecker
+	now         func() time.Time
 	// go-scaffold:user-service-fields
 }
 
@@ -82,6 +84,7 @@ func NewService(
 	tokens tokenStore,
 	mailer mailer,
 	cfg config.Config,
+	providers application.ProviderRegistry,
 	roles ...RoleChecker,
 	// go-scaffold:user-service-params
 ) *Service {
@@ -96,27 +99,31 @@ func NewService(
 		jwtSecret:  cfg.JWTSecret,
 		accessTTL:  cfg.JWTAccessTTL,
 		refreshTTL: cfg.JWTRefreshTTL,
+		refreshMaxTTL: defaultDuration(cfg.JWTRefreshMaxTTL, cfg.JWTRefreshTTL),
+		oauthStateTTL: defaultDuration(cfg.OAuthStateTTL, 10*time.Minute),
 		resetTTL:   cfg.PasswordResetTTL,
 		resetURL:   cfg.PasswordResetURL,
 		verifyTTL:  cfg.EmailVerifyTTL,
 		verifyURL:  cfg.EmailVerifyURL,
-		googleOAuth: &oauth2.Config{
-			ClientID:     cfg.GoogleClientID,
-			ClientSecret: cfg.GoogleClientSecret,
-			RedirectURL:  cfg.GoogleRedirectURL,
-			Scopes:       []string{"openid", "email", "profile"},
-			Endpoint:     google.Endpoint,
-		},
+		providers:  providers,
 		recovery: newRecovery(repo, tokens),
 		roles:    roleChecker,
+		now:      time.Now,
 		// go-scaffold:user-service-init
 	}
 }
 
+func defaultDuration(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
 // normalizeEmail is applied at every boundary an address enters the service
 // through. The column is a plain case-sensitive UNIQUE, so without this
-// "Foo@x.com" and "foo@x.com" are two accounts that never collide — and a
-// Google login (Google always reports lowercase) fails to find the local
+// "Foo@x.com" and "foo@x.com" are two accounts that never collide — and an
+// external provider that normalizes email casing fails to find the local
 // account it should have linked to, silently creating a second user for the
 // same person.
 func normalizeEmail(email string) string {
@@ -221,22 +228,28 @@ func (s *Service) Login(ctx context.Context, in loginInput) (*authResponse, erro
 // is revoked, not just this one.
 func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*authResponse, error) {
 	hash := hashToken(rawRefreshToken)
-	userID, ok, err := s.tokens.ConsumeRefreshToken(ctx, hash, s.refreshTTL)
+	token, ok, err := s.tokens.ConsumeRefreshToken(ctx, hash)
 	if err != nil {
 		return nil, apperror.NewInternal(fmt.Errorf("consume refresh token: %w", err))
 	}
 	if !ok {
-		if reusedBy, used, uerr := s.tokens.IsRefreshTokenUsed(ctx, hash); uerr == nil && used {
-			_ = s.tokens.RevokeAllRefreshTokens(ctx, reusedBy)
+		reusedBy, used, reuseErr := s.tokens.IsRefreshTokenUsed(ctx, hash)
+		if reuseErr != nil {
+			return nil, apperror.NewInternal(fmt.Errorf("check refresh token reuse: %w", reuseErr))
+		}
+		if used {
+			if revokeErr := s.tokens.RevokeAllRefreshTokens(ctx, reusedBy); revokeErr != nil {
+				return nil, apperror.NewInternal(fmt.Errorf("revoke sessions after refresh token reuse: %w", revokeErr))
+			}
 		}
 		return nil, errInvalidToken()
 	}
 
-	u, err := s.repo.FindByID(ctx, userID)
+	u, err := s.repo.FindByID(ctx, token.UserID)
 	if err != nil {
 		return nil, errInvalidToken()
 	}
-	return s.issueTokens(ctx, u)
+	return s.issueTokens(ctx, u, token.AbsoluteExpiresAt)
 }
 
 // Logout is intentional, not reuse — no tombstoning, and idempotent (a
@@ -305,7 +318,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	}
 	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
 	if err != nil || ident.PasswordHash == nil {
-		return nil // google-only account has no password to reset
+		return nil // external-only account has no password to reset
 	}
 
 	raw, err := randomToken()
@@ -402,84 +415,156 @@ func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
 	return nil
 }
 
-// GoogleLoginURL signs a short-lived CSRF state token and builds the redirect
-// URL. The second return value is the nonce the caller must set as a cookie:
-// the callback checks it against the one inside the state (see jwt.go), which
-// is what binds the flow to this one browser.
-func (s *Service) GoogleLoginURL() (string, string, error) {
-	state, nonce, err := s.issueOAuthState()
-	if err != nil {
-		return "", "", apperror.NewInternal(err)
+// BeginLogin accepts the browser client's state and S256 PKCE challenge and
+// asks the registered adapter to construct its authorization URL. The service
+// never sees an SDK config or provider-specific endpoint. It persists a hashed
+// state transaction so the backend can bind provider, PKCE challenge, and OIDC
+// nonce before the client-owned callback reaches ExchangeLogin.
+func (s *Service) BeginLogin(ctx context.Context, providerName string, in application.LoginStartInput) (*application.Authorization, error) {
+	provider, ok := s.providers.Lookup(providerName)
+	if !ok {
+		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider %q is not configured", providerName))
 	}
-	return s.googleOAuth.AuthCodeURL(state), nonce, nil
+	in.State = strings.TrimSpace(in.State)
+	in.CodeChallenge = strings.TrimSpace(in.CodeChallenge)
+	if in.State == "" || in.CodeChallenge == "" || !strings.EqualFold(strings.TrimSpace(in.CodeChallengeMethod), "S256") {
+		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("state and S256 code challenge are required"))
+	}
+	in.CodeChallengeMethod = "S256"
+	nonce, err := randomToken()
+	if err != nil {
+		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("create oauth transaction: %w", err))
+	}
+	in.Nonce = nonce
+	authorization, err := provider.Begin(ctx, in)
+	if err != nil {
+		return nil, mapProviderError(err)
+	}
+	if strings.TrimSpace(authorization.URL) == "" {
+		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider returned an empty authorization URL"))
+	}
+	clock := s.now
+	if clock == nil {
+		clock = time.Now
+	}
+	if err := s.tokens.SetLoginTransaction(ctx, hashToken(in.State), loginTransaction{
+		Provider:      providerName,
+		CodeChallenge: in.CodeChallenge,
+		Nonce:         nonce,
+		ExpiresAt:     clock().Add(s.oauthStateTTL),
+	}); err != nil {
+		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("store oauth transaction: %w", err))
+	}
+	return &authorization, nil
 }
 
-type googleUserInfo struct {
-	Sub           string `json:"sub"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"email_verified"`
-	Name          string `json:"name"`
-	Picture       string `json:"picture"`
+type loginExchangeInput struct {
+	Code         string `json:"code"`
+	State        string `json:"state"`
+	CodeVerifier string `json:"code_verifier"`
 }
 
-func (s *Service) GoogleCallback(ctx context.Context, code, state, nonce string) (*authResponse, error) {
-	if err := s.verifyOAuthState(state, nonce); err != nil {
-		return nil, err
+func (s *Service) ExchangeLogin(ctx context.Context, providerName string, in loginExchangeInput) (*authResponse, error) {
+	provider, ok := s.providers.Lookup(providerName)
+	if !ok {
+		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider %q is not configured", providerName))
 	}
-	tok, err := s.googleOAuth.Exchange(ctx, code)
-	if err != nil {
-		return nil, errInvalidToken()
+	in.State = strings.TrimSpace(in.State)
+	in.CodeVerifier = strings.TrimSpace(in.CodeVerifier)
+	if in.State == "" || in.CodeVerifier == "" {
+		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("state and code verifier are required"))
 	}
-
-	resp, err := s.googleOAuth.Client(ctx, tok).Get("https://openidconnect.googleapis.com/v1/userinfo")
-	if err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, apperror.NewInternal(fmt.Errorf("google userinfo returned %s", resp.Status))
-	}
-	var info googleUserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, apperror.NewInternal(err)
+	in.Code = strings.TrimSpace(in.Code)
+	if in.Code == "" {
+		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("authorization code is missing"))
 	}
 
-	u, err := s.findOrCreateGoogleUser(ctx, info)
+	transaction, ok, err := s.tokens.ConsumeLoginTransaction(ctx, hashToken(in.State))
 	if err != nil {
-		return nil, err
+		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("consume oauth transaction: %w", err))
+	}
+	if !ok || transaction.Provider != providerName || !validPKCEVerifier(in.CodeVerifier, transaction.CodeChallenge) {
+		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("oauth state or PKCE verifier is invalid"))
+	}
+
+	identity, err := provider.Complete(ctx, application.LoginCompleteInput{Code: in.Code, CodeVerifier: in.CodeVerifier, Nonce: transaction.Nonce})
+	if err != nil {
+		return nil, mapProviderError(err)
+	}
+	if identity.Provider != providerName {
+		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("provider identity name does not match the requested provider"))
+	}
+	u, err := s.findOrCreateExternalUser(ctx, identity)
+	if err != nil {
+		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("resolve external identity: %w", err))
 	}
 	return s.issueTokens(ctx, u)
 }
 
-// findOrCreateGoogleUser: (1) an existing google identity for this sub wins
-// outright; (2) failing that, ONLY if Google says the email is verified, link
-// a new google identity onto an existing local account with that email — an
-// unverified email can't be used to take over someone else's account; (3)
-// otherwise, brand new user + identity.
-func (s *Service) findOrCreateGoogleUser(ctx context.Context, info googleUserInfo) (*model.User, error) {
-	if ident, err := s.repo.FindIdentityByProviderUID(ctx, model.ProviderGoogle, info.Sub); err == nil {
-		return s.repo.FindByID(ctx, ident.UserID)
+func validPKCEVerifier(verifier, challenge string) bool {
+	computed := pkceChallenge(verifier)
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
+}
+
+func pkceChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func mapProviderError(err error) error {
+	var oauthErr *application.OAuthError
+	if errors.As(err, &oauthErr) {
+		return oauthErr
+	}
+	if application.IsProviderUnavailable(err) {
+		return application.NewOAuthError(application.OAuthProviderUnavailable, err)
+	}
+	return application.NewOAuthError(application.OAuthFailed, err)
+}
+
+// findOrCreateExternalUser is provider-neutral identity resolution. A stable
+// provider subject wins; verified email may link a new identity to an existing
+// account; unverified email never takes over an existing account.
+func (s *Service) findOrCreateExternalUser(ctx context.Context, info application.ExternalIdentity) (*model.User, error) {
+	if strings.TrimSpace(info.Provider) == "" || strings.TrimSpace(info.Subject) == "" || strings.TrimSpace(info.Email) == "" {
+		return nil, fmt.Errorf("external identity is missing provider, subject, or email")
+	}
+	if len(info.Provider) > 20 {
+		return nil, fmt.Errorf("external identity provider name is too long")
 	}
 
-	providerUID := info.Sub
+	provider := model.Provider(info.Provider)
+	if ident, err := s.repo.FindIdentityByProviderUID(ctx, provider, info.Subject); err == nil {
+		user, findErr := s.repo.FindByID(ctx, ident.UserID)
+		if findErr != nil {
+			return nil, fmt.Errorf("find user for existing identity: %w", findErr)
+		}
+		return user, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("find external identity: %w", err)
+	}
+
+	providerUID := info.Subject
 	email := normalizeEmail(info.Email)
 	if info.EmailVerified {
 		if u, err := s.repo.FindByEmail(ctx, email); err == nil {
-			ident := &model.Identity{ID: id.New(), UserID: u.ID, Provider: model.ProviderGoogle, ProviderUID: &providerUID}
+			ident := &model.Identity{ID: id.New(), UserID: u.ID, Provider: provider, ProviderUID: &providerUID}
 			if err := s.repo.CreateIdentity(ctx, ident); err != nil {
-				return nil, apperror.NewInternal(err)
+				return nil, fmt.Errorf("link external identity: %w", err)
 			}
 			return u, nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("find user by verified external email: %w", err)
 		}
 	}
 
-	u := &model.User{ID: id.New(), Email: email, Name: info.Name, AvatarURL: info.Picture, EmailVerified: info.EmailVerified}
-	ident := &model.Identity{ID: id.New(), Provider: model.ProviderGoogle, ProviderUID: &providerUID}
+	u := &model.User{ID: id.New(), Email: email, Name: info.Name, AvatarURL: info.AvatarURL, EmailVerified: info.EmailVerified}
+	ident := &model.Identity{ID: id.New(), Provider: provider, ProviderUID: &providerUID}
 	if err := s.repo.CreateUserWithIdentity(ctx, u, ident); err != nil {
 		if dberr.IsDuplicate(err) {
 			return nil, errEmailTaken()
 		}
-		return nil, apperror.NewInternal(err)
+		return nil, fmt.Errorf("create external user: %w", err)
 	}
 	return u, nil
 }
@@ -510,7 +595,7 @@ func (s *Service) EnsureUser(ctx context.Context, email, password, name string) 
 
 // go-scaffold:user-service-methods
 
-func (s *Service) issueTokens(ctx context.Context, u *model.User) (*authResponse, error) {
+func (s *Service) issueTokens(ctx context.Context, u *model.User, absoluteExpiresAt ...time.Time) (*authResponse, error) {
 	access, err := s.issueAccessToken(
 		u.ID,
 		// go-scaffold:issue-access-token-args
@@ -522,7 +607,23 @@ func (s *Service) issueTokens(ctx context.Context, u *model.User) (*authResponse
 	if err != nil {
 		return nil, apperror.NewInternal(err)
 	}
-	if err := s.tokens.SetRefreshToken(ctx, hashToken(refresh), u.ID, s.refreshTTL); err != nil {
+	clock := s.now
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock()
+	abs := now.Add(s.refreshMaxTTL)
+	if len(absoluteExpiresAt) > 0 && !absoluteExpiresAt[0].IsZero() {
+		abs = absoluteExpiresAt[0]
+	}
+	expiresAt := now.Add(s.refreshTTL)
+	if abs.Before(expiresAt) {
+		expiresAt = abs
+	}
+	if !expiresAt.After(now) || !abs.After(now) {
+		return nil, apperror.NewInternal(fmt.Errorf("refresh token lifetime is exhausted"))
+	}
+	if err := s.tokens.SetRefreshToken(ctx, hashToken(refresh), refreshTokenRecord{UserID: u.ID, ExpiresAt: expiresAt, AbsoluteExpiresAt: abs}); err != nil {
 		return nil, apperror.NewInternal(err)
 	}
 	return &authResponse{

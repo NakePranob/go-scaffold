@@ -278,7 +278,7 @@ export function patchUserErrorsForRbac(errorsGoPath: string): void {
 // output.
 export function userSvcLineFor(goModule: string, store: AuthStore, worker: boolean): string {
   const { tokenStore, mailer } = authWiringLines({ goModule, queueBackend: "river", store, worker });
-  return `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, ${mailer}, cfg)`;
+  return `userSvc := user.NewService(user.NewRepository(db), ${tokenStore}, ${mailer}, cfg, application.NewProviderRegistry())`;
 }
 
 export function assertRbacPatchable(mainGoPath: string, goModule: string, store: AuthStore, worker: boolean): void {
@@ -326,6 +326,8 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
     // Upgrade projects generated before auth's local composition root. The
     // role feature is still constructed locally; only the legacy user service
     // call needs an adapter until that project is regenerated.
+    const applicationImportLine = `"${goModule}/internal/app/user/application"`;
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, applicationImportLine, applicationImportLine);
     const userSvcLine = userSvcLineFor(goModule, store, worker);
     if (!content.includes(userSvcLine)) {
       throw new Error(

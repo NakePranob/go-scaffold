@@ -7,6 +7,10 @@ CREATE TABLE user_svc.auth_tokens (
     user_id    UUID NOT NULL,
     kind       VARCHAR(20) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
+    absolute_expires_at TIMESTAMPTZ,
+    provider   VARCHAR(20) NOT NULL DEFAULT '',
+    code_challenge TEXT NOT NULL DEFAULT '',
+    nonce      TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -14,3 +18,4 @@ CREATE TABLE user_svc.auth_tokens (
 -- development bootstrap and production migration describe the same indexes.
 CREATE INDEX idx_auth_tokens_user_kind ON user_svc.auth_tokens (user_id, kind);
 CREATE INDEX idx_auth_tokens_expires_at ON user_svc.auth_tokens (expires_at);
+CREATE INDEX idx_auth_tokens_absolute_expires_at ON user_svc.auth_tokens (absolute_expires_at);

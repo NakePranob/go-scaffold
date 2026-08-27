@@ -33,6 +33,12 @@ type AuthToken struct {
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index:idx_auth_tokens_user_kind,priority:1"`
 	Kind      string    `gorm:"type:varchar(20);not null;index:idx_auth_tokens_user_kind,priority:2"`
 	ExpiresAt time.Time `gorm:"not null;index:idx_auth_tokens_expires_at"`
+	// AbsoluteExpiresAt is set only for refresh tokens. Recovery tokens and
+	// OAuth transactions have no sliding lifetime, so it remains nil there.
+	AbsoluteExpiresAt *time.Time `gorm:"index:idx_auth_tokens_absolute_expires_at"`
+	Provider          string     `gorm:"type:varchar(20);not null;default:''"`
+	CodeChallenge     string     `gorm:"type:text;not null;default:''"`
+	Nonce             string     `gorm:"type:text;not null;default:''"`
 	CreatedAt time.Time
 }
 

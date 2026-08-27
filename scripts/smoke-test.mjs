@@ -234,6 +234,15 @@ function runtimeEnv(db, overrides = {}) {
     PORT: String(smoke.port),
     SMOKE_LOG_DIR: scratch,
     GO_SCAFFOLD_SMOKE_OWNER: smoke.ownerToken,
+    // add auth keeps topology/provider registration in .env.example rather than
+    // Go source. The smoke runtime supplies its same-site fixture values
+    // explicitly, just as a deployment environment must.
+    AUTH_BROWSER_TOPOLOGY: "same-site",
+    // A dummy but complete provider config exercises the configured-provider
+    // route without ever exchanging a real Google authorization code.
+    GOOGLE_CLIENT_ID: "smoke-client-id",
+    GOOGLE_CLIENT_SECRET: "smoke-client-secret",
+    GOOGLE_OAUTH_REDIRECT_URI: "http://localhost:3000/oauth/callback/google",
     ...overrides,
   };
 }
@@ -1078,16 +1087,32 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   if (status(loginNewPassword) !== "200") throw new Error(`expected 200 logging in with the post-reset password, got:\n${loginNewPassword}`);
 
 
-  // Google OAuth: only what's testable without a live Google app — the login
-  // redirect targets Google with a signed state param, and the callback
-  // rejects a state that isn't a validly-signed oauth_state JWT.
-  const googleLogin = run("curl", ["-s", "-i", `${B}/auth/google/login`]);
+  // Generic provider OAuth: only what's testable without a live Google app —
+  // the login redirect targets Google with browser-supplied state + PKCE
+  // params, and the browser-owned callback uses the JSON exchange endpoint.
+  const googleState = "smoke-client-state";
+  const googleChallenge = "smoke-client-code-challenge";
+  const googleVerifier = "smoke-client-code-verifier";
+  const googleLogin = run("curl", ["-s", "-i", `${B}/auth/google/login?state=${googleState}&code_challenge=${googleChallenge}&code_challenge_method=S256`]);
   if (!/^HTTP\/1\.1 302/.test(googleLogin)) throw new Error(`expected 302 on GET /auth/google/login, got:\n${googleLogin}`);
-  if (!/Location: https:\/\/accounts\.google\.com\/.*state=/.test(googleLogin)) {
-    throw new Error(`expected a redirect to accounts.google.com with a state param, got:\n${googleLogin}`);
+  const googleLocation = googleLogin.match(/^Location: (.+)$/m)?.[1]?.trim();
+  const googleURL = googleLocation ? new URL(googleLocation) : null;
+  if (
+    !googleURL ||
+    googleURL.hostname !== "accounts.google.com" ||
+    !googleURL.searchParams.has("state") ||
+    !googleURL.searchParams.has("code_challenge") ||
+    googleURL.searchParams.get("code_challenge_method") !== "S256"
+  ) {
+    throw new Error(`expected a redirect to accounts.google.com with state and S256 PKCE params, got:\n${googleLogin}`);
   }
-  const googleCallbackBadState = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/auth/google/callback?code=fake&state=garbage`]);
-  if (status(googleCallbackBadState) !== "401") throw new Error(`expected 401 on google callback with an invalid state, got:\n${googleCallbackBadState}`);
+  if (googleURL.searchParams.get("state") !== googleState || googleURL.searchParams.get("code_challenge") !== googleChallenge) {
+    throw new Error(`provider redirect did not preserve browser state/PKCE values, got:\n${googleLogin}`);
+  }
+  const googleExchangeMissingCode = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/google/exchange`, ...jsonHeader, "-d", JSON.stringify({ code: "", state: googleState, code_verifier: googleVerifier })]);
+  if (status(googleExchangeMissingCode) !== "400" || !googleExchangeMissingCode.includes("oauth_failed") || googleExchangeMissingCode.includes("Location:")) {
+    throw new Error(`expected controlled oauth_failed JSON from the Google exchange without a code, got:\n${googleExchangeMissingCode}`);
+  }
 
   const logout = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/logout`, "-H", `Cookie: refresh_token=${registerCookie}`]);
   if (status(logout) !== "204") throw new Error(`expected 204 on logout, got:\n${logout}`);
@@ -1214,8 +1239,8 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
     "/v1/auth/forgot-password:",
     "/v1/auth/reset-password:",
     "/v1/auth/verify-email:",
-    "/v1/auth/google/login:",
-    "/v1/auth/google/callback:",
+    "/v1/auth/{provider}/login:",
+    "/v1/auth/{provider}/exchange:",
     "/v1/users/me:",
     "/v1/users/me/resend-verification:",
     "/v1/users/me/logout-all:",
@@ -1893,8 +1918,13 @@ step(
       .replace(/^APP_ENV=.*/m, "APP_ENV=production")
       .replace(/^JWT_SECRET=.*/m, "JWT_SECRET=smoke-test-secret")
       .replace(/^SMTP_HOST=.*/m, "SMTP_HOST=localhost")
+      .replace(/^COOKIE_SECURE=.*/m, "COOKIE_SECURE=true")
       .replace(/^DB_DSN=.*/m, `DB_DSN=${fullDb.dbDsn}`)
-      .replace(/^PORT=.*/m, `PORT=${smoke.port}`);
+      .replace(/^PORT=.*/m, `PORT=${smoke.port}`)
+      // Keep the browser topology/CORS policy explicit; this is a runtime
+      // contract check, not a real frontend deployment.
+      .replace(/^CORS_ALLOWED_ORIGINS=.*/m, "CORS_ALLOWED_ORIGINS=https://frontend.example")
+      .replace(/^GOOGLE_OAUTH_REDIRECT_URI=.*/m, "GOOGLE_OAUTH_REDIRECT_URI=https://frontend.example/oauth/callback/google");
     if (sharedRedisUrl) envContent = envContent.replace(/REDIS_URL=.*/, `REDIS_URL=${sharedRedisUrl}`);
     writeFileSync(path.join(fullApp, ".env"), envContent);
 

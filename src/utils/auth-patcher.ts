@@ -11,7 +11,7 @@ const SCHEMA_MARKER = "// go-scaffold:schemas";
 const MODEL_MARKER = "// go-scaffold:models";
 const ROUTE_MARKER = "// go-scaffold:routes";
 
-// patchConfigForAuth adds JWT/cookie/password-reset/Google OAuth fields to
+// patchConfigForAuth adds JWT/cookie/password-reset/browser OAuth fields to
 // Config, the same marker-based text insertion patchConfigForWorker uses
 // (config.go.hbs is only rendered once, at `create` — everything after that
 // is a real file a human may have already edited).
@@ -22,8 +22,11 @@ export function patchConfigForAuth(configGoPath: string): void {
     "JWTSecret string",
     "JWTAccessTTL time.Duration",
     "JWTRefreshTTL time.Duration",
+    "JWTRefreshMaxTTL time.Duration",
+    "OAuthStateTTL time.Duration",
     "CookieSecure bool",
     "CookieSameSite string",
+    "AuthBrowserTopology string",
     "",
     "PasswordResetTTL time.Duration",
     "PasswordResetURL string",
@@ -33,7 +36,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     "",
     "GoogleClientID string",
     "GoogleClientSecret string",
-    "GoogleRedirectURL string",
+    "GoogleOAuthRedirectURI string",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
 
@@ -41,8 +44,11 @@ export function patchConfigForAuth(configGoPath: string): void {
     'JWTSecret:     env("JWT_SECRET", "dev-secret-change-me"),',
     'JWTAccessTTL:  time.Duration(envInt("JWT_ACCESS_TTL_MIN", 15)) * time.Minute,',
     'JWTRefreshTTL: time.Duration(envInt("JWT_REFRESH_TTL_MIN", 43200)) * time.Minute,',
+    'JWTRefreshMaxTTL: time.Duration(envInt("JWT_REFRESH_MAX_TTL_MIN", 43200)) * time.Minute,',
+    'OAuthStateTTL: time.Duration(envInt("OAUTH_STATE_TTL_MIN", 10)) * time.Minute,',
     'CookieSecure:  env("COOKIE_SECURE", "false") == "true",',
     'CookieSameSite: env("COOKIE_SAMESITE", "strict"),',
+    'AuthBrowserTopology:    env("AUTH_BROWSER_TOPOLOGY", "same-site"),',
     "",
     'PasswordResetTTL: time.Duration(envInt("PASSWORD_RESET_TTL_MIN", 30)) * time.Minute,',
     'PasswordResetURL: env("PASSWORD_RESET_URL", "http://localhost:3000/reset-password"),',
@@ -52,7 +58,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     "",
     'GoogleClientID:     env("GOOGLE_CLIENT_ID", ""),',
     'GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),',
-    'GoogleRedirectURL:  env("GOOGLE_REDIRECT_URL", ""),',
+    'GoogleOAuthRedirectURI: env("GOOGLE_OAUTH_REDIRECT_URI", ""),',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');
 

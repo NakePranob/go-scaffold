@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/config"
 
@@ -21,54 +22,59 @@ import (
 // three-map shape (active / used-tombstone / per-user session set) closely
 // enough to exercise rotation + reuse-detection without a real Redis.
 type fakeTokenStore struct {
-	mu       sync.Mutex
-	txMu     sync.Mutex
-	active   map[string]uuid.UUID
-	used     map[string]uuid.UUID
-	sessions map[uuid.UUID]map[string]struct{}
-	reset    map[string]uuid.UUID
-	verify   map[string]uuid.UUID
+	mu          sync.Mutex
+	txMu        sync.Mutex
+	active      map[string]refreshTokenRecord
+	used        map[string]uuid.UUID
+	sessions    map[uuid.UUID]map[string]struct{}
+	transactions map[string]loginTransaction
+	reset       map[string]uuid.UUID
+	verify      map[string]uuid.UUID
 	revokeAllErr error
 }
 
 func newFakeTokenStore() *fakeTokenStore {
 	return &fakeTokenStore{
-		active:   map[string]uuid.UUID{},
-		used:     map[string]uuid.UUID{},
-		sessions: map[uuid.UUID]map[string]struct{}{},
-		reset:    map[string]uuid.UUID{},
-		verify:   map[string]uuid.UUID{},
+		active:       map[string]refreshTokenRecord{},
+		used:         map[string]uuid.UUID{},
+		sessions:     map[uuid.UUID]map[string]struct{}{},
+		transactions: map[string]loginTransaction{},
+		reset:        map[string]uuid.UUID{},
+		verify:       map[string]uuid.UUID{},
 	}
 }
 
-func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, token refreshTokenRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.active[hash] = userID
-	if f.sessions[userID] == nil {
-		f.sessions[userID] = map[string]struct{}{}
+	f.active[hash] = token
+	if f.sessions[token.UserID] == nil {
+		f.sessions[token.UserID] = map[string]struct{}{}
 	}
-	f.sessions[userID][hash] = struct{}{}
+	f.sessions[token.UserID][hash] = struct{}{}
 	return nil
 }
 func (f *fakeTokenStore) GetRefreshToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	id, ok := f.active[hash]
-	return id, ok, nil
-}
-
-func (f *fakeTokenStore) ConsumeRefreshToken(_ context.Context, hash string, _ time.Duration) (uuid.UUID, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	id, ok := f.active[hash]
-	if !ok {
+	token, ok := f.active[hash]
+	if !ok || !token.ExpiresAt.After(time.Now()) {
 		return uuid.Nil, false, nil
 	}
+	return token.UserID, true, nil
+}
+
+func (f *fakeTokenStore) ConsumeRefreshToken(_ context.Context, hash string) (refreshTokenRecord, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	token, ok := f.active[hash]
+	if !ok || !token.ExpiresAt.After(time.Now()) {
+		return refreshTokenRecord{}, false, nil
+	}
 	delete(f.active, hash)
-	delete(f.sessions[id], hash)
-	f.used[hash] = id
-	return id, true, nil
+	delete(f.sessions[token.UserID], hash)
+	f.used[hash] = token.UserID
+	return token, true, nil
 }
 
 func (f *fakeTokenStore) DeleteRefreshToken(_ context.Context, hash string, userID uuid.UUID) error {
@@ -107,8 +113,9 @@ func (f *fakeTokenStore) WithTransaction(ctx context.Context, fn func(context.Co
 	defer f.txMu.Unlock()
 
 	f.mu.Lock()
-	active := cloneTokenMap(f.active)
+	active := cloneRefreshTokenMap(f.active)
 	used := cloneTokenMap(f.used)
+	transactions := cloneLoginTransactions(f.transactions)
 	reset := cloneTokenMap(f.reset)
 	verify := cloneTokenMap(f.verify)
 	sessions := cloneSessions(f.sessions)
@@ -119,9 +126,17 @@ func (f *fakeTokenStore) WithTransaction(ctx context.Context, fn func(context.Co
 		return nil
 	}
 	f.mu.Lock()
-	f.active, f.used, f.reset, f.verify, f.sessions = active, used, reset, verify, sessions
+	f.active, f.used, f.transactions, f.reset, f.verify, f.sessions = active, used, transactions, reset, verify, sessions
 	f.mu.Unlock()
 	return err
+}
+
+func cloneRefreshTokenMap(in map[string]refreshTokenRecord) map[string]refreshTokenRecord {
+	out := make(map[string]refreshTokenRecord, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneTokenMap(in map[string]uuid.UUID) map[string]uuid.UUID {
@@ -130,6 +145,32 @@ func cloneTokenMap(in map[string]uuid.UUID) map[string]uuid.UUID {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneLoginTransactions(in map[string]loginTransaction) map[string]loginTransaction {
+	out := make(map[string]loginTransaction, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func (f *fakeTokenStore) SetLoginTransaction(_ context.Context, hash string, transaction loginTransaction) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.transactions[hash] = transaction
+	return nil
+}
+
+func (f *fakeTokenStore) ConsumeLoginTransaction(_ context.Context, hash string) (loginTransaction, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	transaction, ok := f.transactions[hash]
+	if !ok || !transaction.ExpiresAt.After(time.Now()) {
+		return loginTransaction{}, false, nil
+	}
+	delete(f.transactions, hash)
+	return transaction, true, nil
 }
 
 func cloneSessions(in map[uuid.UUID]map[string]struct{}) map[uuid.UUID]map[string]struct{} {
@@ -267,9 +308,24 @@ func newTestService(repo repository, tokens tokenStore) *Service {
 		repo,
 		tokens,
 		fakeMailer{},
-		config.Config{JWTSecret: "test-secret", JWTAccessTTL: time.Minute, JWTRefreshTTL: time.Hour},
+		config.Config{JWTSecret: "test-secret", JWTAccessTTL: time.Minute, JWTRefreshTTL: time.Hour, JWTRefreshMaxTTL: 24 * time.Hour, OAuthStateTTL: 10 * time.Minute},
+		application.NewProviderRegistry(),
 		// go-scaffold:user-service-test-args
 	)
+}
+
+func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, userID uuid.UUID, ttl time.Duration) error {
+	now := time.Now()
+	return tokens.SetRefreshToken(ctx, hashToken(raw), refreshTokenRecord{
+		UserID:            userID,
+		ExpiresAt:         now.Add(ttl),
+		AbsoluteExpiresAt: now.Add(24 * time.Hour),
+	})
+}
+
+func testRefreshTokenRecord(userID uuid.UUID) refreshTokenRecord {
+	now := time.Now()
+	return refreshTokenRecord{UserID: userID, ExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour)}
 }
 
 func status(t *testing.T, err error) int {
@@ -286,7 +342,7 @@ func TestService_Refresh_RotatesTheToken(t *testing.T) {
 	userID := uuid.New()
 	tokens := newFakeTokenStore()
 	rawOld := "old-refresh-token"
-	if err := tokens.SetRefreshToken(ctx, hashToken(rawOld), userID, time.Hour); err != nil {
+	if err := seedRefreshToken(ctx, tokens, rawOld, userID, time.Hour); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	svc := newTestService(&fakeRepo{user: &model.User{ID: userID, Email: "a@example.com"}}, tokens)
@@ -311,7 +367,7 @@ func TestService_Refresh_ConcurrentPresentationHasOneWinner(t *testing.T) {
 	userID := uuid.New()
 	tokens := newFakeTokenStore()
 	raw := "one-refresh-token"
-	if err := tokens.SetRefreshToken(ctx, hashToken(raw), userID, time.Hour); err != nil {
+	if err := seedRefreshToken(ctx, tokens, raw, userID, time.Hour); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	svc := newTestService(&fakeRepo{user: &model.User{ID: userID, Email: "a@example.com"}}, tokens)
@@ -347,10 +403,10 @@ func TestService_Refresh_ReplayingARotatedOutTokenRevokesEverySession(t *testing
 	tokens := newFakeTokenStore()
 	rawOld := "old-refresh-token"
 	rawOtherSession := "another-devices-refresh-token"
-	if err := tokens.SetRefreshToken(ctx, hashToken(rawOld), userID, time.Hour); err != nil {
+	if err := seedRefreshToken(ctx, tokens, rawOld, userID, time.Hour); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := tokens.SetRefreshToken(ctx, hashToken(rawOtherSession), userID, time.Hour); err != nil {
+	if err := seedRefreshToken(ctx, tokens, rawOtherSession, userID, time.Hour); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	svc := newTestService(&fakeRepo{user: &model.User{ID: userID, Email: "a@example.com"}}, tokens)
@@ -370,12 +426,70 @@ func TestService_Refresh_ReplayingARotatedOutTokenRevokesEverySession(t *testing
 	}
 }
 
+func TestService_Refresh_DoesNotExtendTheAbsoluteLifetime(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	raw := "bounded-refresh-token"
+	issuedAt := time.Now()
+	absoluteExpiry := issuedAt.Add(2 * time.Hour)
+	if err := tokens.SetRefreshToken(ctx, hashToken(raw), refreshTokenRecord{
+		UserID:            userID,
+		ExpiresAt:         issuedAt.Add(time.Hour),
+		AbsoluteExpiresAt: absoluteExpiry,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID}}, tokens)
+	rotationTime := issuedAt.Add(90 * time.Minute)
+	svc.now = func() time.Time { return rotationTime }
+
+	auth, err := svc.Refresh(ctx, raw)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	tokens.mu.Lock()
+	rotated := tokens.active[hashToken(auth.RefreshToken)]
+	tokens.mu.Unlock()
+	if !rotated.AbsoluteExpiresAt.Equal(absoluteExpiry) {
+		t.Fatalf("absolute expiry moved during rotation: got %s want %s", rotated.AbsoluteExpiresAt, absoluteExpiry)
+	}
+	if !rotated.ExpiresAt.Equal(absoluteExpiry) {
+		t.Fatalf("rotated inactivity expiry was not capped at the absolute expiry: got %s want %s", rotated.ExpiresAt, absoluteExpiry)
+	}
+}
+
+func TestService_Refresh_ReuseRevokeFailureFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	rawOld := "replayed-refresh-token"
+	rawOther := "still-active-refresh-token"
+	if err := seedRefreshToken(ctx, tokens, rawOld, userID, time.Hour); err != nil {
+		t.Fatalf("seed old token: %v", err)
+	}
+	if err := seedRefreshToken(ctx, tokens, rawOther, userID, time.Hour); err != nil {
+		t.Fatalf("seed other token: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &model.User{ID: userID}}, tokens)
+	if _, err := svc.Refresh(ctx, rawOld); err != nil {
+		t.Fatalf("initial rotation: %v", err)
+	}
+	tokens.revokeAllErr = errors.New("session store unavailable")
+	if _, err := svc.Refresh(ctx, rawOld); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("reuse with failed revoke must fail closed with 500, got %v", err)
+	}
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawOther)); !ok {
+		t.Fatal("failed revoke must not be reported as a completed session revocation")
+	}
+}
+
 func TestService_Refresh_UnknownTokenIsRejectedWithoutRevoking(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 	tokens := newFakeTokenStore()
 	rawLegit := "a-legit-session-token"
-	if err := tokens.SetRefreshToken(ctx, hashToken(rawLegit), userID, time.Hour); err != nil {
+	if err := seedRefreshToken(ctx, tokens, rawLegit, userID, time.Hour); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	svc := newTestService(&fakeRepo{user: &model.User{ID: userID}}, tokens)
@@ -398,7 +512,7 @@ func TestService_LogoutAll_RevokesEverySessionButLeavesOthersAlone(t *testing.T)
 	rawB := "user-session-b"
 	rawOther := "other-users-session"
 	for raw, id := range map[string]uuid.UUID{rawA: userID, rawB: userID, rawOther: otherUserID} {
-		if err := tokens.SetRefreshToken(ctx, hashToken(raw), id, time.Hour); err != nil {
+		if err := seedRefreshToken(ctx, tokens, raw, id, time.Hour); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
