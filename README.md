@@ -34,6 +34,13 @@ node bin/go-scaffold.js create my-api --defaults
 depending on your machine's npm/pnpm global-bin config — running
 `node bin/go-scaffold.js ...` directly sidesteps that.
 
+## Requirements
+
+- Node.js `>=22.13` to run the CLI
+- Go `>=1.25` for the generated project
+- A running PostgreSQL instance; Docker is optional, but either `psql` or a
+  Docker container is needed by `make db-create`
+
 ## Quick start
 
 ```bash
@@ -51,6 +58,33 @@ Then grow the project without leaving the CLI:
 go-scaffold generate module orders
 go-scaffold generate method orders approve --type patch
 ```
+
+## The 30-second flow
+
+The CLI has two layers of interaction: the command you choose, then only the
+questions that command still needs. Flags are answers, not requests to ask the
+same question again.
+
+```text
+go-scaffold create my-api
+  1. Docker + PostgreSQL?
+  2. OpenAPI files?
+  3. Metrics + tracing?
+  4. API route prefix?
+  5. Default module profile: Lean / CRUD / CQRS / Advanced?
+  6. Summary confirmation
+
+cd my-api
+go-scaffold generate module users
+  1. Module profile: Lean / CRUD / CQRS / Advanced?
+  2. Require an access token?              # only when auth is installed
+  3. Permission code?                      # only when auth + RBAC are installed
+  -> writes internal/app/user/, its migration, wiring, and config metadata
+```
+
+`Advanced` is the only path that asks the two lower-level architecture
+questions separately. `--profile` and `--defaults` are the scripted forms; the
+latter uses the project defaults recorded in `go-scaffold.config.json`.
 
 ## Commands
 
@@ -136,7 +170,8 @@ surface/application style of each generated module:
 }
 ```
 
-Use the wizard again later without recreating the project:
+Run these from the generated project root. Use the wizard again later without
+recreating the project:
 
 ```bash
 go-scaffold config                 # interactive project-default wizard
@@ -156,10 +191,16 @@ about two implementation axes up front:
 | `cqrs` | minimal surface + command/query handlers | reads and writes have different business models, invariants, or scaling pressure |
 | `Advanced` (wizard only) | choose both axes separately | you deliberately want a custom mix, including CRUD + CQRS |
 
-`minimal` does not mean “weak DDD”; it means the generator does not invent five
-endpoints before the domain has real requirements. `CQRS` does not mean a second
-database, broker, or event bus here. It only separates command and query
-application handlers inside the same modular monolith.
+The scaffold is DDD-shaped rather than a complete tactical DDD implementation:
+it gives each domain a package boundary, repository port, application boundary,
+feature-local composition, and shared error conventions. It does not invent
+aggregates, value objects, domain events, or business invariants for you; those
+belong to the domain team.
+
+`minimal` means the generator does not invent five endpoints before the domain
+has real requirements. `CQRS` does not mean a second database, broker, or event
+bus here. It only separates command and query application handlers inside the
+same modular monolith.
 
 ### `generate module <name>` (alias `m`) — add a domain module
 
@@ -188,20 +229,22 @@ internal/app/order/
 ├── errors.go             # ORDER_NOT_FOUND / ORDER_CONFLICT / ORDER_HAS_REFERENCES / ORDER_STALE
 ├── repository.go         # GORM data access
 ├── service.go            # business logic + repository interface (mockable)
+├── composition.go        # feature-local repository → service → handler wiring
 ├── handler.go            # Gin routes, registered under the project's API prefix
 ├── service_test.go       # unit test, function-backed repository stub
 ├── handler_test.go       # HTTP unit test, service stub, no DB
 └── repository_test.go    # Postgres integration test against migrated schema
 ```
 
-Add `--cqrs` when this feature has meaningful command/query differences:
+With `--cqrs`, the module also adds separate command/query application files:
 
 ```text
 internal/app/order/
 ├── commands.go            # command port + state-changing application handlers
 ├── queries.go             # query port + read-only application handlers
 ├── service.go             # compatibility facade; new wiring uses both handlers
-└── composition.go         # constructs command/query handlers separately
+├── composition.go         # constructs command/query handlers separately
+└── cqrs_test.go            # command/query boundary tests
 ```
 
 `--cqrs` works with both minimal and `--full` modules. It keeps one modular
@@ -241,9 +284,9 @@ go-scaffold generate method orders findByStatus --type get --get-mode one --fiel
 go-scaffold g me orders findOverdue --type get --get-mode all
 ```
 
-Patches an *existing* module's `handler.go`/`service.go` in place via the
-same marker-comment approach as `main.go` — never a whole new module. Never
-overwrites a method with the same name; picks a different one or errors.
+Patches an *existing* module's `handler.go`/`service.go` in place at the
+`// go-scaffold:*` markers — never a whole new module. Never overwrites a method
+with the same name; pick a different one or the command errors.
 For a module generated with `--cqrs`, it also patches `commands.go` for
 state-changing endpoints and `queries.go` for read endpoints, while keeping
 the compatibility facade in sync.
@@ -281,8 +324,8 @@ the generated code doesn't compile, but this project was fine a moment ago.
 The most likely cause is drift: this project's internal/shared layer has been edited
 since it was scaffolded, so the templates this CLI emits no longer match it.
 
-  scaffolded with: go-scaffold 0.1.2
-  this CLI:        go-scaffold 0.3.0
+  scaffolded with: go-scaffold <project-version>
+  this CLI:        go-scaffold <cli-version>
 ```
 
 That happens because `generate`'s templates are written against the `shared/`
@@ -320,7 +363,6 @@ async email delivery, and `cmd/worker`.
 | Extra service to run | none | Redis |
 | Needed by `add auth` | no | no — `add auth --store` decides that separately |
 | Enqueue joins your DB transaction | yes | **no** — needs an outbox |
-| Throughput | thousands/sec | tens of thousands/sec |
 | Inspect pending jobs | plain SQL | asynqmon |
 
 The default is Postgres because a job enqueued inside `tx.Do` is then only
@@ -383,9 +425,10 @@ responses use `Cache-Control: no-store` and `Pragma: no-cache`; configure
 `JWT_REFRESH_MAX_TTL_MIN` so refresh rotation cannot extend beyond its absolute
 lifetime.
 
-No prerequisites. On a project with no worker the verification and reset mail
-is sent inline, and `add worker` later moves it onto the queue for you — the
-two endpoints that send mail block on SMTP until you do.
+No prerequisites. On a project with no worker, the registration-verification,
+resend-verification, and password-reset mail flows are sent inline, and `add
+worker` later moves them onto the queue for you. Until then, those auth flows
+block on SMTP when a mail server is configured.
 
 | `--store` | Refresh/recovery tokens and rate-limit counters | Extra service |
 |---|---|---|
@@ -451,9 +494,10 @@ working tree, so `undo` proves it first and refuses loudly otherwise:
   `migrate ... down` first, then try again.
 
 The table itself is never dropped either way — `undo` only reverses what the
-CLI wrote. Prefer it to hand-deleting the folder: it also un-wires `main.go`,
-`.golangci.yml` and the OpenAPI index, and it refuses when another domain
-still imports this one rather than leaving you an un-compilable project.
+CLI wrote. Prefer it to hand-deleting the folder: it also un-wires
+`cmd/api/wiring.go`, `.golangci.yml` and the OpenAPI index, and it refuses when
+another domain still imports this one rather than leaving you an un-compilable
+project.
 
 ## Why no per-domain versioning
 
@@ -477,7 +521,9 @@ out of sync with.
 ## Project structure produced by `create`
 
 ```text
-cmd/api/wiring.go
+cmd/api/
+├── main.go                  # process entry point and exit handling
+└── wiring.go                # composition root: infrastructure + domain registration
 internal/
 ├── platform/database/
 ├── shared/{config,apperror,dberr,httpx,id,middleware,pagination,tx}/
@@ -503,8 +549,9 @@ go-scaffold.config.json
 
 ## Supported stack
 
-Pinned in the generated `go.mod` — this table mirrors
-`templates/create/base/go.mod.hbs`, which is the source of truth.
+Pinned base dependencies in the generated `go.mod` — this table mirrors
+`templates/create/base/go.mod.hbs`, which is the source of truth. `add auth`,
+`add worker`, and `add observability` append their optional dependencies.
 
 | Package | Version |
 |---|---|

@@ -27,7 +27,8 @@ See `docs/architect/` for the conventions every generated module follows, and `A
 ```
 cmd/
 └── api/
-    └── main.go                # config, slog, graceful shutdown, wires domains — the only entry point for now
+    ├── main.go                # process entry point, config, slog, graceful shutdown
+    └── wiring.go              # composition root: infrastructure + domain registration
 internal/
 ├── platform/                  # talks to real external systems (DB, later: cache, queue, mail, ...)
 │   └── database/              # opens the connection + pool (GORM)
