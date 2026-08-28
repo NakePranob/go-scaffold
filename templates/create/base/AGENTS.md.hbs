@@ -158,15 +158,46 @@ approval before changing their contract.
 - Password reset and email verification consume a one-time token in the same
   retry-safe transaction as the user/identity update. A failed post-commit
   session revocation must not make a successful reset impossible to retry.
-- Keep auth transport adapters separate from auth application ports. A use
-  case should not import Gin, GORM models, or HTTP error payloads merely to
-  perform its workflow.
+- The generated auth facade is a pragmatic compatibility boundary: its service
+  contracts currently use the feature's `model` values and shared `apperror`,
+  while handlers own Gin and provider adapters own SDK configuration. Do not
+  broaden that coupling by importing Gin, provider SDKs, or HTTP handlers into
+  use cases. New complex flows should prefer transport-neutral DTOs and narrow
+  ports; a deeper separation of the existing auth facade is an explicit
+  architecture refactor and needs focused tests.
 - Browser provider exchange consumes a one-time server-side transaction bound
   to provider, state, S256 PKCE challenge, and OIDC nonce. Google ID tokens
   must be signature, issuer, audience/azp, time-claim, nonce, and subject
   validated before identity resolution. Token responses use
   `Cache-Control: no-store` and `Pragma: no-cache`; SameSite=None also needs an
   exact allowed Origin guard in addition to CORS.
+
+MFA has an operator capability switch and a separate per-user enrollment:
+
+- `AUTH_MFA_ENABLED=false` is the default. When enabled, the composition root
+  must validate `MFA_ENCRYPTION_KEY` as a base64-encoded 32-byte key before
+  serving traffic. Keep the issuer, challenge TTL, TOTP window, and recovery
+  code count explicit and within their safety limits.
+- Authenticated users manage enrollment through `GET /users/me/mfa`,
+  `POST /users/me/mfa/setup`, `POST /users/me/mfa/confirm`, and
+  `POST /users/me/mfa/disable` (the last requires the current TOTP code).
+  Setup material is pending-only; recovery codes are returned once.
+- Password login and provider exchange may return a pre-session
+  `{ "mfa_required": true, "challenge": "..." }`. Do not issue an access
+  token or refresh cookie until `POST /auth/mfa/verify` succeeds. Challenges
+  are hashed, short-lived, and one-use; failed verification consumes the
+  challenge. Recovery codes are hashed, atomic one-use login factors and are
+  not accepted to disable MFA.
+- MFA data is durable in Postgres for both refresh-token store choices. The
+  `create_mfa` migration must be applied before production and covered by
+  real-store/concurrency tests.
+
+Keep auth construction explicit: `NewService(deps Dependencies, cfg
+AuthConfig)`. `Dependencies` owns narrow ports such as `MFA`, `Providers`,
+`RefreshTokens`, `RecoveryTokens`, `Mailer`, `Roles`, and `Clock`; `AuthConfig`
+owns JWT, OAuth, recovery, and `MFASettings` policy. Do not pass the generated
+shared config package into the application service or replace these contracts
+with a positional constructor.
 - Return a stable, generic client error for unexpected failures. Wrap causes
   with `%w` or pass them to `apperror.NewInternal(cause)` so middleware can
   log the server-side cause with `request_id`; production responses must not
@@ -188,8 +219,15 @@ golangci-lint run
 For schema/repository/auth adapter work, run the real-store tests with a
 migrated disposable PostgreSQL/Redis instance and `REQUIRE_TEST_DB=true` or
 `REQUIRE_TEST_REDIS=true`; a skipped integration test is not evidence of
-correctness. For CLI/template changes, run the generator project's
-`pnpm run verify` and generate fresh sample projects to inspect the output.
+correctness. MFA state still requires PostgreSQL even when refresh tokens use
+Redis. When routes or OpenAPI templates change, inspect the updated
+`docs/openapi.yaml` and run the configured OpenAPI linter.
+
+Only in the `go-scaffold` source repository, run the generator project's
+`pnpm run verify` for CLI/template changes, then generate fresh sample projects
+to inspect the output. A generated Go project does not contain the generator's
+`package.json` or pnpm scripts; from that project run the Go checks above and
+use the installed/local CLI for generation checks.
 
 At each checkpoint record: branch and base, files changed, generated output
 shape, tests and their exact result, and any limitation. Before handoff,

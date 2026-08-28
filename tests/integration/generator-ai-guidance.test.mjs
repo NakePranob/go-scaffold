@@ -44,6 +44,10 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.match(agents, /atomic consume/);
     assert.match(agents, /absolute\s+expiry never moves/);
     assert.match(agents, /one-time server-side transaction/);
+    assert.match(agents, /AUTH_MFA_ENABLED=false/);
+    assert.match(agents, /mfa_required/);
+    assert.match(agents, /NewService\(deps Dependencies, cfg/);
+    assert.match(agents, /MFA state still requires PostgreSQL/);
     assert.doesNotMatch(agents, /missing AutoMigrate wiring/);
     assert.doesNotMatch(agents, /finds the record by id, TODO before saving/);
 
@@ -69,6 +73,13 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.match(skill, /Cache-Control: no-store/);
     assert.match(skill, /exact allowed\s+`Origin`/);
     assert.match(skill, /Native\/mobile OAuth is out of scope/);
+    assert.match(skill, /MFA contract/);
+    assert.match(skill, /AUTH_MFA_ENABLED=false/);
+    assert.match(skill, /MFA_ENCRYPTION_KEY/);
+    assert.match(skill, /mfa_required/);
+    assert.match(skill, /NewService\(deps Dependencies, cfg/);
+    assert.match(skill, /generated Go project does not contain/);
+    assert.match(skill, /MFA state is durable in Postgres/);
     assert.doesNotMatch(skill, /AUTH_FRONTEND_SUCCESS_URL|AUTH_FRONTEND_ERROR_URL|RedirectTargetResolver/);
     assert.doesNotMatch(skill, /missing AutoMigrate wiring/);
     assert.doesNotMatch(skill, /finds the record by id, TODO before saving/);

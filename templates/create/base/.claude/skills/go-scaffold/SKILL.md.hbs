@@ -21,6 +21,10 @@ application seams, test stubs, OpenAPI TODOs, and migration markers remain
 consistent. After generation, the product's business logic and domain rules
 are still the engineer's responsibility.
 
+This file is emitted at `.claude/skills/go-scaffold/SKILL.md` for Claude Code.
+Agents that do not load `.claude/skills` should follow the root `AGENTS.md`,
+which carries the same project-wide safety contract.
+
 ## When to use this skill
 
 - A new feature, resource, or domain is requested, even if the user does not
@@ -68,6 +72,8 @@ Run from the project root and pass every value as a flag:
 go-scaffold generate module <name> --defaults [--full] [--cqrs] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 go-scaffold generate migration <name>
+go-scaffold add auth --store <postgres|redis> --browser-topology <same-origin|same-site|cross-site> [--defaults] [--yes]
+go-scaffold add worker --queue <postgres|redis> [--defaults]
 go-scaffold undo module <name> -y
 ~~~
 
@@ -75,8 +81,13 @@ Omitted values prompt; in a non-interactive shell that exits 1 without
 writing. --defaults means minimal, no CQRS, and no auth. Add --full, --cqrs,
 --auth, and --permission <code> only when they are wanted. --get-mode is required with
 --type get; --field is required for GET-one and cannot be id. undo requires
--y. add auth and add worker also require an explicit or defaulted backing
-store/queue.
+-y. `add auth` accepts `--store postgres|redis` and
+`--browser-topology same-origin|same-site|cross-site`; `--defaults` selects
+Postgres and same-site. Postgres keeps refresh, recovery, and MFA state in
+Postgres and uses an in-process rate limiter. Redis keeps refresh tokens and
+rate-limit counters in Redis, while recovery and MFA state remain durable in
+Postgres. Without `add worker`, auth mail is sent inline; with a worker it uses
+the queue backend chosen by `add worker`.
 
 Module names may be singular/plural, mixed case, hyphenated, or underscored.
 The CLI normalizes the Go package, REST path, SQL table, and error-code prefix.
@@ -168,9 +179,13 @@ handler -> application/use case -> domain + ports -> adapters
                                   +--- composition -+
 ~~~
 
-When a complex auth or recovery flow is generated, keep its transport adapter
-separate from its application ports. Application use cases must not import
-Gin, GORM models, or HTTP error payloads.
+The generated auth facade is a pragmatic compatibility boundary: its service
+contracts currently use the feature's `model` values and shared `apperror`,
+while handlers own Gin and provider adapters own SDK configuration. Do not
+broaden that coupling by importing Gin, provider SDKs, or HTTP handlers into
+use cases. New complex flows should prefer transport-neutral DTOs and narrow
+ports; a deeper separation of the existing auth facade is an explicit
+architecture refactor and needs focused tests.
 
 ## Authentication and browser OAuth contract
 
@@ -213,6 +228,43 @@ boundary. For browser OAuth, preserve this client-owned callback contract:
   `Origin` (or equivalent validated `Referer`) when SameSite=None is used.
 - Native/mobile OAuth is out of scope for this scaffold phase. Do not infer a
   native callback or token handoff contract from the browser flow.
+
+### MFA contract
+
+MFA has two independent switches: an operator capability and per-user
+enrollment. Preserve both:
+
+- `AUTH_MFA_ENABLED=false` is the default. When it is false, MFA endpoints
+  report unavailable and login does not require a challenge. Turning the
+  capability off does not delete stored enrollments; re-enabling it restores
+  the policy for users who had already enrolled.
+- When the capability is enabled, the composition root must validate
+  `MFA_ENCRYPTION_KEY` as a base64-encoded 32-byte key before serving traffic.
+  Keep `MFA_ISSUER`, `MFA_CHALLENGE_TTL_MIN`, `MFA_TOTP_WINDOW`, and
+  `MFA_RECOVERY_CODE_COUNT` explicit in configuration; do not silently weaken
+  their safety limits.
+- An authenticated user opts in with `GET /users/me/mfa`,
+  `POST /users/me/mfa/setup`, and `POST /users/me/mfa/confirm`; disabling it
+  requires the current TOTP code at `POST /users/me/mfa/disable`. Setup returns
+  the secret/otpauth URI only while pending, and confirmation returns recovery
+  codes only once.
+- Password login and provider exchange may return
+  `{ "mfa_required": true, "challenge": "..." }` for an enrolled user. This
+  is a pre-session response: do not issue an access token or refresh cookie
+  until `POST /auth/mfa/verify` succeeds with a TOTP or recovery code.
+- Store only an encrypted TOTP secret, hashed challenges, and hashed recovery
+  codes. Challenges are short-lived and one-use; a failed verification also
+  consumes its challenge. Recovery codes are atomic one-use login factors and
+  must not be accepted for disabling MFA. MFA state is durable in Postgres for
+  both refresh-token store choices, so `add auth`'s `create_mfa` migration must
+  be applied and included in real-store/concurrency tests.
+
+Keep auth construction explicit: `NewService(deps Dependencies, cfg
+AuthConfig)`. `Dependencies` owns narrow ports such as `MFA`, `Providers`,
+`RefreshTokens`, `RecoveryTokens`, `Mailer`, `Roles`, and `Clock`; `AuthConfig`
+owns JWT, OAuth, recovery, and `MFASettings` policy. Do not pass the generated
+shared config package into the application service or replace these contracts
+with a positional constructor.
 
 When adding auth from a script, pass the choices explicitly, for example:
 
@@ -258,9 +310,16 @@ golangci-lint run
 
 For repository, schema, or auth adapter changes, use a migrated disposable
 PostgreSQL/Redis instance and set REQUIRE_TEST_DB=true or
-REQUIRE_TEST_REDIS=true; a skipped integration test is not proof. For
-changes to this CLI or its templates, run pnpm run verify, generate a fresh
-sample project, and inspect both the generated source and guidance files.
+REQUIRE_TEST_REDIS=true; a skipped integration test is not proof. MFA state
+still requires PostgreSQL even when refresh tokens use Redis. When routes or
+OpenAPI templates change, inspect the updated `docs/openapi.yaml` and run the
+configured OpenAPI linter.
+
+Only in the `go-scaffold` source repository, run `pnpm run verify` for CLI or
+template changes, then generate a fresh sample project and inspect both its
+source and guidance files. A generated Go project does not contain the
+generator's `package.json` or pnpm scripts; from that project run the Go checks
+above and use the installed/local CLI for generation checks.
 Review git diff --check, git diff, and git status --short before handoff,
 and report exact output plus known limitations.
 
