@@ -58,6 +58,27 @@ Every `add` command shows what it's about to do and asks before writing;
 `-y/--yes` skips that (and `--defaults` implies it) for CI and scripts.
 Running `go-scaffold` with no arguments picks the command from a menu.
 
+### Wizard coverage
+
+The interactive path is deliberately available from both the bare command and
+the direct command form:
+
+| Command | Wizard coverage |
+|---|---|
+| `create [name]` | asks for the project name and settings that were not passed as flags |
+| `generate` / `generate module [name]` | chooses a target, module name, and module profile; `Advanced` asks the two underlying architecture questions |
+| `generate method [module] [name]` | asks for the existing module, method name, HTTP verb, GET mode, and lookup field when needed |
+| `generate migration [name]` | asks for the migration name when omitted |
+| `config` | edits future module defaults; existing modules are unchanged |
+| `config show` / `config validate` | intentionally no wizard: read-only print/validation commands |
+| `add` / `add worker` / `add auth` | chooses the feature, backend/topology, and confirmation where applicable |
+| `add rbac` / `add observability` | no parameter choice is needed; the direct command confirms, while bare `add` selects the target |
+| `undo` / `undo module [name]` | asks for the generated module and confirmation when omitted |
+
+Run any command with `--help` for the non-interactive equivalent. If a value is
+omitted in a non-TTY shell, the CLI exits before writing and tells you which
+flag or `--defaults` is required.
+
 
 ### `create <name>` — scaffold a new project
 
@@ -75,15 +96,21 @@ with `generate module`.
 
 | Option | Effect |
 |---|---|
-| `--defaults` | Skip the wizard, use defaults (Docker on, OpenAPI docs on, no route prefix) |
-| `--no-docker` | Skip `docker-compose.yml` |
-| `--no-openapi-docs` | Skip `docs/openapi.yaml` |
-| `--observability` | Prometheus `/metrics` + OpenTelemetry tracing (off by default — `add observability` does the same later) |
-| `--api-prefix <prefix>` | URL prefix every route is grouped under — opt in with e.g. `v1` or `api/v1`; omit it for none |
+| `--defaults` | Skip settings prompts; use Docker/OpenAPI on, no prefix, and Lean (`minimal + service`) defaults for future modules |
+| `--no-docker` | Do not create `docker-compose.yml` or include a local Postgres service |
+| `--no-openapi-docs` | Do not create `docs/openapi.yaml` or per-module OpenAPI files |
+| `--observability` | Include Prometheus `/metrics` + OpenTelemetry tracing; off unless passed |
+| `--api-prefix <prefix>` | Group every API route under a prefix such as `v1` or `api/v1`; omit for no prefix |
+| `--module-profile <lean\|crud\|cqrs>` | Default profile for future modules; replaces the two architecture questions |
+| `--module-surface <minimal\|crud>` | Legacy axis flag for future modules; use `--module-profile` for a clearer preset |
+| `--application-style <service\|cqrs>` | Legacy axis flag for future modules; use `--module-profile` for a clearer preset |
 
-Without `--defaults`, an interactive wizard asks the same four questions —
+Without `--defaults`, an interactive wizard asks the project questions —
 skipping any a flag already answered, so `create my-api --no-docker` never asks
-about Docker and never scaffolds it.
+about Docker and never scaffolds it. It also asks for the default module
+profile so future `generate module` commands start with the project's
+conventions. Choose `Advanced` when you intentionally want the less common
+CRUD + CQRS combination.
 The prefix is a single project-wide choice made once at `create` time —
 there's no per-domain versioning (a domain that needs a real breaking change
 gets a new domain package or a new DTO field, not a duplicated model pointed
@@ -92,19 +119,65 @@ below).
 
 **Config file** — every `create` writes `go-scaffold.config.json` to the
 project root; `generate` reads it back (or auto-detects from `go.mod` /
-directory layout if missing).
+directory layout if missing). It records project defaults and the resolved
+surface/application style of each generated module:
+
+```json
+{
+  "schemaVersion": 1,
+  "architecture": {
+    "style": "modular-monolith",
+    "defaultModuleSurface": "minimal",
+    "defaultApplicationStyle": "service"
+  },
+  "modules": {
+    "order": { "surface": "crud", "applicationStyle": "cqrs" }
+  }
+}
+```
+
+Use the wizard again later without recreating the project:
+
+```bash
+go-scaffold config                 # interactive project-default wizard
+go-scaffold config show            # print the resolved config
+go-scaffold config validate        # validate without changing anything
+```
+
+### Module profiles
+
+The wizard asks for one useful profile instead of forcing everyone to reason
+about two implementation axes up front:
+
+| Profile | Resolves to | Use it when |
+|---|---|---|
+| `lean` | minimal surface + one service | the domain should start small and grow endpoint by endpoint |
+| `crud` | CRUD surface + one service | the domain genuinely needs the standard list/get/create/update/delete starter |
+| `cqrs` | minimal surface + command/query handlers | reads and writes have different business models, invariants, or scaling pressure |
+| `Advanced` (wizard only) | choose both axes separately | you deliberately want a custom mix, including CRUD + CQRS |
+
+`minimal` does not mean “weak DDD”; it means the generator does not invent five
+endpoints before the domain has real requirements. `CQRS` does not mean a second
+database, broker, or event bus here. It only separates command and query
+application handlers inside the same modular monolith.
 
 ### `generate module <name>` (alias `m`) — add a domain module
 
 ```bash
-go-scaffold generate module orders                  # asks for the shape (and auth, if installed)
-go-scaffold generate module orders --full           # opt-in CRUD skeleton, no prompt
-go-scaffold generate module orders --full --cqrs    # CRUD + separate command/query handlers
-go-scaffold generate module orders --defaults       # safe minimal module, no prompt (CI/scripting)
+go-scaffold generate module orders                  # asks for profile (and auth, if installed)
+go-scaffold generate module orders --profile lean   # explicit Lean profile, no architecture prompt
+go-scaffold generate module orders --profile crud   # explicit CRUD profile, no architecture prompt
+go-scaffold generate module orders --profile cqrs   # explicit CQRS profile, no architecture prompt
+go-scaffold generate module orders --full --cqrs    # legacy flags: CRUD + separate command/query handlers
+go-scaffold generate module orders --defaults       # use project defaults, no prompt (CI/scripting)
 ```
 
-Anything you don't pass as a flag is asked for; `--defaults` takes the
-documented defaults (minimal, no auth) and asks nothing.
+Anything you don't pass as a flag is asked for; the prompt starts with the
+project defaults. `--defaults` uses those defaults without asking anything
+(fresh and legacy projects default to Lean, with no auth). `--profile` is the
+non-interactive equivalent of choosing a named profile for this module. The
+older `--full` and `--cqrs` flags remain supported for existing scripts; do not
+combine them with `--profile`.
 
 `--full` scaffolds:
 
@@ -153,6 +226,8 @@ Both modes also:
   and add the model to the development schema bootstrap
 - Append `migrations/<timestamp>_create_<plural>.{up,down}.sql`, which creates that
   same schema for production
+- Record the resolved `minimal|crud` and `service|cqrs` choices in
+  `go-scaffold.config.json`; changing project defaults does not rewrite existing modules
 
 What it does **not** do: invent your fields or wire foreign keys between
 domains — see `docs/architect/patterns.md` in the generated project for the

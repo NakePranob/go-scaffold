@@ -3,12 +3,13 @@ import fs from "fs-extra";
 import pc from "picocolors";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { CREATE_MANIFEST } from "../templates/create-manifest";
-import { writeConfig } from "../utils/config";
+import { parseApplicationStyle, parseModuleProfile, parseModuleSurface, writeConfig } from "../utils/config";
 import { assertValidGoModulePath, normalizeApiPrefix, toDbName, validateApiPrefix } from "../utils/naming";
 import { promptProjectName, runCreateWizard } from "../prompts/create-wizard";
 import { cliVersion } from "../utils/version";
-import { ProjectFeatures } from "../types";
+import { ArchitectureConfig, DEFAULT_ARCHITECTURE_CONFIG, ProjectFeatures } from "../types";
 import { addObservability } from "./observability";
+import { architectureForModuleProfile } from "../utils/module-profile";
 
 export interface CreateOptions {
   defaults?: boolean;
@@ -16,6 +17,9 @@ export interface CreateOptions {
   openapiDocs?: boolean;
   observability?: boolean;
   apiPrefix?: string;
+  moduleProfile?: string;
+  moduleSurface?: string;
+  applicationStyle?: string;
 }
 
 export async function createProject(rawName: string | undefined, opts: CreateOptions): Promise<void> {
@@ -33,6 +37,13 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
 
   let features: ProjectFeatures;
   let apiPrefix: string;
+  let architecture: ArchitectureConfig;
+  const moduleProfile = parseModuleProfile(opts.moduleProfile, "--module-profile");
+  const moduleSurface = parseModuleSurface(opts.moduleSurface);
+  const applicationStyle = parseApplicationStyle(opts.applicationStyle);
+  if (moduleProfile && (moduleSurface || applicationStyle)) {
+    throw new Error("--module-profile cannot be combined with --module-surface or --application-style — choose one configuration style");
+  }
   if (opts.defaults) {
     features = { docker: opts.docker ?? true, openapiDocs: opts.openapiDocs ?? true, observability: opts.observability ?? false };
     // "" to match what the wizard's Enter now gives. --defaults means "don't
@@ -42,15 +53,26 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     apiPrefix = normalizeApiPrefix(opts.apiPrefix ?? "");
     const check = validateApiPrefix(apiPrefix);
     if (check !== true) throw new Error(check);
+    const profileArchitecture = moduleProfile ? architectureForModuleProfile(moduleProfile) : undefined;
+    architecture = {
+      ...DEFAULT_ARCHITECTURE_CONFIG,
+      ...(profileArchitecture ? { defaultModuleSurface: profileArchitecture.moduleSurface } : {}),
+      ...(profileArchitecture ? { defaultApplicationStyle: profileArchitecture.applicationStyle } : {}),
+      ...(!profileArchitecture && moduleSurface ? { defaultModuleSurface: moduleSurface } : {}),
+      ...(!profileArchitecture && applicationStyle ? { defaultApplicationStyle: applicationStyle } : {}),
+    };
   } else {
     // commander gives `--no-x` options a default of true, and there is no
     // `--docker`/`--openapi-docs` to pass, so false here can only mean the
     // caller opted out explicitly. undefined leaves the question to the wizard.
-    ({ features, apiPrefix } = await runCreateWizard({
+    ({ features, apiPrefix, architecture } = await runCreateWizard({
       docker: opts.docker === false ? false : undefined,
       openapiDocs: opts.openapiDocs === false ? false : undefined,
       observability: opts.observability === true ? true : undefined,
       apiPrefix: opts.apiPrefix,
+      moduleProfile,
+      moduleSurface,
+      applicationStyle,
     }));
   }
 
@@ -59,13 +81,23 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     goModule,
     dbName: toDbName(projectName),
     apiPrefix,
+    ...architecture,
     ...features,
   };
 
   await fs.ensureDir(projectDir);
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
   gofmtTree(projectDir);
-  writeConfig(projectDir, { projectName, goModule, apiPrefix, features, scaffoldVersion: cliVersion() });
+  writeConfig(projectDir, {
+    schemaVersion: 1,
+    projectName,
+    goModule,
+    apiPrefix,
+    features,
+    architecture,
+    modules: {},
+    scaffoldVersion: cliVersion(),
+  });
 
   // Composed the same way a user would do it by hand — `create` always
   // renders the plain base, then this layers the same patches `add

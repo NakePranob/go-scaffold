@@ -115,9 +115,9 @@ function refreshArchitectDocs(projectDir: string, config: ProjectConfig): string
     { template: "create/features/docs/architecture.md.hbs", output: path.join("docs", "architect", "architecture.md") },
     { template: "create/features/docs/techstack.md.hbs", output: path.join("docs", "architect", "techstack.md") },
   ];
-  // only what the two templates actually reference — projectName, apiPrefix
-  // and the feature flags
-  const base = { projectName: config.projectName, apiPrefix: config.apiPrefix, ...config.features };
+  // only what the two templates actually reference — projectName, apiPrefix,
+  // architecture defaults and the feature flags
+  const base = { projectName: config.projectName, apiPrefix: config.apiPrefix, ...config.architecture, ...config.features };
 
   const root = getTemplatesRoot();
   const skipped: string[] = [];

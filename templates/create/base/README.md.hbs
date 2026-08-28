@@ -2,14 +2,23 @@
 
 Gin + GORM backend, scaffolded by [go-scaffold](https://github.com/nakedev/go-scaffold). Organized by feature (domain), Postgres-backed, schema managed with [golang-migrate](https://github.com/golang-migrate/migrate).
 
-This project starts as a bare skeleton. Add a safe minimal domain with:
+This project starts as a bare skeleton. Its defaults for future modules resolve
+to `{{defaultModuleSurface}}` surface + `{{defaultApplicationStyle}}` application
+style. The `generate module` wizard presents this as a named Lean, CRUD, CQRS,
+or Advanced profile so you can choose by intent instead of memorising two
+implementation axes. Add a domain with:
 
 ```bash
 go-scaffold generate module orders
 ```
 
-Add endpoints one at a time with `generate method`, or pass `--full` to opt
-into a CRUD skeleton whose DTO fields and business rules remain explicit TODOs.
+The `generate module` wizard starts from those defaults. Add endpoints one at a
+time with `generate method`, pass `--profile crud` for a CRUD skeleton, or use
+`--profile cqrs` when commands and queries deserve separate application
+handlers. DTO fields and business rules remain explicit TODOs. Run
+`go-scaffold config` later to change defaults for future modules; existing
+modules are unchanged. The older `--full` and `--cqrs` flags remain supported
+for scripts.
 
 See `docs/architect/` for the conventions every generated module follows, and `AGENTS.md`/`CLAUDE.md` if you're working with an AI coding agent in this repo.
 
@@ -197,10 +206,12 @@ Then open `docs/openapi.bundled.yaml` — it needs no network and no running ser
 go-scaffold generate module orders
 ```
 
-Scaffolds the safe minimal `internal/app/order/` module, wires its empty route
-group/model into `cmd/api/wiring.go`, and appends a migration file. Add endpoints
-with `generate method`; use `--full` only when a CRUD skeleton is intentional.
-See `docs/architect/patterns.md` for the module shape and foreign-key rules.
+Scaffolds an `internal/app/order/` module using the project defaults
+(`{{defaultModuleSurface}}` + `{{defaultApplicationStyle}}`), wires its route/
+model into `cmd/api/wiring.go`, and appends a migration file. Add endpoints
+with `generate method`; use `--profile crud` for a CRUD skeleton or
+`--profile cqrs` for separate command/query handlers. See
+`docs/architect/patterns.md` for the module shape and foreign-key rules.
 
 ## Deploying
 

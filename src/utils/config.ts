@@ -1,15 +1,47 @@
 import path from "path";
 import fs from "fs-extra";
-import { ProjectConfig, ProjectFeatures } from "../types";
+import {
+  ApplicationStyle,
+  ArchitectureConfig,
+  ArchitectureStyle,
+  DEFAULT_ARCHITECTURE_CONFIG,
+  ModuleConfig,
+  ModuleProfile,
+  ModuleSurface,
+  ProjectConfig,
+  ProjectFeatures,
+} from "../types";
 
 const CONFIG_FILE = "go-scaffold.config.json";
+export const CONFIG_SCHEMA_VERSION = 1;
 
 export function configPath(projectDir: string): string {
   return path.join(projectDir, CONFIG_FILE);
 }
 
+export function parseModuleSurface(value: string | undefined): ModuleSurface | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  assertOneOf(normalized, "--module-surface", ["minimal", "crud"]);
+  return normalized as ModuleSurface;
+}
+
+export function parseApplicationStyle(value: string | undefined): ApplicationStyle | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  assertOneOf(normalized, "--application-style", ["service", "cqrs"]);
+  return normalized as ApplicationStyle;
+}
+
+export function parseModuleProfile(value: string | undefined, flag = "--profile"): ModuleProfile | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  assertOneOf(normalized, flag, ["lean", "crud", "cqrs"]);
+  return normalized as ModuleProfile;
+}
+
 export function writeConfig(projectDir: string, config: ProjectConfig): void {
-  fs.writeJsonSync(configPath(projectDir), config, { spaces: 2 });
+  fs.writeJsonSync(configPath(projectDir), normalizeProjectConfig(config, projectDir), { spaces: 2 });
 }
 
 // readConfig falls back to detecting from go.mod when the config file is
@@ -30,13 +62,136 @@ export function readConfig(projectDir: string): ProjectConfig {
   const file = configPath(projectDir);
   if (!fs.existsSync(file)) return detectConfig(projectDir);
 
-  const config = fs.readJsonSync(file) as ProjectConfig;
+  const config = fs.readJsonSync(file) as Partial<ProjectConfig>;
+  if (!isRecord(config)) {
+    throw new Error(`${CONFIG_FILE} must contain a JSON object`);
+  }
   const detected = detectFeatures(projectDir);
-  const features = { ...config.features };
+  const features = { ...(isRecord(config.features) ? config.features : {}) } as Partial<ProjectFeatures>;
   for (const key of Object.keys(detected) as (keyof ProjectFeatures)[]) {
     if (features[key] === undefined) (features as Record<string, unknown>)[key] = detected[key];
   }
-  return { ...config, features };
+  return normalizeProjectConfig({ ...config, features: features as ProjectFeatures }, projectDir);
+}
+
+/**
+ * Validate and fill defaults for the project manifest. Older projects have
+ * no architecture/modules keys yet; normalising them here lets every command
+ * consume one stable shape while keeping the old config file compatible.
+ */
+function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string): ProjectConfig {
+  const projectName = requiredString(raw.projectName, "projectName");
+  const goModule = requiredString(raw.goModule, "goModule");
+  const apiPrefix = requiredString(raw.apiPrefix ?? "", "apiPrefix");
+  const schemaVersion = raw.schemaVersion ?? CONFIG_SCHEMA_VERSION;
+
+  if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
+    throw new Error(`${CONFIG_FILE} has invalid schemaVersion "${String(schemaVersion)}" — expected a positive integer`);
+  }
+  if (schemaVersion > CONFIG_SCHEMA_VERSION) {
+    throw new Error(
+      `${CONFIG_FILE} uses schemaVersion ${schemaVersion}, but this CLI supports up to ${CONFIG_SCHEMA_VERSION} — upgrade go-scaffold first`
+    );
+  }
+
+  const detected = detectFeatures(projectDir);
+  const features = { ...(isRecord(raw.features) ? raw.features : {}) } as Partial<ProjectFeatures>;
+  for (const key of Object.keys(detected) as (keyof ProjectFeatures)[]) {
+    if (features[key] === undefined) (features as Record<string, unknown>)[key] = detected[key];
+  }
+  validateFeatures(features);
+
+  const architecture = normalizeArchitecture(raw.architecture);
+  const modules = normalizeModules(raw.modules);
+
+  return {
+    schemaVersion,
+    projectName,
+    goModule,
+    apiPrefix,
+    features: features as ProjectFeatures,
+    architecture,
+    modules,
+    ...(raw.scaffoldVersion ? { scaffoldVersion: raw.scaffoldVersion } : {}),
+  };
+}
+
+function normalizeArchitecture(raw: unknown): ArchitectureConfig {
+  const value = raw === undefined ? {} : raw;
+  if (!isRecord(value)) {
+    throw new Error(`${CONFIG_FILE}.architecture must be a JSON object`);
+  }
+
+  const architecture = {
+    ...DEFAULT_ARCHITECTURE_CONFIG,
+    ...value,
+  } as Record<string, unknown>;
+
+  assertOneOf(architecture.style, "architecture.style", ["modular-monolith"]);
+  assertOneOf(architecture.defaultModuleSurface, "architecture.defaultModuleSurface", ["minimal", "crud"]);
+  assertOneOf(architecture.defaultApplicationStyle, "architecture.defaultApplicationStyle", ["service", "cqrs"]);
+
+  return {
+    style: architecture.style as ArchitectureStyle,
+    defaultModuleSurface: architecture.defaultModuleSurface as ModuleSurface,
+    defaultApplicationStyle: architecture.defaultApplicationStyle as ApplicationStyle,
+  };
+}
+
+function normalizeModules(raw: unknown): Record<string, ModuleConfig> {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) throw new Error(`${CONFIG_FILE}.modules must be a JSON object`);
+
+  const modules: Record<string, ModuleConfig> = {};
+  for (const [name, entry] of Object.entries(raw)) {
+    if (!name || name.includes("/") || name.includes("\\")) {
+      throw new Error(`${CONFIG_FILE}.modules has invalid module key "${name}" — use the module's Go package name`);
+    }
+    if (!isRecord(entry)) throw new Error(`${CONFIG_FILE}.modules.${name} must be a JSON object`);
+
+    assertOneOf(entry.surface, `modules.${name}.surface`, ["minimal", "crud"]);
+    assertOneOf(entry.applicationStyle, `modules.${name}.applicationStyle`, ["service", "cqrs"]);
+    modules[name] = {
+      surface: entry.surface as ModuleSurface,
+      applicationStyle: entry.applicationStyle as ApplicationStyle,
+    };
+  }
+  return modules;
+}
+
+function validateFeatures(features: Partial<ProjectFeatures>): void {
+  if (typeof features.docker !== "boolean") throw new Error(`${CONFIG_FILE}.features.docker must be true or false`);
+  if (typeof features.openapiDocs !== "boolean") throw new Error(`${CONFIG_FILE}.features.openapiDocs must be true or false`);
+  if (features.worker !== undefined && typeof features.worker !== "boolean") {
+    throw new Error(`${CONFIG_FILE}.features.worker must be true or false`);
+  }
+  if (features.queue !== undefined) assertOneOf(features.queue, "features.queue", ["river", "asynq"]);
+  if (features.auth !== undefined && typeof features.auth !== "boolean") {
+    throw new Error(`${CONFIG_FILE}.features.auth must be true or false`);
+  }
+  if (features.authStore !== undefined) assertOneOf(features.authStore, "features.authStore", ["postgres", "redis"]);
+  if (features.rbac !== undefined && typeof features.rbac !== "boolean") {
+    throw new Error(`${CONFIG_FILE}.features.rbac must be true or false`);
+  }
+  if (features.observability !== undefined && typeof features.observability !== "boolean") {
+    throw new Error(`${CONFIG_FILE}.features.observability must be true or false`);
+  }
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`${CONFIG_FILE}.${field} must be a string`);
+  return value;
+}
+
+function assertOneOf<T extends string>(value: unknown, field: string, allowed: readonly T[]): asserts value is T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    const label = field.startsWith("--") ? field : `${CONFIG_FILE}.${field}`;
+    throw new Error(`${label} must be one of: ${allowed.join(", ")} (got "${String(value)}")`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // detectFeatures answers "what is actually installed here" from the tree
@@ -110,10 +265,13 @@ function detectConfig(projectDir: string): ProjectConfig {
   // already exists"), with no way out. Worse, the first `add` to succeed then
   // wrote a config that recorded the undetected features as absent.
   return {
+    schemaVersion: CONFIG_SCHEMA_VERSION,
     projectName: path.basename(projectDir),
     goModule,
     apiPrefix,
     features: detectFeatures(projectDir),
+    architecture: { ...DEFAULT_ARCHITECTURE_CONFIG },
+    modules: {},
   };
 }
 

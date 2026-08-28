@@ -12,7 +12,7 @@ import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
-import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology } from "./types";
+import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
 import {
   DEFAULT_BROWSER_TOPOLOGY,
@@ -20,8 +20,18 @@ import {
   promptBrowserTopology,
   validateBrowserTopology,
 } from "./prompts/auth-wizard";
-import { promptModuleName, promptModuleShape, promptModuleCqrs, promptModuleAuth, promptModulePermission } from "./prompts/generate-wizard";
-import { isProjectDir, readConfig } from "./utils/config";
+import {
+  promptAdvancedModuleArchitecture,
+  promptApplicationStyle,
+  promptModuleAuth,
+  promptModuleName,
+  promptModulePermission,
+  promptModuleProfile,
+  promptModuleSurface,
+} from "./prompts/generate-wizard";
+import { configureProject, showProjectConfig, validateProjectConfig } from "./commands/config";
+import { isProjectDir, parseModuleProfile, readConfig } from "./utils/config";
+import { architectureForModuleProfile, moduleProfileFor } from "./utils/module-profile";
 
 // fail is every command's catch: one place so the two non-obvious cases stay
 // consistent. @inquirer/prompts throws ExitPromptError on Ctrl-C, and its raw
@@ -44,7 +54,7 @@ program
   .name("go-scaffold")
   .description(
     "Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard\n\n" +
-      "Run `go-scaffold` with no arguments to pick what to do from a menu. Every command below also asks for anything you don't pass as a flag."
+      "Run `go-scaffold` with no arguments to pick what to do from a menu. Interactive commands ask for values you omit; read-only commands (`config show`, `config validate`) print or check state without prompts."
   )
   .version(cliVersion());
 
@@ -52,11 +62,14 @@ program
   .command("create [name]")
   .alias("c")
   .description("scaffold a new project (bare skeleton — add domains with `generate module`)")
-  .option("--defaults", "skip the wizard, use defaults (for CI/scripting)")
-  .option("--no-docker", "skip docker-compose.yml")
-  .option("--no-openapi-docs", "skip docs/openapi.yaml")
-  .option("--observability", "add Prometheus /metrics + OpenTelemetry tracing (off by default)")
-  .option("--api-prefix <prefix>", 'URL prefix every route is grouped under, e.g. v1 or api/v1 (default: none)')
+  .option("--defaults", "skip settings prompts; use Docker/OpenAPI on, no prefix, and Lean module defaults (still asks for name if omitted)")
+  .option("--no-docker", "do not create docker-compose.yml or include a local Postgres service")
+  .option("--no-openapi-docs", "do not create docs/openapi.yaml or per-module OpenAPI files")
+  .option("--observability", "include Prometheus /metrics and OpenTelemetry tracing; off unless this flag is passed")
+  .option("--api-prefix <prefix>", 'group every API route under a prefix such as "v1" or "api/v1"; omit for no prefix')
+  .option("--module-profile <profile>", "default profile for future modules: lean, crud, or cqrs; replaces the two profile questions")
+  .option("--module-surface <surface>", "legacy axis flag for future modules: minimal or crud; wizard asks when omitted")
+  .option("--application-style <style>", "legacy axis flag for future modules: service or cqrs; wizard asks when omitted")
   .action(async (name, opts) => {
     try {
       await createProject(name, {
@@ -65,6 +78,9 @@ program
         openapiDocs: opts.openapiDocs,
         observability: opts.observability,
         apiPrefix: opts.apiPrefix,
+        moduleProfile: opts.moduleProfile,
+        moduleSurface: opts.moduleSurface,
+        applicationStyle: opts.applicationStyle,
       });
     } catch (err) {
       fail(err);
@@ -76,9 +92,11 @@ program
 // `generate module` itself, so both offer the same choices — the flags exist
 // for scripting, not as the only way to reach a decision.
 //
-// --defaults is the escape hatch CI and scripts use: it takes the documented
-// defaults (minimal, no CQRS, no auth) and asks nothing.
+// --defaults is the escape hatch CI and scripts use: it takes the project's
+// recorded module defaults and asks nothing. Fresh projects retain the
+// historical minimal/service/no-auth result.
 type ModuleWizardOptions = {
+  profile?: ModuleProfile;
   full?: boolean;
   cqrs?: boolean;
   auth?: boolean;
@@ -99,8 +117,8 @@ function assertModuleWizardInputs(
   // --defaults answers every optional wizard question. The name is still
   // required because there is no safe module name to invent.
   if (!opts.defaults) {
-    if (opts.full === undefined) missing.push("--full or --no-full");
-    if (opts.cqrs === undefined) missing.push("--cqrs (or --defaults for no CQRS)");
+    if (opts.profile === undefined && opts.full === undefined) missing.push("--profile or --full/--no-full");
+    if (opts.profile === undefined && opts.cqrs === undefined) missing.push("--profile or --cqrs");
     if (config.features.auth && opts.auth === undefined) {
       missing.push("--auth (or --defaults for no auth)");
     }
@@ -128,15 +146,53 @@ async function runModuleWizard(
   const config = readConfig(process.cwd());
   assertModuleWizardInputs(name, opts, config);
 
+  if (opts.profile) {
+    const architecture = architectureForModuleProfile(opts.profile);
+    full = architecture.moduleSurface === "crud";
+    cqrs = architecture.applicationStyle === "cqrs";
+  }
+
   if (!opts.defaults) {
     // auth/permission questions are only asked when the project actually has
     // the features they depend on — offering them otherwise would present a
     // choice whose only outcome is generateModule's error.
     if (name === undefined) name = await promptModuleName();
-    if (full === undefined) full = await promptModuleShape();
-    if (cqrs === undefined) cqrs = await promptModuleCqrs();
+    if (opts.profile === undefined && full === undefined && cqrs === undefined) {
+      const profile = await promptModuleProfile(
+        moduleProfileFor(config.architecture.defaultModuleSurface, config.architecture.defaultApplicationStyle)
+      );
+      if (profile === "advanced") {
+        const architecture = await promptAdvancedModuleArchitecture(
+          config.architecture.defaultModuleSurface,
+          config.architecture.defaultApplicationStyle
+        );
+        full = architecture.moduleSurface === "crud";
+        cqrs = architecture.applicationStyle === "cqrs";
+      } else {
+        const architecture = architectureForModuleProfile(profile);
+        full = architecture.moduleSurface === "crud";
+        cqrs = architecture.applicationStyle === "cqrs";
+      }
+    } else {
+      // A legacy axis flag is still an explicit answer. Ask only for the
+      // other axis so `--full` never gets silently changed by the profile
+      // selector.
+      if (full === undefined) {
+        full = (await promptModuleSurface(config.architecture.defaultModuleSurface)) === "crud";
+      }
+      if (cqrs === undefined) {
+        cqrs = (await promptApplicationStyle(config.architecture.defaultApplicationStyle)) === "cqrs";
+      }
+    }
     if (auth === undefined && config.features.auth) auth = await promptModuleAuth();
     if (auth && permission === undefined && config.features.rbac) permission = await promptModulePermission();
+  } else {
+    // --defaults means "use this project's recorded defaults". Fresh projects
+    // still resolve to the historical minimal/service behaviour, while a
+    // project config wizard can intentionally choose another default for new
+    // modules without making CI scripts interactive.
+    full ??= config.architecture.defaultModuleSurface === "crud";
+    cqrs ??= config.architecture.defaultApplicationStyle === "cqrs";
   }
 
   await generateModule(name, { full: full ?? false, cqrs: cqrs ?? false, auth, permission });
@@ -151,7 +207,7 @@ async function runGenerateWizard(): Promise<void> {
   const target = await select({
     message: "What do you want to generate?",
     choices: [
-      { name: "Module (safe minimal domain; add methods explicitly)", value: "module" },
+      { name: "Module (choose Lean / CRUD / CQRS profile)", value: "module" },
       { name: "Method (add one endpoint to an existing module)", value: "method" },
       { name: "Migration (reserve a timestamped up/down SQL file pair)", value: "migration" },
     ],
@@ -168,7 +224,7 @@ async function runGenerateWizard(): Promise<void> {
 const generate = program
   .command("generate")
   .alias("g")
-  .description("add to an existing go-scaffold project")
+  .description("add a module, endpoint, or migration to an existing project; bare `generate` opens a target wizard")
   .action(async () => {
     try {
       await runGenerateWizard();
@@ -180,27 +236,36 @@ const generate = program
 generate
   .command("module [name]")
   .alias("m")
-  .description("scaffold a safe minimal domain module; opt into CRUD with --full and CQRS with --cqrs")
+  .description("scaffold a domain module; the wizard asks for a Lean, CRUD, CQRS, or Advanced profile")
+  .option(
+    "--profile <profile>",
+    "choose the architecture preset: lean (minimal + service), crud (CRUD + service), or cqrs (minimal + CQRS); auth may still prompt"
+  )
   .option(
     "--full",
-    "generate a CRUD skeleton (DTO fields/business rules remain TODO); minimal is the safe default"
+    "legacy alias for the CRUD profile: generate list/get/create/update/delete skeletons; fields and rules remain TODO"
   )
   .option(
     "--cqrs",
-    "split application commands and queries into separate handlers (opt-in; works with minimal or --full)"
+    "legacy axis flag: split state-changing commands from read-only queries; combine with --full for CRUD + CQRS"
   )
   // kept working for muscle memory, hidden from help: minimal is already the
   // default, so advertising a flag that asks for it is pure noise.
   .addOption(new Option("--no-full", "deprecated compatibility alias; minimal is already the default").hideHelp())
-  .option("--auth", "require a valid access token for this module's routes (needs `add auth`)")
-  .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac`; pass --auth too)")
-  .option("--defaults", "skip the prompts, use the defaults (minimal, no CQRS, no auth) — for CI/scripting")
+  .option("--auth", "require a valid access token for this module's routes (needs `add auth`; omitted means public)")
+  .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac` and --auth; e.g. users:manage)")
+  .option("--defaults", "skip every wizard question; use recorded project defaults and keep the module public (for CI/scripting)")
   .action(async (name, opts) => {
     try {
+      const profile = parseModuleProfile(opts.profile);
+      if (profile && (opts.full !== undefined || opts.cqrs !== undefined)) {
+        throw new Error("--profile cannot be combined with --full, --no-full, or --cqrs — choose one configuration style");
+      }
       // anything not passed as a flag gets asked for — declaring both --full
       // and --no-full leaves opts.full undefined when neither is given, which
       // is exactly the "not answered yet" signal runModuleWizard needs.
       await runModuleWizard(name, {
+        profile,
         full: opts.full,
         cqrs: opts.cqrs,
         auth: opts.auth,
@@ -212,13 +277,46 @@ generate
     }
   });
 
+const configCommand = program
+  .command("config")
+  .description("configure future module defaults interactively, or inspect/validate the project config")
+  .action(async () => {
+    try {
+      await configureProject();
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+configCommand
+  .command("show")
+  .description("print the resolved project config, including installed features and module choices; no wizard")
+  .action(() => {
+    try {
+      showProjectConfig();
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+configCommand
+  .command("validate")
+  .description("validate project config and detected scaffold state without changing files; no wizard")
+  .action(() => {
+    try {
+      validateProjectConfig();
+    } catch (err) {
+      fail(err);
+    }
+  });
+
 generate
   .command("method [module] [name]")
   .alias("me")
-  .description("add one endpoint to an existing module (patches handler/service in place)")
-  .option("--type <type>", "get|post|put|patch|delete")
-  .option("--get-mode <mode>", "for --type get only: all|one")
-  .option("--field <name>", "for --type get --get-mode one: the lookup field (e.g. email, status)")
+  .description("add one endpoint to an existing module; omitted module, name, and endpoint details are asked by the wizard")
+  .option("--type <type>", "HTTP verb: get, post, put, patch, or delete; omitted means the wizard asks")
+  .option("--get-mode <mode>", "GET only: all for a list endpoint or one for a lookup by another field")
+  .option("--field <name>", "GET one only: lookup column such as email/status/slug; id is already the built-in lookup")
   .action(async (moduleName, methodName, opts) => {
     try {
       const type = opts.type as MethodType | undefined;
@@ -242,7 +340,7 @@ generate
 generate
   .command("migration [name]")
   .alias("mig")
-  .description("reserve a timestamped migrations/<version>_<name>.{up,down}.sql pair (stubs only — you write the SQL)")
+  .description("reserve a timestamped up/down SQL pair; omitted name opens a migration-name wizard and the SQL remains your responsibility")
   .action(async (name) => {
     try {
       await generateMigration(name);
@@ -416,7 +514,7 @@ async function runAddObservability(opts: AddOpts): Promise<void> {
 
 const add = program
   .command("add")
-  .description("add opt-in infrastructure to an existing go-scaffold project")
+  .description("add opt-in infrastructure to an existing project; bare `add` opens a worker/auth/RBAC/observability wizard")
   .action(async () => {
     try {
       await runAddWizard();
@@ -429,8 +527,8 @@ add
   .command("worker")
   .description("add a background job queue, SMTP mail, and cmd/worker (opt-in — most projects don't need this on day one)")
   .option("--queue <backend>", "where jobs are stored: postgres (River, default) or redis (Asynq)")
-  .option("--defaults", "skip the prompt, use the Postgres-backed queue")
-  .option("-y, --yes", "skip the confirmation summary")
+  .option("--defaults", "skip queue and confirmation prompts; use Postgres/River")
+  .option("-y, --yes", "skip only the confirmation summary; an omitted queue still opens the queue wizard")
   .action(async (opts: { queue?: string; defaults?: boolean; yes?: boolean }) => {
     try {
       await runAddWorker(await resolveQueueBackend(opts), { yes: opts.yes || opts.defaults });
@@ -475,8 +573,8 @@ add
     "--browser-topology <topology>",
     "browser deployment topology for cookie/CORS policy: same-origin, same-site (different origin), or cross-site (requires HTTPS deployment)"
   )
-  .option("--defaults", "skip prompts, use the Postgres store and local same-site topology (for CI/scripting)")
-  .option("-y, --yes", "skip the confirmation summary")
+  .option("--defaults", "skip store, browser-topology, and confirmation prompts; use Postgres plus local same-site defaults")
+  .option("-y, --yes", "skip confirmation; omitted store/topology use local Postgres and same-site defaults")
   .action(
     async (opts: {
       store?: string;
@@ -510,8 +608,8 @@ add
 
 add
   .command("rbac")
-  .description("add role-based access control: roles/permissions admin API, cached Authz middleware, PATCH /users/:id/set-role (requires `add auth` first)")
-  .option("-y, --yes", "skip the confirmation summary")
+  .description("add role-based access control: roles/permissions admin API, cached Authz middleware, and PATCH /users/:id/set-role (requires `add auth`; direct command only needs confirmation)")
+  .option("-y, --yes", "skip the confirmation summary; the bare `add` wizard can select this target")
   .action(async (opts: { yes?: boolean }) => {
     try {
       await runAddRbac({ yes: opts.yes });
@@ -522,8 +620,8 @@ add
 
 add
   .command("observability")
-  .description("add Prometheus /metrics + OpenTelemetry tracing for Gin + GORM (also available at `create` time via --observability)")
-  .option("-y, --yes", "skip the confirmation summary")
+  .description("add Prometheus /metrics + OpenTelemetry tracing for Gin + GORM (also available at create time via --observability; direct command only needs confirmation)")
+  .option("-y, --yes", "skip the confirmation summary; the bare `add` wizard can select this target")
   .action(async (opts: { yes?: boolean }) => {
     try {
       await runAddObservability({ yes: opts.yes });
@@ -534,7 +632,7 @@ add
 
 const undo = program
   .command("undo")
-  .description("undo a `generate module` you didn't mean to run (typo'd name, domain you decided against)")
+  .description("undo a generated module and its wiring; bare `undo` opens a module selector and confirmation")
   .action(async () => {
     // bare `undo` — module is the only target, so prompt for the name
     try {
@@ -547,8 +645,8 @@ const undo = program
 undo
   .command("module [name]")
   .alias("m")
-  .description("delete a generated module and everything it wired up, migration files included")
-  .option("-y, --yes", "skip the confirmation prompt")
+  .description("delete a generated module, its owned migrations/docs, and the wiring it added; omitted name opens a selector")
+  .option("-y, --yes", "skip the destructive confirmation prompt (use only after reviewing the target)")
   .action(async (name, opts) => {
     try {
       await undoModule(name, { yes: opts.yes });
@@ -563,10 +661,14 @@ undo
 // ran on every database created from then on. Kept as an alias rather than
 // deleted outright: a muscle-memory `rm m` shouldn't be an unrecognised-command
 // error, and the semantics only got safer.
-const remove = program.command("remove", { hidden: true }).alias("rm");
+const remove = program
+  .command("remove", { hidden: true })
+  .alias("rm")
+  .description("deprecated hidden alias for undo; kept for backwards compatibility");
 remove
   .command("module [name]")
   .alias("m")
+  .description("deprecated hidden alias for `undo module`; kept for backwards compatibility")
   .option("-y, --yes", "skip the confirmation prompt")
   .action(async (name, opts) => {
     console.error(pc.yellow("`remove module` is now `undo module` — running that instead."));
@@ -599,6 +701,7 @@ async function runTopMenu(): Promise<void> {
         choices: [
           { name: "Create a new project", value: "create" },
           { name: "Generate (module/method/migration in an existing project)", value: "generate" },
+          { name: "Configure project generation defaults", value: "config" },
           { name: "Add (auth/worker/rbac/observability in an existing project)", value: "add" },
           { name: "Undo a generated module", value: "undo" },
         ],
@@ -608,6 +711,8 @@ async function runTopMenu(): Promise<void> {
     await createProject(undefined, {});
   } else if (target === "generate") {
     await runGenerateWizard();
+  } else if (target === "config") {
+    await configureProject();
   } else if (target === "add") {
     await runAddWizard();
   } else {

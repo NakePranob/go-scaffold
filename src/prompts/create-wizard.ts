@@ -1,6 +1,22 @@
 import { assertInteractive, confirm, input } from "./interactive";
 import { normalizeApiPrefix, validateApiPrefix, validateGoModulePath } from "../utils/naming";
-import { ProjectFeatures } from "../types";
+import { moduleProfileFor } from "../utils/module-profile";
+import {
+  ApplicationStyle,
+  ArchitectureConfig,
+  DEFAULT_ARCHITECTURE_CONFIG,
+  ModuleProfile,
+  ModuleSurface,
+  ProjectFeatures,
+} from "../types";
+import {
+  moduleArchitectureForProfile,
+  moduleProfileDescription,
+  promptApplicationStyle,
+  promptAdvancedModuleArchitecture,
+  promptModuleProfile,
+  promptModuleSurface,
+} from "./generate-wizard";
 
 export async function promptProjectName(): Promise<string> {
   const name = await input({
@@ -16,6 +32,7 @@ export async function promptProjectName(): Promise<string> {
 export interface CreateWizardResult {
   features: ProjectFeatures;
   apiPrefix: string;
+  architecture: ArchitectureConfig;
 }
 
 // A flag the caller already passed is an answer, so the wizard takes it instead
@@ -27,6 +44,9 @@ export interface CreateWizardPreset {
   openapiDocs?: boolean;
   observability?: boolean;
   apiPrefix?: string;
+  moduleProfile?: ModuleProfile;
+  moduleSurface?: ModuleSurface;
+  applicationStyle?: ApplicationStyle;
 }
 
 export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<CreateWizardResult> {
@@ -68,6 +88,34 @@ export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<
   if (prefixCheck !== true) throw new Error(prefixCheck);
   const apiPrefix = normalizeApiPrefix(apiPrefixRaw);
 
+  let moduleSurface: ModuleSurface;
+  let applicationStyle: ApplicationStyle;
+  if (preset.moduleProfile) {
+    ({ moduleSurface, applicationStyle } = moduleArchitectureForProfile(preset.moduleProfile));
+  } else if (preset.moduleSurface !== undefined || preset.applicationStyle !== undefined) {
+    // Keep the two old axis flags useful for partial scripted invocations. If
+    // only one was supplied, ask only for the other one instead of silently
+    // overriding the explicit flag with a profile choice.
+    moduleSurface =
+      preset.moduleSurface ??
+      (await promptModuleSurface(DEFAULT_ARCHITECTURE_CONFIG.defaultModuleSurface));
+    applicationStyle =
+      preset.applicationStyle ??
+      (await promptApplicationStyle(DEFAULT_ARCHITECTURE_CONFIG.defaultApplicationStyle));
+  } else {
+    const profile = await promptModuleProfile(
+      moduleProfileFor(
+        DEFAULT_ARCHITECTURE_CONFIG.defaultModuleSurface,
+        DEFAULT_ARCHITECTURE_CONFIG.defaultApplicationStyle
+      )
+    );
+    if (profile === "advanced") {
+      ({ moduleSurface, applicationStyle } = await promptAdvancedModuleArchitecture());
+    } else {
+      ({ moduleSurface, applicationStyle } = moduleArchitectureForProfile(profile));
+    }
+  }
+
   // Everything is listed whether it was asked or passed, so a flag never
   // reaches the project without the caller seeing the value it produced.
   const fromFlag = (passed: unknown) => (passed !== undefined ? " (from flag)" : "");
@@ -76,11 +124,24 @@ export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<
   console.log(`  OpenAPI docs: ${openapiDocs ? "yes" : "no"}${fromFlag(preset.openapiDocs)}`);
   console.log(`  Metrics + tracing: ${observability ? "yes" : "no"}${fromFlag(preset.observability)}`);
   console.log(`  Route prefix: ${apiPrefix ? `/${apiPrefix}` : "(none)"}${fromFlag(preset.apiPrefix)}`);
+  const profile = moduleProfileDescription(moduleSurface, applicationStyle);
+  const profileSource = preset.moduleProfile !== undefined ? " (from --module-profile)" : "";
+  console.log(`  Default module profile: ${profile}${profileSource}`);
+  console.log(`  Default module surface: ${moduleSurface}${fromFlag(preset.moduleSurface)}`);
+  console.log(`  Default application style: ${applicationStyle}${fromFlag(preset.applicationStyle)}`);
 
   const proceed = await confirm({ message: "\nCreate project with these settings?", default: true });
   if (!proceed) {
     throw new Error("project creation cancelled");
   }
 
-  return { features: { docker, openapiDocs, observability }, apiPrefix };
+  return {
+    features: { docker, openapiDocs, observability },
+    apiPrefix,
+    architecture: {
+      ...DEFAULT_ARCHITECTURE_CONFIG,
+      defaultModuleSurface: moduleSurface,
+      defaultApplicationStyle: applicationStyle,
+    },
+  };
 }

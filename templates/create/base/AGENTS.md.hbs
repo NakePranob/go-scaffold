@@ -45,11 +45,16 @@ an empty layer for every noun.
   dependencies, and registers the feature route; it does not contain
   business logic or feature-internal constructors.
 
+The project defaults new modules to `{{defaultApplicationStyle}}` application
+handling and a `{{defaultModuleSurface}}` surface. The `generate module` wizard
+starts there through the named Lean/CRUD/CQRS profiles; `Advanced` exposes the
+two axes for unusual combinations. `--profile` is the clear per-module
+override, while `--cqrs`/`--full` remain supported for existing scripts, and
+`go-scaffold config` changes defaults for future modules only.
+
 Use CQRS when a feature has genuinely different command and query models,
 consistency needs, or scaling/read-shape pressure: commands mutate state and
-queries read state. Generate that boundary explicitly with
-`go-scaffold generate module <name> --cqrs` (combine with `--full` when a CRUD
-skeleton is useful). For simple CRUD, one application service and one port are
+queries read state. For simple CRUD, one application service and one port are
 clearer. Do not introduce a broker, a second database, or a command/query
 folder only to satisfy a label.
 
@@ -80,9 +85,12 @@ go-scaffold generate module <name> --defaults
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete>
 ```
 
-Pass every value as a flag. In a non-interactive shell, omitted values prompt
-and the command exits without writing. `--defaults` means minimal, no CQRS, no
-auth; add `--full`, `--cqrs`, `--auth`, and `--permission <code>` deliberately.
+Pass every value as a flag in CI. In an interactive shell, omitted values use
+the project defaults as the initial wizard choices. In a non-interactive
+shell, omitted values prompt and the command exits without writing.
+`--defaults` uses the recorded project defaults and no auth; use `--profile`
+for a named per-module preset, or add `--full`, `--cqrs`, `--auth`, and
+`--permission <code>` deliberately.
 `--get-mode`
 is required for `--type get`, and `undo module` needs `-y`. For `add auth`,
 choose the backing store and browser topology with `--defaults` or explicit
@@ -239,13 +247,16 @@ work untouched.
 - `go-scaffold generate module <name> --defaults` — minimal model, errors,
   repository, service/handler seams, feature-local `composition.go`, root
   route registration, and versioned module migrations. Add endpoints with
-  `generate method`, use `--full` for a CRUD skeleton, or add `--cqrs` for
-  separate command/query application handlers.
+  `generate method`, use `--profile crud` for a CRUD skeleton, or
+  `--profile cqrs` for separate command/query application handlers.
 - `go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]` — patches an existing
   module's handler/service and, for a GET-one lookup, repository plus test
   seam. It never overwrites a same-named method.
 - `go-scaffold generate migration <name>` — reserves a timestamped SQL
   migration pair for a reviewed schema change.
+- `go-scaffold config` — interactively change future module defaults;
+  `config show` prints the resolved manifest and `config validate` checks it
+  without writing.
 - `go-scaffold undo module <name> -y` — removes an unshipped generated module,
   its migration, and its wiring. It refuses once those migrations are
   committed or applied; use a reviewed drop migration for a shipped domain.

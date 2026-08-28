@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
-import { readConfig } from "../utils/config";
+import { readConfig, writeConfig } from "../utils/config";
 import { migrationSlug, migrationSlugAliases, toDbName } from "../utils/naming";
 import { resolveProjectModuleNaming } from "../utils/module-location";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
@@ -78,6 +78,8 @@ export async function generateModule(
     auth: opts.auth,
     permission: opts.permission,
     cqrs: opts.cqrs,
+    moduleSurface: opts.full ? "crud" : "minimal",
+    applicationStyle: opts.cqrs ? "cqrs" : "service",
   };
 
   const moduleFiles = opts.cqrs
@@ -165,12 +167,23 @@ export async function generateModule(
 
   gofmtTree(projectDir);
   assertNoDrift(projectDir, checkBefore, config);
+  writeConfig(projectDir, {
+    ...config,
+    modules: {
+      ...config.modules,
+      [modulePath]: {
+        surface: opts.full ? "crud" : "minimal",
+        applicationStyle: opts.cqrs ? "cqrs" : "service",
+      },
+    },
+  });
 
   const routePath = config.apiPrefix ? `/${config.apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   console.log(pc.green(`\ngenerated internal/app/${modulePath}/`));
   if (opts.cqrs) {
     console.log("application boundary: CQRS command/query handlers in commands.go and queries.go");
   }
+  console.log(`recorded module defaults: ${opts.full ? "crud" : "minimal"} + ${opts.cqrs ? "cqrs" : "service"}`);
   if (opts.full) {
     console.log(`registered route ${routePath} in cmd/api/wiring.go`);
   } else {

@@ -650,7 +650,7 @@ step("a command that needs a prompt fails with advice, not a question nobody can
   }
 });
 
-step("generate module names the missing non-TTY choices", () => {
+step("generate module names the missing non-TTY profile choices", () => {
   goScaffold(["create", "module-flag-guide", "--defaults", "--no-docker"], scratch);
   const app = path.join(scratch, "module-flag-guide");
   goScaffold(["add", "auth", "--defaults"], app);
@@ -658,7 +658,7 @@ step("generate module names the missing non-TTY choices", () => {
 
   expectThrows(
     () => goScaffold(["generate", "module", "invoice", "--full"], app),
-    "missing: --cqrs"
+    "missing: --profile or --cqrs"
   );
   expectThrows(
     () => goScaffold(["generate", "module", "invoice", "--full", "--cqrs", "--auth"], app),

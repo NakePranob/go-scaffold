@@ -55,17 +55,20 @@ internal/app/<domain>/
 
 ### Commands and queries (opt-in CQRS)
 
-Use `go-scaffold generate module <name> --cqrs` when the feature has distinct
-write invariants, read projections, consistency requirements, or scaling
-needs. `commands.go` owns state-changing application ports and handlers;
-`queries.go` owns read-only ports and handlers. `composition.go` constructs
-both, and the HTTP adapter selects the matching port for each route. They may
-share the same repository/database in this modular monolith — separate storage
-or event sourcing is not implied.
+Use the project default recorded in `go-scaffold.config.json`, or override it
+per module with `--cqrs`, when the feature has distinct write invariants, read
+projections, consistency requirements, or scaling needs. `commands.go` owns
+state-changing application ports and handlers; `queries.go` owns read-only
+ports and handlers. `composition.go` constructs both, and the HTTP adapter
+selects the matching port for each route. They may share the same
+repository/database in this modular monolith — separate storage or event
+sourcing is not implied.
 
 The generated `Service` remains a compatibility facade for tests and existing
 callers. New feature code should depend on the narrower command/query port it
-actually needs. For simple CRUD, omit `--cqrs` and keep the single service path.
+actually needs. `generate module --defaults` uses the project default; choose
+the single service path for simple CRUD and CQRS only when the feature earns
+the extra boundary.
 
 ### Service
 - Contains the business logic, knows nothing about HTTP

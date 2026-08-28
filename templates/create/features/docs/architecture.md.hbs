@@ -67,8 +67,12 @@ model pointed at the same table under a different URL.
 
 ## 4. Application boundaries
 
-**Decision:** Keep the simple service path as the default and make CQRS an
-explicit per-feature choice with `generate module <name> --cqrs`.
+**Decision:** New modules use the project defaults recorded in
+`go-scaffold.config.json`: surface `{{defaultModuleSurface}}` and application
+style `{{defaultApplicationStyle}}`. The `generate module` wizard presents
+those values through Lean/CRUD/CQRS profiles, with Advanced for an explicit
+custom combination. `--profile` or the supported axis flags can override the
+defaults for one module.
 **Rationale:** A feature with meaningful write invariants or a different read
 shape benefits from separate `CommandHandler` and `QueryHandler` ports while
 remaining inside this modular monolith. A small CRUD feature does not benefit

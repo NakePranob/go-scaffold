@@ -60,28 +60,40 @@ changes without the project's required owner approval.
    non-protected branch. Preserve unrelated local changes.
 3. Search for an existing module, endpoint, route, and migration before
    generating anything. Do not generate a duplicate name.
-4. Decide whether minimal or full module generation is appropriate. Minimal is
-   safer when the product only needs a specific endpoint; --full is for an
-   intentional CRUD starter.
+4. Decide which module profile matches the domain. The interactive wizard
+   offers Lean (`minimal + service`), CRUD (`crud + service`), CQRS
+   (`minimal + cqrs`), and Advanced for an explicit custom combination. Lean
+   is the safe starting point when the product only needs specific endpoints;
+   CRUD is for an intentional CRUD starter, and CQRS is for genuinely
+   different command/query needs. A profile is a generator preset, not a
+   claim about the domain's DDD maturity.
 
 ## Commands
 
 Run from the project root and pass every value as a flag:
 
 ~~~bash
-go-scaffold generate module <name> --defaults [--full] [--cqrs] [--auth] [--permission <code>]
+go-scaffold generate module <name> [--profile <lean|crud|cqrs>] [--defaults] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 go-scaffold generate migration <name>
+go-scaffold config
 go-scaffold add auth --store <postgres|redis> --browser-topology <same-origin|same-site|cross-site> [--defaults] [--yes]
 go-scaffold add worker --queue <postgres|redis> [--defaults]
 go-scaffold undo module <name> -y
 ~~~
 
 Omitted values prompt; in a non-interactive shell that exits 1 without
-writing. --defaults means minimal, no CQRS, and no auth. Add --full, --cqrs,
---auth, and --permission <code> only when they are wanted. --get-mode is required with
---type get; --field is required for GET-one and cannot be id. undo requires
--y. `add auth` accepts `--store postgres|redis` and
+writing. For `generate module`, `--defaults` uses the recorded project
+defaults and keeps the module public; fresh and legacy projects resolve to
+Lean (`minimal + service`). `--profile` is the non-interactive equivalent of
+choosing a named architecture preset. The older `--full` and `--cqrs` flags
+remain supported for existing scripts, but cannot be combined with
+`--profile`; `--full` means CRUD surface and `--cqrs` means separate command /
+query handlers. Advanced is a wizard-only choice that asks the two axes
+separately. Add `--auth` and `--permission <code>` only when they are wanted;
+permission also requires `--auth`. `--get-mode` is required with `--type get`;
+`--field` is required for GET-one and cannot be id. `undo` requires
+`-y`. `add auth` accepts `--store postgres|redis` and
 `--browser-topology same-origin|same-site|cross-site`; `--defaults` selects
 Postgres and same-site. Postgres keeps refresh, recovery, and MFA state in
 Postgres and uses an in-process rate limiter. Redis keeps refresh tokens and
@@ -94,9 +106,25 @@ The CLI normalizes the Go package, REST path, SQL table, and error-code prefix.
 Reject names that would not compile, such as a leading digit, Go keyword, or
 predeclared type.
 
+## Wizard and profile contract
+
+`go-scaffold generate module <name>` asks for the module profile even when the
+name is already supplied. If the name is omitted, it asks for the name first.
+Choosing Advanced then asks for module surface and application style
+separately. Auth and permission prompts appear only when the project has the
+corresponding features installed. There is no final confirmation for module
+generation; review the profile and flags before running it.
+
+`go-scaffold config` changes defaults for future modules only. Existing modules
+are not rewritten. `config show` and `config validate` are intentionally
+read-only and do not open a wizard. The bare `generate` command first asks
+whether to generate a module, method, or migration; the bare `add` command
+first asks which infrastructure feature to add.
+
 ## Generated module contract
 
-generate module <name> --defaults creates a minimal module with:
+`generate module <name> --defaults` creates a module using the resolved project
+defaults. On a fresh project that is a Lean module with:
 
 ~~~text
 internal/app/<pkg>/
@@ -113,12 +141,13 @@ internal/app/<pkg>/
 migrations/<version>_create_<plural>.{up,down}.sql
 ~~~
 
-The minimal module has no endpoint yet, but includes the complete data-access
-surface and test seams needed by generate method. --full adds a CRUD starter
-and routes list/get/create/update/delete. --cqrs adds separate commands.go and
-queries.go application handlers; combine it with --full for a CQRS CRUD
-starter, or use it alone before adding methods one at a time. With OpenAPI
-enabled it also creates the per-domain documents and updates docs/openapi.yaml.
+The Lean/minimal module has no endpoint yet, but includes the complete
+data-access surface and test seams needed by generate method. The CRUD profile
+adds a CRUD starter and routes list/get/create/update/delete. The CQRS profile
+adds separate commands.go and queries.go application handlers; Advanced can
+combine CRUD + CQRS, or use CQRS alone before adding methods one at a time.
+With OpenAPI enabled it also creates the per-domain documents and updates
+docs/openapi.yaml.
 
 Feature-local composition.go constructs repository → application handlers →
 handler. A module generated with `--cqrs` constructs separate command/query
@@ -150,7 +179,8 @@ production-ready.
 ## Architecture guidance for generated code
 
 This project is modular plus Hexagonal/DDD-friendly, with CQRS available via
-`go-scaffold generate module <name> --cqrs`:
+the `cqrs` profile or the backwards-compatible
+`go-scaffold generate module <name> --cqrs` flag:
 
 - handlers are inbound adapters and know HTTP/Gin only;
 - services or commands.go/queries.go (and, for complex flows,
@@ -162,11 +192,11 @@ This project is modular plus Hexagonal/DDD-friendly, with CQRS available via
   the process.
 
 DDD does not require every CRUD row to become a large aggregate. CQRS optional:
-use it when command and query models, consistency, or read scaling differ;
-`--cqrs` creates separate command/query handlers while keeping one modular
-monolith and database by default. For simple CRUD, a single service and
-repository port are clearer. Do not add a broker, a second database, or empty
-command/query layers just for naming.
+use the CQRS profile when command and query models, consistency, or
+read scaling differ; it creates separate command/query handlers while keeping
+one modular monolith and database by default. For simple CRUD, a single
+service and repository port are clearer. Do not add a broker, a second
+database, or empty command/query layers just for naming.
 
 Never import another feature's private model, repository, or handler. For
 cross-feature behavior, define a narrow public application port, use a

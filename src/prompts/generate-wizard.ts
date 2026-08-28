@@ -1,6 +1,13 @@
 import { confirm, input, select } from "./interactive";
-import { GetMethodMode, MethodType } from "../types";
+import { ApplicationStyle, GetMethodMode, MethodType, ModuleProfile, ModuleSurface } from "../types";
 import { assertNotGoKeyword, toCamelCase, validateModuleName } from "../utils/naming";
+import {
+  architectureForModuleProfile,
+  describeModuleProfile,
+  moduleProfileFor,
+  ModuleArchitectureChoice,
+  ModuleProfileChoice,
+} from "../utils/module-profile";
 
 // wraps an assert-style validator into inquirer's true|string contract so a
 // reserved word re-prompts inline instead of aborting the whole command.
@@ -72,35 +79,113 @@ export async function promptLookupField(): Promise<string> {
   return field.trim();
 }
 
-// The three `generate module` decisions that exist as flags (--full, --auth,
-// --permission). They live here next to the other generate prompts so the
-// subcommand and the bare-menu path can ask them the same way — a choice only
-// reachable by knowing the flag name isn't a choice for anyone driving this
-// from the menu.
-export async function promptModuleShape(): Promise<boolean> {
-  return select<boolean>({
+// The `generate module` choices live here next to the other generate prompts so
+// the subcommand, bare menu, and project config wizard ask them consistently —
+// a choice only reachable by knowing a flag name is not a choice for someone
+// driving the CLI interactively.
+export async function promptModuleSurface(defaultValue: ModuleSurface = "minimal"): Promise<ModuleSurface> {
+  return select<ModuleSurface>({
     message: "What should the module contain?",
-    default: false,
+    default: defaultValue,
     choices: [
       {
         name: "Minimal — model + wiring only",
-        value: false,
+        value: "minimal",
         description: "the safe default; add endpoints one at a time with `generate method`",
       },
       {
         name: "CRUD skeleton — list/get/create/update/delete",
-        value: true,
+        value: "crud",
         description: "all five endpoints wired up; DTO fields and business rules are left as TODO",
       },
     ],
   });
 }
 
-export async function promptModuleCqrs(): Promise<boolean> {
-  return confirm({
-    message: "Split application commands and queries for this module?",
-    default: false,
+export async function promptApplicationStyle(defaultValue: ApplicationStyle = "service"): Promise<ApplicationStyle> {
+  return select<ApplicationStyle>({
+    message: "How should the application boundary be organised?",
+    default: defaultValue,
+    choices: [
+      {
+        name: "Single service",
+        value: "service",
+        description: "the simpler path; use this unless reads and writes have different business needs",
+      },
+      {
+        name: "CQRS command/query handlers",
+        value: "cqrs",
+        description: "separate state-changing commands from read-only queries; storage remains shared by default",
+      },
+    ],
   });
+}
+
+/**
+ * Ask for the useful decision first. The underlying surface/application
+ * choices remain available through Advanced and through the CLI flags, but a
+ * new user should not have to understand two architecture axes before making
+ * a sensible choice.
+ */
+export async function promptModuleProfile(defaultValue: ModuleProfileChoice = "lean"): Promise<ModuleProfileChoice> {
+  return select<ModuleProfileChoice>({
+    message: "Choose a module profile:",
+    default: defaultValue,
+    choices: [
+      {
+        name: "Lean — minimal + single service",
+        value: "lean",
+        description: "model, repository, service and handler wiring; add only the endpoints this domain needs",
+      },
+      {
+        name: "CRUD — CRUD surface + single service",
+        value: "crud",
+        description: "list/get/create/update/delete skeletons; fields and business rules remain TODOs",
+      },
+      {
+        name: "CQRS — minimal surface + command/query handlers",
+        value: "cqrs",
+        description: "separate state-changing commands from read-only queries; no broker or second database is added",
+      },
+      {
+        name: "Advanced — choose surface and application boundary",
+        value: "advanced",
+        description: "for the uncommon CRUD + CQRS combination or a deliberately customised module",
+      },
+    ],
+  });
+}
+
+export async function promptAdvancedModuleArchitecture(
+  defaultSurface: ModuleSurface = "minimal",
+  defaultApplicationStyle: ApplicationStyle = "service"
+): Promise<ModuleArchitectureChoice> {
+  return {
+    moduleSurface: await promptModuleSurface(defaultSurface),
+    applicationStyle: await promptApplicationStyle(defaultApplicationStyle),
+  };
+}
+
+export function moduleArchitectureForProfile(profile: ModuleProfile): ModuleArchitectureChoice {
+  return architectureForModuleProfile(profile);
+}
+
+export function moduleProfileDescription(
+  moduleSurface: ModuleSurface,
+  applicationStyle: ApplicationStyle
+): string {
+  return describeModuleProfile(moduleProfileFor(moduleSurface, applicationStyle));
+}
+
+// Backward-compatible boolean helpers for the existing generate-module flow.
+// The richer enum prompts are also used by the project config wizard so one
+// set of choices describes both the default and the per-module override.
+export async function promptModuleShape(defaultValue = false): Promise<boolean> {
+  return (await promptModuleSurface(defaultValue ? "crud" : "minimal")) === "crud";
+}
+
+export async function promptModuleCqrs(defaultValue = false): Promise<boolean> {
+  return (await promptApplicationStyle(defaultValue ? "cqrs" : "service")) === "cqrs";
 }
 
 export async function promptModuleAuth(): Promise<boolean> {

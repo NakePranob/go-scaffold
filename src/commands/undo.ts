@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "child_process";
 import fs from "fs-extra";
 import pc from "picocolors";
 import { confirm } from "../prompts/interactive";
-import { readConfig } from "../utils/config";
+import { readConfig, writeConfig } from "../utils/config";
 import { migrationSlugAliases } from "../utils/naming";
 import { ModuleNaming } from "../types";
 import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
@@ -144,6 +144,12 @@ export async function undoModule(
     didWhat: `undid module "${naming.pkg}"`,
     recover: `internal/app/${modulePath}/ is gone; re-run \`go-scaffold generate module ${naming.pkg}\` to put it\nback, then reconcile cmd/api/wiring.go by hand.`,
   });
+
+  if (config.modules[modulePath]) {
+    const modules = { ...config.modules };
+    delete modules[modulePath];
+    writeConfig(projectDir, { ...config, modules });
+  }
 
   console.log(pc.green(`\nundid module "${naming.pkg}"`));
   console.log(`  deleted internal/app/${modulePath}/`);

@@ -53,6 +53,9 @@ test("generated AI guidance documents the current architecture and safety contra
 
     assert.match(skill, /feature-local composition/);
     assert.match(skill, /501 Not Implemented; no repository read\/write/);
+    assert.match(skill, /Lean \(`minimal \+ service`\), CRUD \(`crud \+ service`\), CQRS/);
+    assert.match(skill, /`go-scaffold generate module <name>` asks for the module profile/);
+    assert.match(skill, /config show` and `config validate` are intentionally\s+read-only/);
     assert.match(skill, /APP_ENV/);
     assert.match(skill, /CQRS optional/);
     assert.match(skill, /go test -race \.\/\.\.\./);

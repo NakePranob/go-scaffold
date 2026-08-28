@@ -28,6 +28,38 @@ export type AuthStore = "postgres" | "redis";
  */
 export type BrowserTopology = "same-origin" | "same-site" | "cross-site";
 
+/**
+ * The architecture choices the generator can currently emit. Keep this
+ * deliberately small: a config value is a promise that the templates and
+ * their tests support the combination.
+ */
+export type ArchitectureStyle = "modular-monolith";
+export type ModuleSurface = "minimal" | "crud";
+export type ApplicationStyle = "service" | "cqrs";
+/**
+ * Named module presets exposed by the wizard. "advanced" is intentionally
+ * not stored in config: it means the user chose the two underlying axes
+ * independently, so the resolved surface/style remain the source of truth.
+ */
+export type ModuleProfile = "lean" | "crud" | "cqrs";
+
+export interface ArchitectureConfig {
+  style: ArchitectureStyle;
+  defaultModuleSurface: ModuleSurface;
+  defaultApplicationStyle: ApplicationStyle;
+}
+
+export interface ModuleConfig {
+  surface: ModuleSurface;
+  applicationStyle: ApplicationStyle;
+}
+
+export const DEFAULT_ARCHITECTURE_CONFIG: ArchitectureConfig = {
+  style: "modular-monolith",
+  defaultModuleSurface: "minimal",
+  defaultApplicationStyle: "service",
+};
+
 export interface ProjectFeatures {
   docker: boolean;
   openapiDocs: boolean;
@@ -46,11 +78,16 @@ export interface ProjectFeatures {
 }
 
 export interface ProjectConfig {
+  /** Version of the go-scaffold project config schema, not the CLI version. */
+  schemaVersion: number;
   projectName: string;
   goModule: string;
   /** URL prefix every route is grouped under, e.g. "v1" -> /v1/orders. "" means no prefix. */
   apiPrefix: string;
   features: ProjectFeatures;
+  architecture: ArchitectureConfig;
+  /** Resolved choices recorded for each generated module, keyed by Go package name. */
+  modules: Record<string, ModuleConfig>;
   /**
    * CLI version that scaffolded this project. Optional: projects created
    * before this was stamped (and the go.mod-based fallback in detectConfig)
