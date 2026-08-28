@@ -1,0 +1,17 @@
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// MFAChallenge is a one-use pre-session challenge. Only its hash is stored.
+type MFAChallenge struct {
+	ChallengeHash string    `gorm:"type:text;primaryKey"`
+	UserID        uuid.UUID `gorm:"type:uuid;not null;index:idx_mfa_challenges_user"`
+	ExpiresAt     time.Time `gorm:"not null;index:idx_mfa_challenges_expires_at"`
+	CreatedAt     time.Time
+}
+
+func (MFAChallenge) TableName() string { return "user_svc.mfa_challenges" }

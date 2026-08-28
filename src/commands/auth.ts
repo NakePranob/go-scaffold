@@ -31,6 +31,11 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
   { urlPath: "/users/me/resend-verification", file: "./auth/users-me-resend-verification.yaml" },
   { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
+  { urlPath: "/users/me/mfa", file: "./auth/users-me-mfa.yaml" },
+  { urlPath: "/users/me/mfa/setup", file: "./auth/users-me-mfa-setup.yaml" },
+  { urlPath: "/users/me/mfa/confirm", file: "./auth/users-me-mfa-confirm.yaml" },
+  { urlPath: "/users/me/mfa/disable", file: "./auth/users-me-mfa-disable.yaml" },
+  { urlPath: "/auth/mfa/verify", file: "./auth/mfa-verify.yaml" },
 ];
 
 // addAuth scaffolds email/password authentication: a users+identities model
@@ -85,6 +90,16 @@ export async function addAuth(
     [
       { template: "add/auth/migrations/create_users.up.sql.hbs", output: path.join("migrations", `${usersVersion}_create_users.up.sql`) },
       { template: "add/auth/migrations/create_users.down.sql.hbs", output: path.join("migrations", `${usersVersion}_create_users.down.sql`) },
+    ],
+    {}
+  );
+
+  const mfaVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/create_mfa.up.sql.hbs", output: path.join("migrations", `${mfaVersion}_create_mfa.up.sql`) },
+      { template: "add/auth/migrations/create_mfa.down.sql.hbs", output: path.join("migrations", `${mfaVersion}_create_mfa.down.sql`) },
     ],
     {}
   );
@@ -194,7 +209,8 @@ export async function addAuth(
   console.log(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
-      "POST /users/me/{resend-verification,logout-all} in cmd/api/wiring.go" +
+      "POST /users/me/{resend-verification,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
+      "GET /users/me/mfa, and POST /auth/mfa/verify in cmd/api/wiring.go" +
       docsMessage
   );
   console.log(
@@ -269,7 +285,16 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "# exact browser callback URI registered with the provider (frontend-owned route)\n" +
     "GOOGLE_OAUTH_REDIRECT_URI=\n" +
     "\n# cookie/CORS deployment topology; the frontend owns its provider callback route\n" +
-    `AUTH_BROWSER_TOPOLOGY=${browserTopology}\n`;
+    `AUTH_BROWSER_TOPOLOGY=${browserTopology}\n` +
+    "\n# MFA is globally off by default. When enabled, set a base64-encoded 32-byte\n" +
+    "# AES-256 key (for example: openssl rand -base64 32). Users still opt in\n" +
+    "# individually through /users/me/mfa/setup and /users/me/mfa/confirm.\n" +
+    "AUTH_MFA_ENABLED=false\n" +
+    "MFA_ISSUER=go-scaffold\n" +
+    "MFA_ENCRYPTION_KEY=\n" +
+    "MFA_CHALLENGE_TTL_MIN=5\n" +
+    "MFA_TOTP_WINDOW=1\n" +
+    "MFA_RECOVERY_CODE_COUNT=10\n";
   fs.writeFileSync(envExamplePath, content);
 }
 

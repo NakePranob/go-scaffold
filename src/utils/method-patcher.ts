@@ -4,6 +4,7 @@ import { toCamelCase, toDbName, toPascalCase } from "./naming";
 import { GetMethodMode, MethodNaming, MethodType, ModuleNaming } from "../types";
 
 const DTO_MARKER = "// go-scaffold:dto";
+const AUTH_DTO_MARKER = "// go-scaffold:user-dto";
 const REPO_INTERFACE_MARKER = "// go-scaffold:repository-interface";
 const REPO_IMPL_MARKER = "// go-scaffold:repository-methods";
 const SERVICE_MARKER = "// go-scaffold:service-methods";
@@ -16,9 +17,18 @@ const COMMAND_INTERFACE_MARKER = "// go-scaffold:command-interface";
 const QUERY_INTERFACE_MARKER = "// go-scaffold:query-interface";
 const HANDLER_ROUTES_MARKER = "// go-scaffold:handler-routes";
 const HANDLER_FUNCS_MARKER = "// go-scaffold:handler-funcs";
+// Auth deliberately keeps its route/service composition files focused rather
+// than using the generic CRUD marker names. `generate method user ...` is
+// still a supported extension point, so accept both marker vocabularies.
+const AUTH_REPO_INTERFACE_MARKER = "// go-scaffold:user-repository-interface";
+const AUTH_REPO_IMPL_MARKER = "// go-scaffold:user-repository-methods";
+const AUTH_SERVICE_MARKER = "// go-scaffold:user-service-methods";
+const AUTH_HANDLER_ROUTES_MARKER = "// go-scaffold:user-routes";
+const AUTH_HANDLER_FUNCS_MARKER = "// go-scaffold:user-handler-funcs";
 const REPOSITORY_STUB_FIELDS_MARKER = "// go-scaffold:repository-stub-fields";
 const REPOSITORY_STUB_METHODS_MARKER = "// go-scaffold:repository-stub-methods";
 const LEGACY_FAKE_REPO_METHODS_MARKER = "// go-scaffold:fake-repo-methods";
+const AUTH_FAKE_REPO_METHODS_MARKER = "// go-scaffold:user-fake-repo-methods";
 const UNUSED_G_LINE = "\t_ = g\n";
 
 // writeHandler ensures whatever packages the new handler code references are
@@ -116,6 +126,24 @@ function routeCall(type: MethodType): string {
   return { get: "GET", post: "POST", put: "PUT", patch: "PATCH", delete: "DELETE" }[type];
 }
 
+function insertBeforeMethodMarker(
+  content: string,
+  standard: string,
+  auth: string,
+  block: string
+): string {
+  const marker = hasMarker(content, standard) ? standard : hasMarker(content, auth) ? auth : standard;
+  return insertBeforeMarker(content, marker, block);
+}
+
+function hasMethodMarker(content: string, standard: string, auth: string): boolean {
+  return hasMarker(content, standard) || hasMarker(content, auth);
+}
+
+function handlerRouteReceiver(content: string): string {
+  return hasMarker(content, AUTH_HANDLER_ROUTES_MARKER) ? "usersGroup" : "g";
+}
+
 // assertMethodAbsent is the same check patchMethod runs, exported so callers
 // can reach it before their own pre-flight checks. A name that already exists
 // is the cause the caller needs to hear about, so it has to be reported ahead
@@ -152,7 +180,20 @@ export function patchMethod(
   } else {
     patchDelete(paths, method, goModule, naming.pkg);
   }
+  ensureNonCqrsServiceImports(paths, goModule);
   patchHandlerServiceInterface(paths, naming, method, opts, goModule);
+}
+
+// Auth keeps service.go intentionally small, so it does not carry the
+// apperror import that ordinary generated CRUD services use. A later
+// `generate method user ...` still inserts the same error-returning method
+// shape; make that extension compile without reintroducing the import into
+// every auth-only project.
+function ensureNonCqrsServiceImports(paths: MethodPatchPaths, goModule: string): void {
+  if (isCqrs(paths)) return;
+  let service = fs.readFileSync(paths.servicePath, "utf8");
+  service = ensureImport(service, `${goModule}/internal/shared/apperror`);
+  fs.writeFileSync(paths.servicePath, service);
 }
 
 function patchHandlerServiceInterface(
@@ -212,10 +253,17 @@ function patchHandlerServiceInterface(
 
 function patchGetAll(paths: MethodPatchPaths, naming: ModuleNaming, method: MethodNaming, goModule: string): void {
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
-  handler = insertBeforeMarker(handler, HANDLER_ROUTES_MARKER, `g.GET("/${method.pathSegment}", h.${method.handlerName})`);
-  handler = insertBeforeMarker(
+  const routeReceiver = handlerRouteReceiver(handler);
+  handler = insertBeforeMethodMarker(
+    handler,
+    HANDLER_ROUTES_MARKER,
+    AUTH_HANDLER_ROUTES_MARKER,
+    `${routeReceiver}.GET("/${method.pathSegment}", h.${method.handlerName})`
+  );
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_FUNCS_MARKER,
+    AUTH_HANDLER_FUNCS_MARKER,
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\tp := pagination.Parse(c)`,
@@ -257,9 +305,10 @@ function patchGetAll(paths: MethodPatchPaths, naming: ModuleNaming, method: Meth
     insertCqrsFacade(paths.servicePath, serviceFacade, goModule, naming.pkg);
   } else {
     let service = fs.readFileSync(paths.servicePath, "utf8");
-    service = insertBeforeMarker(
+    service = insertBeforeMethodMarker(
       service,
       SERVICE_MARKER,
+      AUTH_SERVICE_MARKER,
       queryMethod.replace("(h *QueryHandler)", "(s *Service)").replace("h.repo", "s.repo")
     );
     fs.writeFileSync(paths.servicePath, service);
@@ -279,9 +328,10 @@ function patchGetOne(
 
   let repo = fs.readFileSync(paths.repositoryPath, "utf8");
   assertNotDuplicate(repo, `FindBy${fieldPascal}(`, `repository method "FindBy${fieldPascal}"`);
-  repo = insertBeforeMarker(
+  repo = insertBeforeMethodMarker(
     repo,
     REPO_IMPL_MARKER,
+    AUTH_REPO_IMPL_MARKER,
     [
       `func (r *Repository) FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error) {`,
       `\tvar m model.${naming.pascalName}`,
@@ -311,9 +361,10 @@ function patchGetOne(
     );
     fs.writeFileSync(paths.queryPath!, query);
   } else {
-    service = insertBeforeMarker(
+    service = insertBeforeMethodMarker(
       service,
       REPO_INTERFACE_MARKER,
+      AUTH_REPO_INTERFACE_MARKER,
       `FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*model.${naming.pascalName}, error)`
     );
   }
@@ -342,6 +393,18 @@ function patchGetOne(
         `\t\tpanic("unexpected repository.FindBy${fieldPascal} call")`,
         `\t}`,
         `\treturn s.findBy${fieldPascal}Fn(ctx, value)`,
+        `}`,
+        ``,
+      ].join("\n")
+    );
+  } else if (hasMarker(serviceTest, AUTH_FAKE_REPO_METHODS_MARKER)) {
+    serviceTest = insertBeforeMarker(
+      serviceTest,
+      AUTH_FAKE_REPO_METHODS_MARKER,
+      [
+        `//nolint:unused`,
+        `func (f *fakeRepo) FindBy${fieldPascal}(context.Context, string) (*model.${naming.pascalName}, error) {`,
+        `	return nil, gorm.ErrRecordNotFound`,
         `}`,
         ``,
       ].join("\n")
@@ -388,23 +451,27 @@ function patchGetOne(
     insertCqrsImplementation(paths, "get", queryMethod, goModule);
     insertCqrsFacade(paths.servicePath, serviceFacade, goModule, naming.pkg);
   } else {
-    service = insertBeforeMarker(
+    service = insertBeforeMethodMarker(
       service,
       SERVICE_MARKER,
+      AUTH_SERVICE_MARKER,
       queryMethod.replace("(h *QueryHandler)", "(s *Service)").replace("h.repo", "s.repo")
     );
     fs.writeFileSync(paths.servicePath, service);
   }
 
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
-  handler = insertBeforeMarker(
+  const routeReceiver = handlerRouteReceiver(handler);
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_ROUTES_MARKER,
-    `g.GET("/${fieldColumn}/:${fieldParam}", h.${method.handlerName})`
+    AUTH_HANDLER_ROUTES_MARKER,
+    `${routeReceiver}.GET("/${fieldColumn}/:${fieldParam}", h.${method.handlerName})`
   );
-  handler = insertBeforeMarker(
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_FUNCS_MARKER,
+    AUTH_HANDLER_FUNCS_MARKER,
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\t${fieldParam} := c.Param("${fieldParam}")`,
@@ -426,14 +493,26 @@ function patchPost(paths: MethodPatchPaths, naming: ModuleNaming, method: Method
 
   let dto = fs.readFileSync(paths.dtoPath, "utf8");
   assertNotDuplicate(dto, `type ${inputName} struct`, `DTO "${inputName}"`);
-  dto = insertBeforeMarker(dto, DTO_MARKER, [`type ${inputName} struct {`, `\t// TODO: add request fields`, `}`, ``].join("\n"));
+  dto = insertBeforeMethodMarker(
+    dto,
+    DTO_MARKER,
+    AUTH_DTO_MARKER,
+    [`type ${inputName} struct {`, `\t// TODO: add request fields`, `}`, ``].join("\n")
+  );
   fs.writeFileSync(paths.dtoPath, dto);
 
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
-  handler = insertBeforeMarker(handler, HANDLER_ROUTES_MARKER, `g.POST("/${method.pathSegment}", h.${method.handlerName})`);
-  handler = insertBeforeMarker(
+  const routeReceiver = handlerRouteReceiver(handler);
+  handler = insertBeforeMethodMarker(
+    handler,
+    HANDLER_ROUTES_MARKER,
+    AUTH_HANDLER_ROUTES_MARKER,
+    `${routeReceiver}.POST("/${method.pathSegment}", h.${method.handlerName})`
+  );
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_FUNCS_MARKER,
+    AUTH_HANDLER_FUNCS_MARKER,
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\tvar in ${inputName}`,
@@ -472,9 +551,10 @@ function patchPost(paths: MethodPatchPaths, naming: ModuleNaming, method: Method
     insertCqrsFacade(paths.servicePath, serviceFacade, goModule, naming.pkg);
   } else {
     let service = fs.readFileSync(paths.servicePath, "utf8");
-    service = insertBeforeMarker(
+    service = insertBeforeMethodMarker(
       service,
       SERVICE_MARKER,
+      AUTH_SERVICE_MARKER,
       commandMethod.replace("(h *CommandHandler)", "(s *Service)").replace("h.repo", "s.repo")
     );
     fs.writeFileSync(paths.servicePath, service);
@@ -489,14 +569,17 @@ function patchResourceAction(
   modulePath: string
 ): void {
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
-  handler = insertBeforeMarker(
+  const routeReceiver = handlerRouteReceiver(handler);
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_ROUTES_MARKER,
-    `g.${routeCall(type)}("/:id/${method.pathSegment}", h.${method.handlerName})`
+    AUTH_HANDLER_ROUTES_MARKER,
+    `${routeReceiver}.${routeCall(type)}("/:id/${method.pathSegment}", h.${method.handlerName})`
   );
-  handler = insertBeforeMarker(
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_FUNCS_MARKER,
+    AUTH_HANDLER_FUNCS_MARKER,
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\tid, ok := httpx.ParseID(c)`,
@@ -533,9 +616,10 @@ function patchResourceAction(
     insertCqrsFacade(paths.servicePath, serviceFacade, goModule, modulePath);
   } else {
     let service = fs.readFileSync(paths.servicePath, "utf8");
-    service = insertBeforeMarker(
+    service = insertBeforeMethodMarker(
       service,
       SERVICE_MARKER,
+      AUTH_SERVICE_MARKER,
       commandMethod.replace("(h *CommandHandler)", "(s *Service)")
     );
     fs.writeFileSync(paths.servicePath, service);
@@ -544,14 +628,17 @@ function patchResourceAction(
 
 function patchDelete(paths: MethodPatchPaths, method: MethodNaming, goModule: string, modulePath: string): void {
   let handler = fs.readFileSync(paths.handlerPath, "utf8");
-  handler = insertBeforeMarker(
+  const routeReceiver = handlerRouteReceiver(handler);
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_ROUTES_MARKER,
-    `g.DELETE("/:id/${method.pathSegment}", h.${method.handlerName})`
+    AUTH_HANDLER_ROUTES_MARKER,
+    `${routeReceiver}.DELETE("/:id/${method.pathSegment}", h.${method.handlerName})`
   );
-  handler = insertBeforeMarker(
+  handler = insertBeforeMethodMarker(
     handler,
     HANDLER_FUNCS_MARKER,
+    AUTH_HANDLER_FUNCS_MARKER,
     [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\tid, ok := httpx.ParseID(c)`,
@@ -587,9 +674,10 @@ function patchDelete(paths: MethodPatchPaths, method: MethodNaming, goModule: st
     insertCqrsFacade(paths.servicePath, serviceFacade, goModule, modulePath);
   } else {
     let service = fs.readFileSync(paths.servicePath, "utf8");
-    service = insertBeforeMarker(
+    service = insertBeforeMethodMarker(
       service,
       SERVICE_MARKER,
+      AUTH_SERVICE_MARKER,
       commandMethod.replace("(h *CommandHandler)", "(s *Service)")
     );
     fs.writeFileSync(paths.servicePath, service);
@@ -607,11 +695,11 @@ export function markersPresentForPaths(
   const handler = fs.readFileSync(paths.handlerPath, "utf8");
   const service = fs.readFileSync(paths.servicePath, "utf8");
   const baseMarkers =
-    hasMarker(handler, HANDLER_ROUTES_MARKER) &&
-    hasMarker(handler, HANDLER_FUNCS_MARKER) &&
+    hasMethodMarker(handler, HANDLER_ROUTES_MARKER, AUTH_HANDLER_ROUTES_MARKER) &&
+    hasMethodMarker(handler, HANDLER_FUNCS_MARKER, AUTH_HANDLER_FUNCS_MARKER) &&
     (hasMarker(handler, SERVICE_INTERFACE_MARKER) || handler.includes("svc *Service")) &&
-    hasMarker(service, SERVICE_MARKER) &&
-    hasMarker(service, REPO_INTERFACE_MARKER);
+    hasMethodMarker(service, SERVICE_MARKER, AUTH_SERVICE_MARKER) &&
+    hasMethodMarker(service, REPO_INTERFACE_MARKER, AUTH_REPO_INTERFACE_MARKER);
 
   const hasCommand = Boolean(paths.commandPath && fs.existsSync(paths.commandPath));
   const hasQuery = Boolean(paths.queryPath && fs.existsSync(paths.queryPath));

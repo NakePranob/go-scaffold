@@ -12,13 +12,20 @@ import (
 	"{{goModule}}/internal/app/user/model"
 	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/shared/apperror"
-	"{{goModule}}/internal/shared/config"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-// fakeTokenStore = in-memory mock of tokenStore, mirroring the real store's
+// testTokenStore is the deliberately broad test-only composition used to
+// populate the three independent token ports in Dependencies.
+type testTokenStore interface {
+	RefreshTokenStore
+	OAuthTransactionStore
+	RecoveryTokenStore
+}
+
+// fakeTokenStore = in-memory mock of the token ports, mirroring the real store's
 // three-map shape (active / used-tombstone / per-user session set) closely
 // enough to exercise rotation + reuse-detection without a real Redis.
 type fakeTokenStore struct {
@@ -215,6 +222,89 @@ func (f *fakeTokenStore) ConsumeEmailVerifyToken(_ context.Context, hash string)
 	return id, ok, nil
 }
 
+type fakeMFAStore struct {
+	mu          sync.Mutex
+	enrollments map[uuid.UUID]MFAEnrollment
+	challenges  map[string]MFAChallenge
+	recovery    map[uuid.UUID]map[string]struct{}
+}
+
+func newFakeMFAStore() *fakeMFAStore {
+	return &fakeMFAStore{
+		enrollments: map[uuid.UUID]MFAEnrollment{},
+		challenges:  map[string]MFAChallenge{},
+		recovery:    map[uuid.UUID]map[string]struct{}{},
+	}
+}
+
+func (f *fakeMFAStore) GetEnrollment(_ context.Context, userID uuid.UUID) (MFAEnrollment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	enrollment, ok := f.enrollments[userID]
+	return enrollment, ok, nil
+}
+
+func (f *fakeMFAStore) PutPendingEnrollment(_ context.Context, userID uuid.UUID, secret string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if current, ok := f.enrollments[userID]; ok && current.Enabled {
+		return errors.New("MFA already enabled")
+	}
+	f.enrollments[userID] = MFAEnrollment{EncryptedSecret: secret}
+	return nil
+}
+
+func (f *fakeMFAStore) ConfirmEnrollment(_ context.Context, userID uuid.UUID, secret string, hashes []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(hashes) == 0 {
+		return errors.New("MFA recovery codes are required")
+	}
+	f.enrollments[userID] = MFAEnrollment{EncryptedSecret: secret, Enabled: true}
+	f.recovery[userID] = map[string]struct{}{}
+	for _, hash := range hashes {
+		f.recovery[userID][hash] = struct{}{}
+	}
+	return nil
+}
+
+func (f *fakeMFAStore) Disable(_ context.Context, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.enrollments, userID)
+	delete(f.recovery, userID)
+	return nil
+}
+
+func (f *fakeMFAStore) CreateChallenge(_ context.Context, hash string, challenge MFAChallenge) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.challenges[hash] = challenge
+	return nil
+}
+
+func (f *fakeMFAStore) ConsumeChallenge(_ context.Context, hash string) (MFAChallenge, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	challenge, ok := f.challenges[hash]
+	if !ok || !challenge.ExpiresAt.After(time.Now()) {
+		return MFAChallenge{}, false, nil
+	}
+	delete(f.challenges, hash)
+	return challenge, true, nil
+}
+
+func (f *fakeMFAStore) ConsumeRecoveryCode(_ context.Context, userID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	codes := f.recovery[userID]
+	if _, ok := codes[hash]; !ok {
+		return false, nil
+	}
+	delete(codes, hash)
+	return true, nil
+}
+
 // fakeRepo = mock of the repository interface — only FindByID is exercised
 // by the tests below (Refresh looks the user up after validating the
 // token), the rest just satisfy the interface.
@@ -293,6 +383,8 @@ func (f *fakeRepo) UpdateIdentity(_ context.Context, i *model.Identity) error {
 	return nil
 }
 
+// go-scaffold:user-fake-repo-methods
+
 type fakeMailer struct{}
 
 func (fakeMailer) Send(context.Context, string, string, string) error { return nil }
@@ -303,15 +395,23 @@ func (fakeMailer) Send(context.Context, string, string, string) error { return n
 // keeping it singular means `add rbac`'s marker patch only has one place to
 // add the roleChecker arg it introduces (patching every call site
 // individually would need a marker-per-callsite, easy to miss one).
-func newTestService(repo repository, tokens tokenStore) *Service {
-	return NewService(
-		repo,
-		tokens,
-		fakeMailer{},
-		config.Config{JWTSecret: "test-secret", JWTAccessTTL: time.Minute, JWTRefreshTTL: time.Hour, JWTRefreshMaxTTL: 24 * time.Hour, OAuthStateTTL: 10 * time.Minute},
-		application.NewProviderRegistry(),
-		// go-scaffold:user-service-test-args
-	)
+func newTestService(repo repository, tokens testTokenStore) *Service {
+	return NewService(Dependencies{
+		Repository:        repo,
+		RefreshTokens:     tokens,
+		OAuthTransactions: tokens,
+		RecoveryTokens:    tokens,
+		MFA:               newFakeMFAStore(),
+		Mailer:            fakeMailer{},
+		Providers:         application.NewProviderRegistry(),
+		// go-scaffold:user-service-test-deps
+	}, AuthConfig{
+		JWTSecret:        "test-secret",
+		JWTAccessTTL:     time.Minute,
+		JWTRefreshTTL:    time.Hour,
+		JWTRefreshMaxTTL: 24 * time.Hour,
+		OAuthStateTTL:    10 * time.Minute,
+	})
 }
 
 func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, userID uuid.UUID, ttl time.Duration) error {

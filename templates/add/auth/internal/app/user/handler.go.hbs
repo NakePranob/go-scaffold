@@ -1,22 +1,12 @@
 package user
 
 import (
-	"errors"
-	"fmt"
-	"log/slog"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
-	"{{goModule}}/internal/app/user/application"
-	"{{goModule}}/internal/shared/apperror"
-	"{{goModule}}/internal/shared/httpx"
 	"{{goModule}}/internal/shared/middleware"
-	// go-scaffold:user-handler-imports
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	// go-scaffold:user-handler-imports
 )
 
 const (
@@ -60,8 +50,7 @@ func NewHandler(
 
 // NewHandlerWithOrigins is the current composition entry point. Keeping the
 // original NewHandler signature preserves source compatibility for projects
-// generated before the cross-site Origin guard was added; those projects fail
-// closed for cross-site cookies until their auth composition is regenerated.
+// generated before the cross-site Origin guard was added.
 func NewHandlerWithOrigins(
 	svc *Service,
 	jwtSecret string,
@@ -103,20 +92,20 @@ func newHandler(
 	}
 }
 
-// Register wires both a public /auth group (register/login/refresh/logout)
-// and a /users group gated by RequireAuth — public vs protected is decided
-// here, per domain, not centrally in main.go.
+// Register owns the public/protected route split for the user feature. The
+// endpoint implementations live in focused handler files; this file remains
+// the single route/composition surface that generator patches can target.
 func (h *Handler) Register(rg gin.IRouter) {
-	// per-IP, per-route budgets — separate names so a burst on one endpoint
-	// doesn't spend another's budget. refresh/logout/provider login aren't
-	// limited: refresh/logout are gated by possessing a valid cookie already,
-	// and the provider's authorization surface lives upstream, not here.
 	loginLimit := middleware.RateLimit(h.limiter, "login", 10, time.Minute)
 	registerLimit := middleware.RateLimit(h.limiter, "register", 5, time.Minute)
 	forgotPasswordLimit := middleware.RateLimit(h.limiter, "forgot-password", 5, time.Minute)
 	resetPasswordLimit := middleware.RateLimit(h.limiter, "reset-password", 10, time.Minute)
 	verifyEmailLimit := middleware.RateLimit(h.limiter, "verify-email", 10, time.Minute)
 	resendVerificationLimit := middleware.RateLimit(h.limiter, "resend-verification", 5, time.Minute)
+	mfaVerifyLimit := middleware.RateLimit(h.limiter, "mfa-verify", 5, time.Minute)
+	mfaSetupLimit := middleware.RateLimit(h.limiter, "mfa-setup", 5, time.Minute)
+	mfaConfirmLimit := middleware.RateLimit(h.limiter, "mfa-confirm", 5, time.Minute)
+	mfaDisableLimit := middleware.RateLimit(h.limiter, "mfa-disable", 5, time.Minute)
 
 	authGroup := rg.Group("/auth")
 	authGroup.POST("/register", registerLimit, h.register)
@@ -126,6 +115,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	authGroup.POST("/forgot-password", forgotPasswordLimit, h.forgotPassword)
 	authGroup.POST("/reset-password", resetPasswordLimit, h.resetPassword)
 	authGroup.POST("/verify-email", verifyEmailLimit, h.verifyEmail)
+	authGroup.POST("/mfa/verify", mfaVerifyLimit, h.verifyMFA)
 	authGroup.GET("/:provider/login", h.providerLogin)
 	authGroup.POST("/:provider/exchange", h.providerExchange)
 
@@ -133,322 +123,11 @@ func (h *Handler) Register(rg gin.IRouter) {
 	usersGroup.GET("/me", h.me)
 	usersGroup.POST("/me/resend-verification", resendVerificationLimit, h.resendVerification)
 	usersGroup.POST("/me/logout-all", h.logoutAll)
+	usersGroup.GET("/me/mfa", h.mfaStatus)
+	usersGroup.POST("/me/mfa/setup", mfaSetupLimit, h.setupMFA)
+	usersGroup.POST("/me/mfa/confirm", mfaConfirmLimit, h.confirmMFA)
+	usersGroup.POST("/me/mfa/disable", mfaDisableLimit, h.disableMFA)
 	// go-scaffold:user-routes
 }
 
-func (h *Handler) register(c *gin.Context) {
-	setNoStoreHeaders(c)
-	if !h.requireBrowserOrigin(c) {
-		return
-	}
-	var in registerInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.Error(httpx.BindErr(err))
-		return
-	}
-	auth, err := h.svc.Register(c.Request.Context(), in)
-	if err != nil {
-		c.Error(err)
-		return
-	}
-	h.setRefreshCookie(c, auth.RefreshToken)
-	c.JSON(http.StatusCreated, toCookieResponse(auth))
-}
-
-func (h *Handler) login(c *gin.Context) {
-	setNoStoreHeaders(c)
-	if !h.requireBrowserOrigin(c) {
-		return
-	}
-	var in loginInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.Error(httpx.BindErr(err))
-		return
-	}
-	auth, err := h.svc.Login(c.Request.Context(), in)
-	if err != nil {
-		c.Error(err)
-		return
-	}
-	h.setRefreshCookie(c, auth.RefreshToken)
-	c.JSON(http.StatusOK, toCookieResponse(auth))
-}
-
-func (h *Handler) refresh(c *gin.Context) {
-	setNoStoreHeaders(c)
-	if !h.requireBrowserOrigin(c) {
-		return
-	}
-	raw, err := c.Cookie(refreshCookieName)
-	if err != nil || raw == "" {
-		c.Error(errInvalidToken())
-		return
-	}
-	auth, err := h.svc.Refresh(c.Request.Context(), raw)
-	if err != nil {
-		h.clearRefreshCookie(c)
-		c.Error(err)
-		return
-	}
-	h.setRefreshCookie(c, auth.RefreshToken)
-	c.JSON(http.StatusOK, toCookieResponse(auth))
-}
-
-func (h *Handler) logout(c *gin.Context) {
-	if !h.requireBrowserOrigin(c) {
-		return
-	}
-	raw, _ := c.Cookie(refreshCookieName)
-	_ = h.svc.Logout(c.Request.Context(), raw)
-	h.clearRefreshCookie(c)
-	c.Status(http.StatusNoContent)
-}
-
-func (h *Handler) forgotPassword(c *gin.Context) {
-	var in forgotPasswordInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.Error(httpx.BindErr(err))
-		return
-	}
-	if err := h.svc.ForgotPassword(c.Request.Context(), in.Email); err != nil {
-		c.Error(err)
-		return
-	}
-	// always the same response, whether or not the email exists — see
-	// Service.ForgotPassword for why.
-	c.JSON(http.StatusOK, gin.H{"message": "if that email exists, a reset link has been sent"})
-}
-
-func (h *Handler) resetPassword(c *gin.Context) {
-	var in resetPasswordInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.Error(httpx.BindErr(err))
-		return
-	}
-	if err := h.svc.ResetPassword(c.Request.Context(), in.Token, in.NewPassword); err != nil {
-		c.Error(err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-func (h *Handler) verifyEmail(c *gin.Context) {
-	var in verifyEmailInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.Error(httpx.BindErr(err))
-		return
-	}
-	if err := h.svc.VerifyEmail(c.Request.Context(), in.Token); err != nil {
-		c.Error(err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-func (h *Handler) resendVerification(c *gin.Context) {
-	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
-	if err := h.svc.ResendVerificationEmail(c.Request.Context(), userID); err != nil {
-		c.Error(err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
-// logoutAll ends every session for the caller, not just the one making the
-// request — also clears this request's own cookie, since that session is
-// dead too now.
-func (h *Handler) logoutAll(c *gin.Context) {
-	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
-	if err := h.svc.LogoutAll(c.Request.Context(), userID); err != nil {
-		c.Error(err)
-		return
-	}
-	h.clearRefreshCookie(c)
-	c.Status(http.StatusNoContent)
-}
-
-func (h *Handler) providerLogin(c *gin.Context) {
-	start, err := h.svc.BeginLogin(c.Request.Context(), c.Param("provider"), application.LoginStartInput{
-		State:               c.Query("state"),
-		CodeChallenge:       c.Query("code_challenge"),
-		CodeChallengeMethod: c.Query("code_challenge_method"),
-	})
-	if err != nil {
-		c.Error(h.oauthAppError(c.Param("provider"), err))
-		return
-	}
-	c.Redirect(http.StatusFound, start.URL)
-}
-
-func (h *Handler) providerExchange(c *gin.Context) {
-	setNoStoreHeaders(c)
-	if !h.requireBrowserOrigin(c) {
-		return
-	}
-	var in loginExchangeInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.Error(h.oauthAppError(c.Param("provider"), application.NewOAuthError(application.OAuthFailed, err)))
-		return
-	}
-	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), in)
-	if err != nil {
-		c.Error(h.oauthAppError(c.Param("provider"), err))
-		return
-	}
-	h.setRefreshCookie(c, auth.RefreshToken)
-	c.JSON(http.StatusOK, toCookieResponse(auth))
-}
-
-func (h *Handler) oauthAppError(provider string, err error) *apperror.AppError {
-	code := application.OAuthFailed
-	status := http.StatusBadRequest
-	message := "external login failed"
-	var oauthErr *application.OAuthError
-	if errors.As(err, &oauthErr) {
-		switch oauthErr.Code {
-		case application.OAuthDenied:
-			code = application.OAuthDenied
-			message = "external login was denied"
-		case application.OAuthStateInvalid:
-			code = application.OAuthStateInvalid
-			message = "oauth state or PKCE verifier is invalid"
-		case application.OAuthProviderUnavailable:
-			code = application.OAuthProviderUnavailable
-			status = http.StatusServiceUnavailable
-			message = "external login provider is unavailable"
-		case application.OAuthFailed:
-			code = application.OAuthFailed
-		default:
-			code = application.OAuthFailed
-		}
-	}
-	slog.Warn("oauth request failed", "provider", provider, "code", code, "error", err)
-	return apperror.New(status, string(code), message)
-}
-
-func (h *Handler) me(c *gin.Context) {
-	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
-	u, err := h.svc.Get(c.Request.Context(), userID)
-	if err != nil {
-		c.Error(err)
-		return
-	}
-	c.JSON(http.StatusOK, toMeResponse(u))
-}
-
 // go-scaffold:user-handler-funcs
-
-func (h *Handler) setRefreshCookie(c *gin.Context, token string) {
-	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
-	c.SetCookie(refreshCookieName, token, int(h.refreshTTL.Seconds()), "/", "", h.cookieSecure, true)
-}
-
-func (h *Handler) clearRefreshCookie(c *gin.Context) {
-	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
-	c.SetCookie(refreshCookieName, "", -1, "/", "", h.cookieSecure, true)
-}
-
-// setNoStoreHeaders prevents browsers, shared caches, and intermediary
-// middleware from retaining responses that contain access-token material.
-// The refresh token is an HttpOnly cookie, but the response still carries the
-// access token in JSON and must be treated as a non-cacheable token response.
-func setNoStoreHeaders(c *gin.Context) {
-	c.Header("Cache-Control", "no-store")
-	c.Header("Pragma", "no-cache")
-}
-
-// requireBrowserOrigin is a CSRF guard for the only cookie mode that permits
-// a cross-site browser to attach the refresh cookie. CORS controls whether a
-// caller may read the response; it does not stop a cross-site form or fetch
-// from causing a state-changing request with an ambient cookie. The allowlist
-// is therefore checked independently and only as exact serialized origins.
-func (h *Handler) requireBrowserOrigin(c *gin.Context) bool {
-	if !strings.EqualFold(strings.TrimSpace(h.cookieSameSite), "none") {
-		return true
-	}
-
-	origin := strings.TrimSpace(c.GetHeader("Origin"))
-	if origin == "" {
-		if referer := strings.TrimSpace(c.GetHeader("Referer")); referer != "" {
-			if parsed, err := url.Parse(referer); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil {
-				origin = parsed.Scheme + "://" + parsed.Host
-			}
-		}
-	}
-	if !browserOriginAllowed(origin, h.allowedOrigins) {
-		c.Error(apperror.New(http.StatusForbidden, "CSRF_ORIGIN_INVALID", "request origin is not allowed"))
-		c.Abort()
-		return false
-	}
-	return true
-}
-
-func browserOriginAllowed(origin string, allowed []string) bool {
-	origin = strings.TrimSpace(origin)
-	if _, ok := canonicalBrowserOrigin(origin); !ok {
-		return false
-	}
-	for _, candidate := range allowed {
-		candidate = strings.TrimSpace(candidate)
-		if _, candidateOK := canonicalBrowserOrigin(candidate); candidateOK && candidate == origin {
-			return true
-		}
-	}
-	return false
-}
-
-func canonicalBrowserOrigin(value string) (string, bool) {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || parsed.User != nil || parsed.Opaque != "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", false
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", false
-	}
-	return parsed.Scheme + "://" + parsed.Host, true
-}
-
-// validateBrowserCookiePolicy ties the selected deployment topology to the
-// cookie attributes used by /auth/refresh. Same-site is the safe local default;
-// a genuinely cross-site frontend must opt into None + Secure. Production
-// deployments must always set Secure, regardless of topology.
-func validateBrowserCookiePolicy(topology, sameSite string, secure, production bool) error {
-	if production && !secure {
-		return fmt.Errorf("production browser cookies require COOKIE_SECURE=true")
-	}
-	switch strings.ToLower(strings.TrimSpace(topology)) {
-	case "same-origin", "same-site":
-		if strings.EqualFold(strings.TrimSpace(sameSite), "none") && !secure {
-			return fmt.Errorf("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
-		}
-		return nil
-	case "cross-site":
-		if !strings.EqualFold(strings.TrimSpace(sameSite), "none") || !secure {
-			return fmt.Errorf("cross-site browser topology requires COOKIE_SAMESITE=none and COOKIE_SECURE=true")
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported browser topology %q", topology)
-	}
-}
-
-// sameSiteFrom maps COOKIE_SAMESITE onto the http constant, defaulting to the
-// strictest option for anything it doesn't recognise.
-//
-// "strict" is right while the frontend and this API are the same site
-// (localhost:3000 -> localhost:8080 is, and so is app.example.com ->
-// api.example.com). A frontend on a genuinely different site — the usual
-// vercel.app-plus-own-API-domain split — needs "none", because the browser
-// will not attach a Strict or Lax cookie to the fetch that calls
-// /auth/refresh: sessions then die at every access-token expiry with no
-// error anywhere to explain it. "none" requires COOKIE_SECURE=true.
-func sameSiteFrom(mode string) http.SameSite {
-	switch strings.ToLower(mode) {
-	case "none":
-		return http.SameSiteNoneMode
-	case "lax":
-		return http.SameSiteLaxMode
-	default:
-		return http.SameSiteStrictMode
-	}
-}

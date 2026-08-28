@@ -1,6 +1,7 @@
 package user
 
 import (
+	"fmt"
 	"net/http"
 
 	"{{goModule}}/internal/shared/apperror"
@@ -38,6 +39,30 @@ func errInvalidToken() *apperror.AppError {
 
 func errAlreadyVerified() *apperror.AppError {
 	return apperror.New(http.StatusConflict, "AUTH_ALREADY_VERIFIED", "email is already verified")
+}
+
+func errMFAUnavailable() *apperror.AppError {
+	return apperror.New(http.StatusServiceUnavailable, "AUTH_MFA_UNAVAILABLE", "multi-factor authentication is not enabled")
+}
+
+func errMFAInvalid() *apperror.AppError {
+	return apperror.New(http.StatusUnauthorized, "AUTH_MFA_INVALID", "invalid or expired multi-factor authentication code")
+}
+
+func errMFAAlreadyEnabled() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "AUTH_MFA_ALREADY_ENABLED", "multi-factor authentication is already enabled")
+}
+
+func errMFANotEnrolled() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "AUTH_MFA_NOT_ENROLLED", "multi-factor authentication is not enabled for this user")
+}
+
+func errMFASetupRequired() *apperror.AppError {
+	return apperror.New(http.StatusConflict, "AUTH_MFA_SETUP_REQUIRED", "complete multi-factor authentication setup first")
+}
+
+func errMFAConfig() *apperror.AppError {
+	return apperror.NewInternal(fmt.Errorf("multi-factor authentication encryption key is invalid"))
 }
 
 // go-scaffold:user-errors

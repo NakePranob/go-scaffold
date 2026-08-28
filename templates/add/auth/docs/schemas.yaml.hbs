@@ -32,6 +32,50 @@ VerifyEmailInput:
   properties:
     token: { type: string }
 
+MFAChallengeInput:
+  type: object
+  required: [challenge, code]
+  additionalProperties: false
+  properties:
+    challenge: { type: string, minLength: 1 }
+    code: { type: string, minLength: 6, maxLength: 16 }
+
+MFACodeInput:
+  type: object
+  required: [code]
+  additionalProperties: false
+  properties:
+    code: { type: string, minLength: 6, maxLength: 16 }
+
+MFAChallengeResponse:
+  type: object
+  required: [mfa_required, challenge]
+  properties:
+    mfa_required: { type: boolean, example: true }
+    challenge: { type: string }
+
+MFAStatus:
+  type: object
+  required: [available, enabled]
+  properties:
+    available: { type: boolean }
+    enabled: { type: boolean }
+
+MFASetupResponse:
+  type: object
+  required: [secret, otpauth_uri]
+  properties:
+    secret: { type: string, description: show once and add to an authenticator app }
+    otpauth_uri: { type: string, format: uri }
+
+MFAConfirmResponse:
+  type: object
+  required: [recovery_codes]
+  properties:
+    recovery_codes:
+      type: array
+      items: { type: string }
+
 OAuthExchangeInput:
   type: object
   required: [code, state, code_verifier]

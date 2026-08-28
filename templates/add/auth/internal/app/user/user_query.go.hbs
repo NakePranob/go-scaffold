@@ -1,0 +1,65 @@
+package user
+
+import (
+	"context"
+	"errors"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/id"
+
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+// wrapFindErr is shared by methods added through `generate method`. Keeping
+// not-found translation in this query file means the small service facade
+// does not need to import database-specific error packages just because a
+// later method was generated.
+func wrapFindErr(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errNotFound()
+	}
+	return apperror.NewInternal(err)
+}
+
+func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	return u, nil
+}
+
+// List is kept for the optional RBAC admin routes. It is not part of the
+// public self-service auth surface until that feature is installed.
+func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, error) {
+	items, err := s.repo.FindAll(ctx, limit, offset)
+	if err != nil {
+		return nil, apperror.NewInternal(err)
+	}
+	return items, nil
+}
+
+// EnsureUser is idempotent and used only by cmd/seed. It never resets an
+// existing user's password as a side effect of a later deployment.
+func (s *Service) EnsureUser(ctx context.Context, email, password, name string) (*model.User, error) {
+	email = normalizeEmail(email)
+	if u, err := s.repo.FindByEmail(ctx, email); err == nil {
+		return u, nil
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, apperror.NewInternal(err)
+	}
+	hashStr := string(hash)
+
+	u := &model.User{ID: id.New(), Email: email, Name: name}
+	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
+		return nil, apperror.NewInternal(err)
+	}
+	return u, nil
+}

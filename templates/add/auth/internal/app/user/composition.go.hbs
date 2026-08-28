@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/app/user/model"
@@ -76,7 +77,7 @@ func (bcryptPasswordHasher) Hash(password string) (string, error) {
 	return string(hash), nil
 }
 
-func newRecovery(repo repository, tokens tokenStore) *application.Recovery {
+func newRecovery(repo repository, tokens application.RecoveryTokens) *application.Recovery {
 	return application.NewRecovery(recoveryRepositoryAdapter{repo: repo}, tokens, bcryptPasswordHasher{})
 }
 
@@ -126,7 +127,35 @@ outbound := mail.NewSyncClient(mail.Open(cfg))
 		panic(fmt.Errorf("OAUTH_STATE_TTL_MIN must be positive"))
 	}
 
-	service := NewService(NewRepository(db), tokens, outbound, cfg, providerRegistry, roleChecker)
+	service := NewService(Dependencies{
+		Repository:        NewRepository(db),
+		RefreshTokens:     tokens,
+		OAuthTransactions: tokens,
+		RecoveryTokens:    tokens,
+		MFA:               NewPostgresMFAStore(db),
+		Mailer:            outbound,
+		Providers:         providerRegistry,
+		Roles:             roleChecker,
+		Clock:             time.Now,
+	}, AuthConfig{
+		JWTSecret:        cfg.JWTSecret,
+		JWTAccessTTL:     cfg.JWTAccessTTL,
+		JWTRefreshTTL:    cfg.JWTRefreshTTL,
+		JWTRefreshMaxTTL: cfg.JWTRefreshMaxTTL,
+		OAuthStateTTL:    cfg.OAuthStateTTL,
+		PasswordResetTTL: cfg.PasswordResetTTL,
+		PasswordResetURL: cfg.PasswordResetURL,
+		EmailVerifyTTL:   cfg.EmailVerifyTTL,
+		EmailVerifyURL:   cfg.EmailVerifyURL,
+		MFA: MFASettings{
+			Enabled:           cfg.AuthMFAEnabled,
+			Issuer:            cfg.MFAIssuer,
+			EncryptionKey:     cfg.MFAEncryptionKey,
+			ChallengeTTL:      cfg.MFAChallengeTTL,
+			TOTPWindow:        cfg.MFATOTPWindow,
+			RecoveryCodeCount: cfg.MFARecoveryCodeCount,
+		},
+	})
 {{#if redis}}
 	limiter := middleware.NewRedisLimiter(rdb)
 {{else}}

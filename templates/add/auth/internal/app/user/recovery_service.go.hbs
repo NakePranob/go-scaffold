@@ -1,0 +1,114 @@
+package user
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"{{goModule}}/internal/app/user/application"
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/google/uuid"
+)
+
+// ForgotPassword always returns success from the caller's perspective. Only a
+// local password identity gets a token, so this endpoint cannot enumerate
+// accounts or issue a reset for an external-only account.
+func (s *Service) ForgotPassword(ctx context.Context, email string) error {
+	key := throttleKey("pwreset", email)
+	if s.throttled(ctx, key) {
+		return nil
+	}
+	if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
+		slog.Error("record password reset attempt", "error", err)
+	}
+
+	u, err := s.repo.FindByEmail(ctx, normalizeEmail(email))
+	if err != nil {
+		return nil
+	}
+	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
+	if err != nil || ident.PasswordHash == nil {
+		return nil
+	}
+
+	raw, err := randomToken()
+	if err != nil {
+		return apperror.NewInternal(err)
+	}
+	if err := s.recoveryTokens.SetPasswordResetToken(ctx, hashToken(raw), u.ID, s.config.PasswordResetTTL); err != nil {
+		return apperror.NewInternal(err)
+	}
+
+	link := s.config.PasswordResetURL + "?token=" + raw
+	if err := s.mailer.Send(ctx, u.Email, "Reset your password", "Reset your password: "+link); err != nil {
+		// The token is stored already. Log the delivery failure so it is visible
+		// operationally while preserving the anti-enumeration response.
+		slog.Error("send password reset email", "error", err)
+	}
+	return nil
+}
+
+// ResetPassword consumes a one-time token and updates the local identity in
+// one transaction, then revokes all sessions. If the cross-store revoke fails,
+// restoring the token lets the caller retry the complete operation.
+func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
+	tokenHash := hashToken(rawToken)
+	userID, err := s.recovery.ResetPassword(ctx, tokenHash, newPassword)
+	if err != nil {
+		if errors.Is(err, application.ErrInvalidToken) {
+			return errInvalidToken()
+		}
+		return apperror.NewInternal(fmt.Errorf("reset password: %w", err))
+	}
+	if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
+		if restoreErr := s.recoveryTokens.SetPasswordResetToken(ctx, tokenHash, userID, s.config.PasswordResetTTL); restoreErr != nil {
+			return apperror.NewInternal(fmt.Errorf("revoke sessions after password reset: %w; restore reset token for retry: %v", err, restoreErr))
+		}
+		return apperror.NewInternal(fmt.Errorf("revoke sessions after password reset (reset token restored for retry): %w", err))
+	}
+	return nil
+}
+
+// sendVerificationEmail issues a one-time token and sends its link. It is
+// shared by registration and the authenticated resend flow.
+func (s *Service) sendVerificationEmail(ctx context.Context, u *model.User) {
+	raw, err := randomToken()
+	if err != nil {
+		slog.Error("generate email verification token", "error", err)
+		return
+	}
+	if err := s.recoveryTokens.SetEmailVerifyToken(ctx, hashToken(raw), u.ID, s.config.EmailVerifyTTL); err != nil {
+		slog.Error("store email verification token", "error", err)
+		return
+	}
+	link := s.config.EmailVerifyURL + "?token=" + raw
+	if err := s.mailer.Send(ctx, u.Email, "Verify your email", "Verify your email: "+link); err != nil {
+		slog.Error("send email verification email", "error", err)
+	}
+}
+
+func (s *Service) ResendVerificationEmail(ctx context.Context, userID uuid.UUID) error {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return apperror.NewInternal(err)
+	}
+	if u.EmailVerified {
+		return errAlreadyVerified()
+	}
+	s.sendVerificationEmail(ctx, u)
+	return nil
+}
+
+func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
+	_, err := s.recovery.VerifyEmail(ctx, hashToken(rawToken))
+	if err != nil {
+		if errors.Is(err, application.ErrInvalidToken) {
+			return errInvalidToken()
+		}
+		return apperror.NewInternal(fmt.Errorf("verify email: %w", err))
+	}
+	return nil
+}

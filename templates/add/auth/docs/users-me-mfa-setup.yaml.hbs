@@ -1,0 +1,14 @@
+post:
+  summary: Start MFA enrollment for the current user
+  operationId: setupMyMFA
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "200":
+      description: secret and otpauth URI; enrollment remains disabled until confirmed
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MFASetupResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }
+    "503": { description: MFA is disabled by the operator }

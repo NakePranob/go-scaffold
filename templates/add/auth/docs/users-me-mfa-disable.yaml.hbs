@@ -1,0 +1,15 @@
+post:
+  summary: Disable MFA for the current user
+  operationId: disableMyMFA
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/MFACodeInput' }
+  responses:
+    "204": { description: MFA disabled }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }

@@ -1,0 +1,20 @@
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// MFAEnrollment stores one user's TOTP enrollment. The secret is encrypted by
+// the application before it reaches this model; plaintext secrets never live
+// in the database.
+type MFAEnrollment struct {
+	UserID          uuid.UUID `gorm:"type:uuid;primaryKey"`
+	EncryptedSecret string    `gorm:"type:text;not null"`
+	Enabled         bool      `gorm:"not null;default:false"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (MFAEnrollment) TableName() string { return "user_svc.mfa_enrollments" }

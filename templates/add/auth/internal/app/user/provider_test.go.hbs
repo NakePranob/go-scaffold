@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"{{goModule}}/internal/app/user/application"
-	"{{goModule}}/internal/shared/config"
 )
 
 type fakeLoginProvider struct {
@@ -32,14 +31,20 @@ func (p *fakeLoginProvider) Complete(_ context.Context, in application.LoginComp
 	return p.completeFn(in)
 }
 
-func newTestServiceWithProviders(repo repository, tokens tokenStore, providers ...application.LoginProvider) *Service {
-	return NewService(
-		repo,
-		tokens,
-		fakeMailer{},
-		config.Config{JWTSecret: "test-secret", JWTAccessTTL: time.Minute, JWTRefreshTTL: time.Hour},
-		application.NewProviderRegistry(providers...),
-	)
+func newTestServiceWithProviders(repo repository, tokens testTokenStore, providers ...application.LoginProvider) *Service {
+	return NewService(Dependencies{
+		Repository:        repo,
+		RefreshTokens:     tokens,
+		OAuthTransactions: tokens,
+		RecoveryTokens:    tokens,
+		MFA:               newFakeMFAStore(),
+		Mailer:            fakeMailer{},
+		Providers:         application.NewProviderRegistry(providers...),
+	}, AuthConfig{
+		JWTSecret:     "test-secret",
+		JWTAccessTTL:  time.Minute,
+		JWTRefreshTTL: time.Hour,
+	})
 }
 
 func oauthErrorCode(t *testing.T, err error) application.OAuthErrorCode {

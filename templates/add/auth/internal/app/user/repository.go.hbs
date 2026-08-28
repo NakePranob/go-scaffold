@@ -135,3 +135,5 @@ func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
 		Where("email_hash = ?", key).
 		Delete(&model.LoginThrottle{}).Error
 }
+
+// go-scaffold:user-repository-methods

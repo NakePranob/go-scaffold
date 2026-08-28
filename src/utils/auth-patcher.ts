@@ -37,6 +37,13 @@ export function patchConfigForAuth(configGoPath: string): void {
     "GoogleClientID string",
     "GoogleClientSecret string",
     "GoogleOAuthRedirectURI string",
+    "",
+    "AuthMFAEnabled bool",
+    "MFAIssuer string",
+    "MFAEncryptionKey string",
+    "MFAChallengeTTL time.Duration",
+    "MFATOTPWindow int",
+    "MFARecoveryCodeCount int",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
 
@@ -59,6 +66,13 @@ export function patchConfigForAuth(configGoPath: string): void {
     'GoogleClientID:     env("GOOGLE_CLIENT_ID", ""),',
     'GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),',
     'GoogleOAuthRedirectURI: env("GOOGLE_OAUTH_REDIRECT_URI", ""),',
+    "",
+    'AuthMFAEnabled: env("AUTH_MFA_ENABLED", "false") == "true",',
+    'MFAIssuer: env("MFA_ISSUER", "go-scaffold"),',
+    'MFAEncryptionKey: env("MFA_ENCRYPTION_KEY", ""),',
+    'MFAChallengeTTL: time.Duration(envInt("MFA_CHALLENGE_TTL_MIN", 5)) * time.Minute,',
+    'MFATOTPWindow: envInt("MFA_TOTP_WINDOW", 1),',
+    'MFARecoveryCodeCount: envInt("MFA_RECOVERY_CODE_COUNT", 10),',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');
 
@@ -138,6 +152,22 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, smtpCheckBlock, "SMTP_HOST is unset");
 
+  const mfaCheckBlock = [
+    "if cfg.AuthMFAEnabled {",
+    "\tif err := user.ValidateMFASettings(user.MFASettings{",
+    "\t\tEnabled: cfg.AuthMFAEnabled,",
+    "\t\tIssuer: cfg.MFAIssuer,",
+    "\t\tEncryptionKey: cfg.MFAEncryptionKey,",
+    "\t\tChallengeTTL: cfg.MFAChallengeTTL,",
+    "\t\tTOTPWindow: cfg.MFATOTPWindow,",
+    "\t\tRecoveryCodeCount: cfg.MFARecoveryCodeCount,",
+    "\t}); err != nil {",
+    "\t\treturn fmt.Errorf(\"invalid MFA configuration: %w\", err)",
+    "\t}",
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, mfaCheckBlock, "invalid MFA configuration");
+
   // The enqueuer is built from whatever backend `add worker` chose — the
   // constructor differs, everything downstream of it (mail.NewAsyncClient)
   // only sees the queue.Enqueuer interface and doesn't change.
@@ -158,6 +188,7 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   // Recovery tokens are always durable in Postgres, even when refresh tokens
   // live in Redis, so reset/verification can share the user transaction.
   migrateLines.push("&usermodel.AuthToken{},");
+  migrateLines.push("&usermodel.MFAEnrollment{},", "&usermodel.MFAChallenge{},", "&usermodel.MFARecoveryCode{},");
   for (const line of migrateLines) {
     content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
   }

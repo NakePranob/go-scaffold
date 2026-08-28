@@ -1,0 +1,450 @@
+package user
+
+import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha1"
+	"crypto/subtle"
+	"encoding/base32"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/google/uuid"
+)
+
+const (
+	totpDigits       = 6
+	totpPeriod       = 30 * time.Second
+	defaultMFAWindow = 1
+	maxMFAWindow     = 3
+	defaultMFATTL    = 5 * time.Minute
+	defaultMFACodes  = 10
+)
+
+// MFASetup contains the secret material an authenticator app needs. It is
+// returned only while setup is pending; status and login never expose it.
+type MFASetup struct {
+	Secret     string
+	OTPAuthURI string
+}
+
+type MFAStatus struct {
+	Available bool
+	Enabled   bool
+}
+
+func (s *Service) mfaSettings() MFASettings {
+	settings := s.config.MFA
+	if strings.TrimSpace(settings.Issuer) == "" {
+		settings.Issuer = "go-scaffold"
+	}
+	if settings.ChallengeTTL <= 0 {
+		settings.ChallengeTTL = defaultMFATTL
+	}
+	if settings.TOTPWindow < 0 || settings.TOTPWindow > maxMFAWindow {
+		settings.TOTPWindow = defaultMFAWindow
+	}
+	if settings.RecoveryCodeCount <= 0 {
+		settings.RecoveryCodeCount = defaultMFACodes
+	}
+	if settings.RecoveryCodeCount > 20 {
+		settings.RecoveryCodeCount = 20
+	}
+	return settings
+}
+
+// ValidateMFASettings is called by the composition root when the operator
+// enables MFA, so a bad encryption key fails at boot rather than after the
+// first user clicks "enable MFA".
+func ValidateMFASettings(settings MFASettings) error {
+	if !settings.Enabled {
+		return nil
+	}
+	if _, err := decodeMFAKey(settings.EncryptionKey); err != nil {
+		return fmt.Errorf("MFA_ENCRYPTION_KEY must be base64-encoded 32 bytes: %w", err)
+	}
+	if settings.ChallengeTTL <= 0 {
+		return errors.New("MFA_CHALLENGE_TTL must be positive")
+	}
+	if settings.TOTPWindow < 0 || settings.TOTPWindow > maxMFAWindow {
+		return fmt.Errorf("MFA_TOTP_WINDOW must be between 0 and %d", maxMFAWindow)
+	}
+	if settings.RecoveryCodeCount < 5 || settings.RecoveryCodeCount > 20 {
+		return errors.New("MFA_RECOVERY_CODE_COUNT must be between 5 and 20")
+	}
+	return nil
+}
+
+func (s *Service) completeLogin(ctx context.Context, u *model.User) (*authResult, error) {
+	settings := s.mfaSettings()
+	if !settings.Enabled {
+		auth, err := s.issueTokens(ctx, u)
+		if err != nil {
+			return nil, err
+		}
+		return tokenResult(auth), nil
+	}
+	if s.mfa == nil {
+		return nil, apperror.NewInternal(errors.New("MFA is enabled but no MFA store was configured"))
+	}
+	enrollment, found, err := s.mfa.GetEnrollment(ctx, u.ID)
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("read MFA enrollment: %w", err))
+	}
+	if !found || !enrollment.Enabled {
+		auth, err := s.issueTokens(ctx, u)
+		if err != nil {
+			return nil, err
+		}
+		return tokenResult(auth), nil
+	}
+
+	rawChallenge, err := randomToken()
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("create MFA challenge: %w", err))
+	}
+	if err := s.mfa.CreateChallenge(ctx, hashToken(rawChallenge), MFAChallenge{
+		UserID:    u.ID,
+		ExpiresAt: s.clock().Add(settings.ChallengeTTL),
+	}); err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("store MFA challenge: %w", err))
+	}
+	return challengeResult(rawChallenge), nil
+}
+
+func (s *Service) MFAStatus(ctx context.Context, userID uuid.UUID) (MFAStatus, error) {
+	settings := s.mfaSettings()
+	if !settings.Enabled || s.mfa == nil {
+		return MFAStatus{Available: false}, nil
+	}
+	enrollment, found, err := s.mfa.GetEnrollment(ctx, userID)
+	if err != nil {
+		return MFAStatus{}, apperror.NewInternal(fmt.Errorf("read MFA enrollment: %w", err))
+	}
+	return MFAStatus{Available: true, Enabled: found && enrollment.Enabled}, nil
+}
+
+func (s *Service) SetupMFA(ctx context.Context, userID uuid.UUID) (*MFASetup, error) {
+	settings, err := s.requireMFA()
+	if err != nil {
+		return nil, err
+	}
+	if s.mfa == nil {
+		return nil, apperror.NewInternal(errors.New("MFA store is not configured"))
+	}
+	enrollment, found, err := s.mfa.GetEnrollment(ctx, userID)
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("read MFA enrollment: %w", err))
+	}
+	if found && enrollment.Enabled {
+		return nil, errMFAAlreadyEnabled()
+	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	secret, err := newTOTPSecret()
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("generate MFA secret: %w", err))
+	}
+	encrypted, err := encryptMFASecret(settings.EncryptionKey, secret)
+	if err != nil {
+		return nil, errMFAConfig()
+	}
+	if err := s.mfa.PutPendingEnrollment(ctx, userID, encrypted); err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("store MFA enrollment: %w", err))
+	}
+	return &MFASetup{
+		Secret:     secret,
+		OTPAuthURI: buildOTPAuthURI(settings.Issuer, u.Email, secret),
+	}, nil
+}
+
+func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string) ([]string, error) {
+	settings, err := s.requireMFA()
+	if err != nil {
+		return nil, err
+	}
+	if s.mfa == nil {
+		return nil, apperror.NewInternal(errors.New("MFA store is not configured"))
+	}
+	enrollment, found, err := s.mfa.GetEnrollment(ctx, userID)
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("read MFA enrollment: %w", err))
+	}
+	if !found {
+		return nil, errMFASetupRequired()
+	}
+	if enrollment.Enabled {
+		return nil, errMFAAlreadyEnabled()
+	}
+	secret, err := decryptMFASecret(settings.EncryptionKey, enrollment.EncryptedSecret)
+	if err != nil {
+		return nil, errMFAConfig()
+	}
+	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+		return nil, errMFAInvalid()
+	}
+
+	codes, hashes, err := newRecoveryCodes(settings.RecoveryCodeCount)
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("generate MFA recovery codes: %w", err))
+	}
+	if err := s.mfa.ConfirmEnrollment(ctx, userID, enrollment.EncryptedSecret, hashes); err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("confirm MFA enrollment: %w", err))
+	}
+	return codes, nil
+}
+
+// DisableMFA requires a current TOTP code. Recovery codes are intentionally
+// accepted for login only: consuming one and then failing the disable write
+// would otherwise destroy a recovery factor without completing the change.
+func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string) error {
+	settings, err := s.requireMFA()
+	if err != nil {
+		return err
+	}
+	if s.mfa == nil {
+		return apperror.NewInternal(errors.New("MFA store is not configured"))
+	}
+	enrollment, found, err := s.mfa.GetEnrollment(ctx, userID)
+	if err != nil {
+		return apperror.NewInternal(fmt.Errorf("read MFA enrollment: %w", err))
+	}
+	if !found || !enrollment.Enabled {
+		return errMFANotEnrolled()
+	}
+	secret, err := decryptMFASecret(settings.EncryptionKey, enrollment.EncryptedSecret)
+	if err != nil {
+		return errMFAConfig()
+	}
+	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+		return errMFAInvalid()
+	}
+	if err := s.mfa.Disable(ctx, userID); err != nil {
+		return apperror.NewInternal(fmt.Errorf("disable MFA: %w", err))
+	}
+	return nil
+}
+
+// VerifyMFA consumes the challenge before checking the code. This makes every
+// challenge single-use, including a failed attempt, and prevents an attacker
+// from turning a leaked challenge into an unlimited six-digit guessing oracle.
+func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string) (*authResponse, error) {
+	settings, err := s.requireMFA()
+	if err != nil {
+		return nil, err
+	}
+	if s.mfa == nil {
+		return nil, apperror.NewInternal(errors.New("MFA store is not configured"))
+	}
+	challenge, found, err := s.mfa.ConsumeChallenge(ctx, hashToken(rawChallenge))
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("consume MFA challenge: %w", err))
+	}
+	if !found {
+		return nil, errMFAInvalid()
+	}
+	enrollment, found, err := s.mfa.GetEnrollment(ctx, challenge.UserID)
+	if err != nil {
+		return nil, apperror.NewInternal(fmt.Errorf("read MFA enrollment: %w", err))
+	}
+	if !found || !enrollment.Enabled {
+		return nil, errMFAInvalid()
+	}
+	secret, err := decryptMFASecret(settings.EncryptionKey, enrollment.EncryptedSecret)
+	if err != nil {
+		return nil, errMFAConfig()
+	}
+	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+		recoveryHash, ok := normalizedRecoveryCodeHash(code)
+		if !ok {
+			return nil, errMFAInvalid()
+		}
+		used, err := s.mfa.ConsumeRecoveryCode(ctx, challenge.UserID, recoveryHash)
+		if err != nil {
+			return nil, apperror.NewInternal(fmt.Errorf("consume MFA recovery code: %w", err))
+		}
+		if !used {
+			return nil, errMFAInvalid()
+		}
+	}
+
+	u, err := s.repo.FindByID(ctx, challenge.UserID)
+	if err != nil {
+		return nil, errInvalidCredentials()
+	}
+	return s.issueTokens(ctx, u)
+}
+
+func (s *Service) requireMFA() (MFASettings, error) {
+	settings := s.mfaSettings()
+	if !settings.Enabled {
+		return MFASettings{}, errMFAUnavailable()
+	}
+	return settings, nil
+}
+
+func newTOTPSecret() (string, error) {
+	bytes := make([]byte, 20)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(base32.StdEncoding.EncodeToString(bytes), "="), nil
+}
+
+func buildOTPAuthURI(issuer, email, secret string) string {
+	label := url.PathEscape(issuer + ":" + email)
+	query := url.Values{
+		"secret":    {secret},
+		"issuer":    {issuer},
+		"algorithm": {"SHA1"},
+		"digits":    {fmt.Sprintf("%d", totpDigits)},
+		"period":    {fmt.Sprintf("%d", int(totpPeriod/time.Second))},
+	}
+	return "otpauth://totp/" + label + "?" + query.Encode()
+}
+
+func validTOTPCode(secret, rawCode string, now time.Time, window int) bool {
+	code := strings.TrimSpace(rawCode)
+	if len(code) != totpDigits {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	for offset := -window; offset <= window; offset++ {
+		candidate, err := totpCode(secret, now.Add(time.Duration(offset)*totpPeriod))
+		if err == nil && subtle.ConstantTimeCompare([]byte(candidate), []byte(code)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// totpCode follows RFC 6238's interoperable default: HMAC-SHA-1, six digits,
+// and a 30-second time step, which is what common authenticator apps expect.
+func totpCode(secret string, now time.Time) (string, error) {
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimSpace(secret)))
+	if err != nil || len(decoded) == 0 {
+		return "", errors.New("invalid base32 TOTP secret")
+	}
+	counter := uint64(now.Unix() / int64(totpPeriod/time.Second))
+	var message [8]byte
+	binary.BigEndian.PutUint64(message[:], counter)
+	hash := hmac.New(sha1.New, decoded)
+	_, _ = hash.Write(message[:])
+	sum := hash.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff
+	return fmt.Sprintf("%06d", value%1000000), nil
+}
+
+func newRecoveryCodes(count int) ([]string, []string, error) {
+	codes := make([]string, 0, count)
+	hashes := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		bytes := make([]byte, 8)
+		if _, err := rand.Read(bytes); err != nil {
+			return nil, nil, err
+		}
+		normalized := strings.ToUpper(hex.EncodeToString(bytes))
+		code := normalized[:4] + "-" + normalized[4:8] + "-" + normalized[8:12] + "-" + normalized[12:]
+		hash, ok := normalizedRecoveryCodeHash(code)
+		if !ok {
+			return nil, nil, errors.New("generated invalid MFA recovery code")
+		}
+		codes = append(codes, code)
+		hashes = append(hashes, hash)
+	}
+	return codes, hashes, nil
+}
+
+func normalizedRecoveryCodeHash(raw string) (string, bool) {
+	value := strings.ToUpper(strings.TrimSpace(raw))
+	value = strings.NewReplacer("-", "", " ", "").Replace(value)
+	if len(value) != 16 {
+		return "", false
+	}
+	for i := 0; i < len(value); i++ {
+		if (value[i] < 'A' || value[i] > 'F') && (value[i] < '0' || value[i] > '9') {
+			return "", false
+		}
+	}
+	return hashToken("mfa-recovery:" + value), true
+}
+
+func decodeMFAKey(raw string) ([]byte, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, errors.New("empty key")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(value)
+	}
+	if err != nil || len(decoded) != 32 {
+		return nil, errors.New("key is not 32 bytes")
+	}
+	return decoded, nil
+}
+
+func encryptMFASecret(rawKey, secret string) (string, error) {
+	key, err := decodeMFAKey(rawKey)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nil, nonce, []byte(secret), nil)
+	payload := append(nonce, ciphertext...)
+	return base64.RawStdEncoding.EncodeToString(payload), nil
+}
+
+func decryptMFASecret(rawKey, encoded string) (string, error) {
+	key, err := decodeMFAKey(rawKey)
+	if err != nil {
+		return "", err
+	}
+	payload, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil || len(payload) < gcm.NonceSize() {
+		return "", errors.New("invalid encrypted MFA secret")
+	}
+	secret, err := gcm.Open(nil, payload[:gcm.NonceSize()], payload[gcm.NonceSize():], nil)
+	if err != nil {
+		return "", err
+	}
+	return string(secret), nil
+}

@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -26,16 +25,17 @@ func (s *Service) issueAccessToken(
 	userID uuid.UUID,
 	// go-scaffold:issue-access-token-params
 ) (string, error) {
+	now := s.clock()
 	claims := accessClaims{
 		Typ: tokenTypeAccess,
 		// go-scaffold:jwt-claims-values
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.accessTTL)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.config.JWTAccessTTL)),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.jwtSecret))
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.config.JWTSecret))
 }
 
 // randomToken generates an opaque refresh token — deliberately not a JWT:

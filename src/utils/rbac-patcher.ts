@@ -1,7 +1,7 @@
 import { AuthStore } from "../types";
 import fs from "fs-extra";
 import { authHandlerLineFor, authWiringLines } from "./auth-patcher";
-import { insertBeforeMarkerOnce } from "./marker-patch";
+import { ensureImport, insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const SCHEMA_MARKER = "// go-scaffold:schemas";
@@ -71,11 +71,10 @@ export function patchUserJWTForRbac(jwtGoPath: string): void {
   fs.writeFileSync(jwtGoPath, content);
 }
 
-// patchUserServiceForRbac wires a role.Service dependency into user.Service
-// (via a consumer-side roleChecker interface, same convention as
-// repository/mailer/tokenStore) and adds SetRole, the one place a user's
-// role actually changes after creation.
-export function patchUserServiceForRbac(serviceGoPath: string): void {
+// patchUserServiceForRbac adds the RBAC behavior to user.Service. The base
+// auth constructor already exposes Dependencies.Roles, so enabling RBAC does
+// not mutate a positional constructor signature anymore.
+export function patchUserServiceForRbac(serviceGoPath: string, goModule?: string, sessionsGoPath?: string): void {
   let content = fs.readFileSync(serviceGoPath, "utf8");
 
   const roleCheckerInterface = [
@@ -89,16 +88,26 @@ export function patchUserServiceForRbac(serviceGoPath: string): void {
     content = insertBeforeMarkerOnce(content, "// go-scaffold:user-interfaces", roleCheckerInterface, "type RoleChecker interface");
   }
 
-  if (!/\broles\s+RoleChecker\b/.test(content) && !/\broles\s+roleChecker\b/.test(content)) {
-    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-fields", "roles RoleChecker", "roles RoleChecker");
+  // issueTokens moved out of service.go with auth's use-case split. Keep the
+  // patch compatible with both shapes: new projects patch sessions.go, while
+  // older generated projects still have the marker in service.go.
+  const tokenIssuePath = sessionsGoPath && fs.existsSync(sessionsGoPath) ? sessionsGoPath : serviceGoPath;
+  let tokenIssueContent = tokenIssuePath === serviceGoPath ? content : fs.readFileSync(tokenIssuePath, "utf8");
+  tokenIssueContent = insertBeforeMarkerOnce(tokenIssueContent, "// go-scaffold:issue-access-token-args", "u.Role,", "u.Role,");
+  if (tokenIssuePath === serviceGoPath) {
+    content = tokenIssueContent;
   }
-  if (!/\broles\s+\.\.\.RoleChecker\s*,/.test(content) && !/\broles\s+roleChecker\s*,/.test(content)) {
-    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-params", "roles RoleChecker,", "roles RoleChecker,");
+
+  // Auth keeps its base service focused and therefore does not need RBAC's
+  // error/ORM imports until this optional method is patched in. Add them here
+  // instead of carrying unused imports in every auth-only project. The module
+  // argument is optional for callers that patch legacy projects whose service
+  // already imported apperror; new CLI calls always provide it.
+  if (goModule) {
+    content = ensureImport(content, "errors");
+    content = ensureImport(content, `${goModule}/internal/shared/apperror`);
+    content = ensureImport(content, "gorm.io/gorm");
   }
-  if (!/roles:\s+roleChecker,/.test(content) && !/roles:\s+roles,/.test(content)) {
-    content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-init", "roles: roles,", "roles: roles,");
-  }
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:issue-access-token-args", "u.Role,", "u.Role,");
 
   const setRoleMethod = [
     "// SetRole assigns userID a new role — validated against the role catalog",
@@ -130,16 +139,12 @@ export function patchUserServiceForRbac(serviceGoPath: string): void {
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-methods", setRoleMethod, "func (s *Service) SetRole(");
 
   fs.writeFileSync(serviceGoPath, content);
+  if (tokenIssuePath !== serviceGoPath) fs.writeFileSync(tokenIssuePath, tokenIssueContent);
 }
 
-// patchUserServiceTestForRbac keeps service_test.go's single NewService call
-// site (newTestService) compiling once patchUserServiceForRbac adds the
-// roleChecker param above — same drift risk the handoff notes called out for
-// middleware.NewAuthz's call sites, just for this signature instead. The fake
-// itself is added here too, not pre-declared unconditionally in the
-// template: golangci-lint's unused check flags an unreferenced type+method
-// pair in the auth-only (pre-rbac) state, since nothing there yet implements
-// or needs a roleChecker.
+// patchUserServiceTestForRbac supplies a fake role capability through the
+// explicit Dependencies literal. The fake itself remains opt-in so auth-only
+// projects do not carry an unused RBAC test double.
 export function patchUserServiceTestForRbac(serviceTestGoPath: string): void {
   let content = fs.readFileSync(serviceTestGoPath, "utf8");
   const fakeRoles = [
@@ -149,7 +154,7 @@ export function patchUserServiceTestForRbac(serviceTestGoPath: string): void {
     "func (fakeRoles) CodeExists(context.Context, string) (bool, error) { return true, nil }",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-test-types", fakeRoles, "type fakeRoles struct{}");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-test-args", "fakeRoles{},", "fakeRoles{},");
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:user-service-test-deps", "Roles: fakeRoles{},", "Roles: fakeRoles{},");
   fs.writeFileSync(serviceTestGoPath, content);
 }
 
@@ -172,6 +177,14 @@ export function patchUserDTOForRbac(dtoGoPath: string): void {
 // /permissions for the actual role/permission management API.
 export function patchUserHandlerForRbac(handlerGoPath: string, goModule: string): void {
   let content = fs.readFileSync(handlerGoPath, "utf8");
+
+  // The base auth handler is intentionally only the route/composition surface;
+  // its endpoint implementations now live in sibling files. RBAC still
+  // patches its admin handlers into handler.go for marker compatibility, so
+  // make the imports required by those injected handlers explicit here rather
+  // than relying on imports that used to come from the old monolithic file.
+  content = ensureImport(content, "net/http");
+  content = ensureImport(content, `${goModule}/internal/shared/httpx`);
 
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-consts", 'const PermUserManageRole = "user:manage-role"', "PermUserManageRole");
   content = insertBeforeMarkerOnce(content, "// go-scaffold:user-handler-consts", 'const PermUserRead = "user:read"', "PermUserRead");
@@ -362,7 +375,8 @@ export function patchCmdSeedForRbac(seedMainGoPath: string, goModule: string): v
 
   const roleSvcLine = "roleSvc := role.NewServiceFromDB(db)";
   content = insertBeforeMarkerOnce(content, "// go-scaffold:seed-services", roleSvcLine, roleSvcLine);
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:seed-user-service-args", "roleSvc,", "roleSvc,");
+  const seedRoleDependency = content.includes("user.Dependencies{") ? "Roles: roleSvc," : "roleSvc,";
+  content = insertBeforeMarkerOnce(content, "// go-scaffold:seed-user-service-args", seedRoleDependency, seedRoleDependency);
 
   const setRoleCall = [
     'if _, err := svc.SetRole(ctx, u.ID, "admin"); err != nil {',

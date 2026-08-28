@@ -1,0 +1,98 @@
+package user
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"{{goModule}}/internal/app/user/model"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/dberr"
+	"{{goModule}}/internal/shared/id"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+// Failed-attempt policy. These values are security posture rather than
+// per-environment tuning knobs. The first few failures cost nothing, then the
+// wait doubles up to a bounded maximum.
+const (
+	loginFreeAttempts = 3
+	loginMaxLock      = 15 * time.Minute
+)
+
+// throttleKey namespaces the counter by purpose, so a locked login never
+// blocks the password reset that would fix it. The address is hashed because
+// the counter must also work for addresses that have no account.
+func throttleKey(purpose, email string) string {
+	return hashToken(purpose + ":" + normalizeEmail(email))
+}
+
+// throttled treats a counter read failure as not-throttled: this is a brake,
+// and it should not be able to lock everybody out on its own.
+func (s *Service) throttled(ctx context.Context, key string) bool {
+	until, err := s.repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		slog.Error("read login throttle", "error", err)
+		return false
+	}
+	return !until.IsZero() && time.Now().Before(until)
+}
+
+func (s *Service) Register(ctx context.Context, in registerInput) (*authResult, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, apperror.NewInternal(err)
+	}
+	hashStr := string(hash)
+
+	u := &model.User{ID: id.New(), Email: normalizeEmail(in.Email), Name: in.Name}
+	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
+		if dberr.IsDuplicate(err) {
+			return nil, errEmailTaken()
+		}
+		return nil, apperror.NewInternal(err)
+	}
+	// Best-effort: a mail failure should not block registration. The user can
+	// request another link through ResendVerificationEmail.
+	s.sendVerificationEmail(ctx, u)
+	auth, err := s.issueTokens(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return tokenResult(auth), nil
+}
+
+func (s *Service) Login(ctx context.Context, in loginInput) (*authResult, error) {
+	key := throttleKey("login", in.Email)
+	if s.throttled(ctx, key) {
+		return nil, errTooManyAttempts()
+	}
+
+	// Every failure records the same key and returns the same error whether or
+	// not the account exists, preventing account enumeration through the counter.
+	fail := func() (*authResult, error) {
+		if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
+			slog.Error("record login failure", "error", err)
+		}
+		return nil, errInvalidCredentials()
+	}
+
+	u, err := s.repo.FindByEmail(ctx, normalizeEmail(in.Email))
+	if err != nil {
+		return fail()
+	}
+	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
+	if err != nil || ident.PasswordHash == nil {
+		return fail()
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(*ident.PasswordHash), []byte(in.Password)); err != nil {
+		return fail()
+	}
+
+	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
+		slog.Error("clear login failures", "error", err)
+	}
+	return s.completeLogin(ctx, u)
+}

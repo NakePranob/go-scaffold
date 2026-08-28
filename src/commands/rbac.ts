@@ -87,7 +87,11 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   patchUserModelForRbac(path.join(projectDir, "internal", "app", "user", "model", "user.go"));
   patchMiddlewareAuthForRbac(path.join(projectDir, "internal", "shared", "middleware", "auth.go"));
   patchUserJWTForRbac(path.join(projectDir, "internal", "app", "user", "jwt.go"));
-  patchUserServiceForRbac(path.join(projectDir, "internal", "app", "user", "service.go"));
+  patchUserServiceForRbac(
+    path.join(projectDir, "internal", "app", "user", "service.go"),
+    config.goModule,
+    path.join(projectDir, "internal", "app", "user", "sessions.go")
+  );
   patchUserServiceTestForRbac(path.join(projectDir, "internal", "app", "user", "service_test.go"));
   patchUserDTOForRbac(path.join(projectDir, "internal", "app", "user", "dto.go"));
   patchUserHandlerForRbac(path.join(projectDir, "internal", "app", "user", "handler.go"), config.goModule);

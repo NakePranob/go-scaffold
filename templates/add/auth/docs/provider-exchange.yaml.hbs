@@ -31,7 +31,9 @@ post:
       content:
         application/json:
           schema:
-            $ref: "./schemas.yaml#/AuthResponse"
+            oneOf:
+              - { $ref: "./schemas.yaml#/AuthResponse" }
+              - { $ref: "./schemas.yaml#/MFAChallengeResponse" }
     "400":
       description: controlled OAuth error (oauth_denied, oauth_state_invalid, or oauth_failed)
     "503":

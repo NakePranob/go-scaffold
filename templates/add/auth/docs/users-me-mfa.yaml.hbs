@@ -1,0 +1,12 @@
+get:
+  summary: Get the current user's MFA status
+  operationId: getMyMFAStatus
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "200":
+      description: MFA availability and enrollment status
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MFAStatus' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

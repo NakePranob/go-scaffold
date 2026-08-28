@@ -1,0 +1,29 @@
+-- MFA state is durable in Postgres for both refresh-token store choices. TOTP
+-- secrets are encrypted by the application; challenges and recovery codes are
+-- stored only as hashes and consumed atomically.
+CREATE TABLE user_svc.mfa_enrollments (
+    user_id          UUID PRIMARY KEY REFERENCES user_svc.users(id) ON DELETE CASCADE,
+    encrypted_secret TEXT NOT NULL,
+    enabled          BOOLEAN NOT NULL DEFAULT false,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_svc.mfa_challenges (
+    challenge_hash TEXT PRIMARY KEY,
+    user_id        UUID NOT NULL REFERENCES user_svc.users(id) ON DELETE CASCADE,
+    expires_at     TIMESTAMPTZ NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_mfa_challenges_user ON user_svc.mfa_challenges (user_id);
+CREATE INDEX idx_mfa_challenges_expires_at ON user_svc.mfa_challenges (expires_at);
+
+CREATE TABLE user_svc.mfa_recovery_codes (
+    user_id    UUID NOT NULL REFERENCES user_svc.users(id) ON DELETE CASCADE,
+    code_hash  TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, code_hash)
+);
+
+CREATE INDEX idx_mfa_recovery_codes_user ON user_svc.mfa_recovery_codes (user_id);

@@ -2,30 +2,19 @@ package user
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
-	"errors"
-	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
-	"{{goModule}}/internal/app/user/model"
 	"{{goModule}}/internal/app/user/application"
-	"{{goModule}}/internal/shared/apperror"
-	"{{goModule}}/internal/shared/config"
-	"{{goModule}}/internal/shared/dberr"
-	"{{goModule}}/internal/shared/id"
+	"{{goModule}}/internal/app/user/model"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
-// repository = what the service needs from the data layer (declared on the
-// consumer side, so it can be faked in tests).
-type repository interface {
+// repository = what the user application needs from the data layer. The
+// interface stays consumer-owned so every use case can be tested without a
+// database, while the concrete GORM implementation remains in repository.go.
+type UserRepository interface {
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	UpdateUser(ctx context.Context, u *model.User) error
@@ -41,11 +30,14 @@ type repository interface {
 	// go-scaffold:user-repository-interface
 }
 
-// mailer = what the service needs to send an email — satisfied by
-// platform/mail's AsyncClient (enqueues onto cmd/worker instead of blocking
-// the request on SMTP). Takes ctx so the enqueue can join the caller's
-// transaction where the queue backend supports it.
-type mailer interface {
+// repository is kept as a package-local alias so generated method extensions
+// and focused tests can use the short consumer-side name without hiding the
+// public Dependencies contract from callers outside this package.
+type repository = UserRepository
+
+// mailer = what the service needs to send an email. The concrete client may
+// send inline or enqueue onto cmd/worker; auth only depends on this port.
+type AuthMailer interface {
 	Send(ctx context.Context, to, subject, body string) error
 }
 
@@ -59,56 +51,62 @@ type RoleChecker interface {
 	CodeExists(ctx context.Context, code string) (bool, error)
 }
 
+// Service is the stable facade exposed to handlers, cmd/seed, and generated
+// extensions. The behavior is implemented in focused files by use-case area:
+// local_auth.go, sessions.go, recovery_service.go, external_login.go, and
+// user_query.go. Keeping the facade avoids route and generator compatibility
+// churn while preventing one 600-line service file from becoming the place
+// where every auth concern must be edited.
 type Service struct {
-	repo       repository
-	tokens     tokenStore
-	mailer     mailer
-	jwtSecret  string
-	accessTTL  time.Duration
-	refreshTTL time.Duration
-	refreshMaxTTL time.Duration
-	oauthStateTTL time.Duration
-	resetTTL   time.Duration
-	resetURL   string
-	verifyTTL  time.Duration
-	verifyURL  string
-	providers  application.ProviderRegistry
-	recovery    *application.Recovery
-	roles       RoleChecker
-	now         func() time.Time
+	repo              UserRepository
+	refreshTokens     RefreshTokenStore
+	oauthTransactions OAuthTransactionStore
+	recoveryTokens    RecoveryTokenStore
+	mfa               MFAStore
+	mailer            AuthMailer
+	providers         ProviderRegistry
+	recovery          *application.Recovery
+	config            AuthConfig
+	roles             RoleChecker
+	now               func() time.Time
 	// go-scaffold:user-service-fields
 }
 
-func NewService(
-	repo repository,
-	tokens tokenStore,
-	mailer mailer,
-	cfg config.Config,
-	providers application.ProviderRegistry,
-	roles ...RoleChecker,
-	// go-scaffold:user-service-params
-) *Service {
-	var roleChecker RoleChecker
-	if len(roles) > 0 {
-		roleChecker = roles[0]
+// NewService is deliberately explicit: infrastructure dependencies and auth
+// policy are separate values, so the application layer never receives the
+// generated project's catch-all shared configuration object.
+func NewService(deps Dependencies, cfg AuthConfig) *Service {
+	if cfg.JWTAccessTTL <= 0 {
+		cfg.JWTAccessTTL = 15 * time.Minute
+	}
+	if cfg.JWTRefreshTTL <= 0 {
+		cfg.JWTRefreshTTL = 12 * time.Hour
+	}
+	cfg.JWTRefreshMaxTTL = defaultDuration(cfg.JWTRefreshMaxTTL, cfg.JWTRefreshTTL)
+	cfg.OAuthStateTTL = defaultDuration(cfg.OAuthStateTTL, 10*time.Minute)
+	if cfg.MFA.RecoveryCodeCount == 0 {
+		cfg.MFA.RecoveryCodeCount = defaultMFACodes
+	}
+	clock := deps.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	providers := deps.Providers
+	if providers == nil {
+		providers = application.NewProviderRegistry()
 	}
 	return &Service{
-		repo:       repo,
-		tokens:     tokens,
-		mailer:     mailer,
-		jwtSecret:  cfg.JWTSecret,
-		accessTTL:  cfg.JWTAccessTTL,
-		refreshTTL: cfg.JWTRefreshTTL,
-		refreshMaxTTL: defaultDuration(cfg.JWTRefreshMaxTTL, cfg.JWTRefreshTTL),
-		oauthStateTTL: defaultDuration(cfg.OAuthStateTTL, 10*time.Minute),
-		resetTTL:   cfg.PasswordResetTTL,
-		resetURL:   cfg.PasswordResetURL,
-		verifyTTL:  cfg.EmailVerifyTTL,
-		verifyURL:  cfg.EmailVerifyURL,
-		providers:  providers,
-		recovery: newRecovery(repo, tokens),
-		roles:    roleChecker,
-		now:      time.Now,
+		repo:              deps.Repository,
+		refreshTokens:     deps.RefreshTokens,
+		oauthTransactions: deps.OAuthTransactions,
+		recoveryTokens:    deps.RecoveryTokens,
+		mfa:               deps.MFA,
+		mailer:            deps.Mailer,
+		providers:         providers,
+		recovery:          newRecovery(deps.Repository, deps.RecoveryTokens),
+		config:            cfg,
+		roles:             deps.Roles,
+		now:               clock,
 		// go-scaffold:user-service-init
 	}
 }
@@ -120,558 +118,18 @@ func defaultDuration(value, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+func (s *Service) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
 // normalizeEmail is applied at every boundary an address enters the service
 // through. The column is a plain case-sensitive UNIQUE, so without this
-// "Foo@x.com" and "foo@x.com" are two accounts that never collide — and an
-// external provider that normalizes email casing fails to find the local
-// account it should have linked to, silently creating a second user for the
-// same person.
+// "Foo@x.com" and "foo@x.com" could become two accounts.
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// Failed-attempt policy. Constants rather than config: these are a security
-// posture, not something to tune per environment, and every knob added here is
-// a knob someone can quietly widen until the control stops working. Change the
-// numbers if your threat model differs.
-//
-// The first loginFreeAttempts failures cost nothing — a typo shouldn't lock
-// anyone out. After that each failure doubles the wait (1s, 2s, 4s, ...) up to
-// loginMaxLock, which is the shape OWASP's Authentication Cheat Sheet asks for.
-const (
-	loginFreeAttempts = 3
-	loginMaxLock      = 15 * time.Minute
-)
-
-// throttleKey namespaces the counter by what is being attempted, so a locked
-// login never blocks the password-reset that would fix it — someone who forgot
-// their password is exactly the person who trips the login counter.
-//
-// Hashed, because the counter must exist for addresses that have no account
-// (otherwise "was I throttled" answers "does this account exist"), and a table
-// of plain addresses that anyone has ever typed is a user list.
-func throttleKey(purpose, email string) string {
-	return hashToken(purpose + ":" + normalizeEmail(email))
-}
-
-// throttled reports whether this key is inside its lockout window. A failure
-// to read the counter is treated as not-throttled: this is a brake, and it
-// should not be able to lock everybody out on its own.
-func (s *Service) throttled(ctx context.Context, key string) bool {
-	until, err := s.repo.LoginLockedUntil(ctx, key)
-	if err != nil {
-		slog.Error("read login throttle", "error", err)
-		return false
-	}
-	return !until.IsZero() && time.Now().Before(until)
-}
-
-func (s *Service) Register(ctx context.Context, in registerInput) (*authResponse, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	hashStr := string(hash)
-
-	u := &model.User{ID: id.New(), Email: normalizeEmail(in.Email), Name: in.Name}
-	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
-	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
-		if dberr.IsDuplicate(err) {
-			return nil, errEmailTaken()
-		}
-		return nil, apperror.NewInternal(err)
-	}
-	// best-effort: a mail failure shouldn't block registration — the user can
-	// always ask for another link via ResendVerificationEmail.
-	s.sendVerificationEmail(ctx, u)
-	return s.issueTokens(ctx, u)
-}
-
-func (s *Service) Login(ctx context.Context, in loginInput) (*authResponse, error) {
-	key := throttleKey("login", in.Email)
-	if s.throttled(ctx, key) {
-		return nil, errTooManyAttempts()
-	}
-
-	// Every failure below is recorded against the same key whether or not the
-	// account exists, and answers with the same error — so the counter cannot
-	// be used to enumerate accounts either.
-	fail := func() (*authResponse, error) {
-		if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
-			slog.Error("record login failure", "error", err)
-		}
-		return nil, errInvalidCredentials()
-	}
-
-	u, err := s.repo.FindByEmail(ctx, normalizeEmail(in.Email))
-	if err != nil {
-		return fail()
-	}
-	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
-	if err != nil || ident.PasswordHash == nil {
-		return fail()
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(*ident.PasswordHash), []byte(in.Password)); err != nil {
-		return fail()
-	}
-
-	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
-		slog.Error("clear login failures", "error", err)
-	}
-	return s.issueTokens(ctx, u)
-}
-
-// Refresh rotates a refresh token: the presented one is consumed (deleted +
-// tombstoned as "used") and a fresh pair is issued. If the presented token
-// isn't active but WAS already used, that means this exact raw value got
-// replayed after rotation — i.e. it leaked — so every session for that user
-// is revoked, not just this one.
-func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*authResponse, error) {
-	hash := hashToken(rawRefreshToken)
-	token, ok, err := s.tokens.ConsumeRefreshToken(ctx, hash)
-	if err != nil {
-		return nil, apperror.NewInternal(fmt.Errorf("consume refresh token: %w", err))
-	}
-	if !ok {
-		reusedBy, used, reuseErr := s.tokens.IsRefreshTokenUsed(ctx, hash)
-		if reuseErr != nil {
-			return nil, apperror.NewInternal(fmt.Errorf("check refresh token reuse: %w", reuseErr))
-		}
-		if used {
-			if revokeErr := s.tokens.RevokeAllRefreshTokens(ctx, reusedBy); revokeErr != nil {
-				return nil, apperror.NewInternal(fmt.Errorf("revoke sessions after refresh token reuse: %w", revokeErr))
-			}
-		}
-		return nil, errInvalidToken()
-	}
-
-	u, err := s.repo.FindByID(ctx, token.UserID)
-	if err != nil {
-		return nil, errInvalidToken()
-	}
-	return s.issueTokens(ctx, u, token.AbsoluteExpiresAt)
-}
-
-// Logout is intentional, not reuse — no tombstoning, and idempotent (a
-// missing/already-gone token still succeeds).
-func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
-	if rawRefreshToken == "" {
-		return nil
-	}
-	hash := hashToken(rawRefreshToken)
-	userID, ok, err := s.tokens.GetRefreshToken(ctx, hash)
-	if err != nil || !ok {
-		return nil
-	}
-	return s.tokens.DeleteRefreshToken(ctx, hash, userID)
-}
-
-// LogoutAll is the authenticated, self-service version of what ResetPassword
-// already does automatically: end every session for this user, not just the
-// one making the request — e.g. "log out everywhere" after a lost device.
-func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) error {
-	return s.tokens.RevokeAllRefreshTokens(ctx, userID)
-}
-
-func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*model.User, error) {
-	u, err := s.repo.FindByID(ctx, userID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errNotFound()
-		}
-		return nil, apperror.NewInternal(err)
-	}
-	return u, nil
-}
-
-// List is unused until an admin-facing route calls it (see `add rbac`'s
-// GET /users) — kept here rather than gated behind a patch since it's a
-// generically useful piece of data access, same as UpdateUser.
-func (s *Service) List(ctx context.Context, limit, offset int) ([]model.User, error) {
-	items, err := s.repo.FindAll(ctx, limit, offset)
-	if err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	return items, nil
-}
-
-// ForgotPassword always succeeds from the caller's point of view — whether
-// the email exists or not — so a login-attempt-shaped probe can't be used to
-// enumerate registered accounts. Only if the email resolves to a local
-// (password-based) identity does it actually issue+email a reset token.
-func (s *Service) ForgotPassword(ctx context.Context, email string) error {
-	// Its own counter, so hammering this endpoint cannot lock anyone out of
-	// logging in, and a locked-out login cannot block the reset that fixes it.
-	// Every request counts here, not just failures: what this throttles is
-	// using someone else's address as a mail-bomb target.
-	key := throttleKey("pwreset", email)
-	if s.throttled(ctx, key) {
-		return nil // same answer as always — silence is the whole design here
-	}
-	if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
-		slog.Error("record password reset attempt", "error", err)
-	}
-
-	u, err := s.repo.FindByEmail(ctx, normalizeEmail(email))
-	if err != nil {
-		return nil
-	}
-	ident, err := s.repo.FindIdentity(ctx, u.ID, model.ProviderLocal)
-	if err != nil || ident.PasswordHash == nil {
-		return nil // external-only account has no password to reset
-	}
-
-	raw, err := randomToken()
-	if err != nil {
-		return apperror.NewInternal(err)
-	}
-	if err := s.tokens.SetPasswordResetToken(ctx, hashToken(raw), u.ID, s.resetTTL); err != nil {
-		return apperror.NewInternal(err)
-	}
-
-	link := s.resetURL + "?token=" + raw
-	if err := s.mailer.Send(ctx, u.Email, "Reset your password", "Reset your password: "+link); err != nil {
-		// token's already stored — a mail failure shouldn't fail the request,
-		// just get logged so it's visible operationally.
-		slog.Error("send password reset email", "error", err)
-	}
-	return nil
-}
-
-// ResetPassword consumes a one-time reset token (GETDEL — see
-// tokenStore.ConsumePasswordResetToken), sets the new password, and revokes
-// every existing session for that user: a password reset should end every
-// session an attacker (or the legitimate user on another device) still holds.
-// If the cross-store session revoke fails after the database transaction has
-// committed, the token is restored in Postgres so the caller can retry the
-// complete security operation. This keeps a 500 from turning into a consumed
-// token plus live sessions; a later retry repeats the idempotent revoke.
-func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
-	tokenHash := hashToken(rawToken)
-	userID, err := s.recovery.ResetPassword(ctx, tokenHash, newPassword)
-	if err != nil {
-		if errors.Is(err, application.ErrInvalidToken) {
-			return errInvalidToken()
-		}
-		return apperror.NewInternal(fmt.Errorf("reset password: %w", err))
-	}
-	if err := s.tokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
-		if restoreErr := s.tokens.SetPasswordResetToken(ctx, tokenHash, userID, s.resetTTL); restoreErr != nil {
-			return apperror.NewInternal(fmt.Errorf("revoke sessions after password reset: %w; restore reset token for retry: %v", err, restoreErr))
-		}
-		return apperror.NewInternal(fmt.Errorf("revoke sessions after password reset (reset token restored for retry): %w", err))
-	}
-	return nil
-}
-
-// sendVerificationEmail issues a one-time token and emails the link — called
-// from Register (best-effort) and ResendVerificationEmail. Not exported:
-// callers that want to send one go through one of those two, which decide
-// whether it's appropriate to (e.g. ResendVerificationEmail checks the user
-// isn't already verified first).
-func (s *Service) sendVerificationEmail(ctx context.Context, u *model.User) {
-	raw, err := randomToken()
-	if err != nil {
-		slog.Error("generate email verification token", "error", err)
-		return
-	}
-	if err := s.tokens.SetEmailVerifyToken(ctx, hashToken(raw), u.ID, s.verifyTTL); err != nil {
-		slog.Error("store email verification token", "error", err)
-		return
-	}
-	link := s.verifyURL + "?token=" + raw
-	if err := s.mailer.Send(ctx, u.Email, "Verify your email", "Verify your email: "+link); err != nil {
-		slog.Error("send email verification email", "error", err)
-	}
-}
-
-// ResendVerificationEmail is the authenticated counterpart to the automatic
-// send in Register — for when the first email never arrived or its token
-// expired. Rejects an already-verified user instead of silently no-op'ing:
-// unlike ForgotPassword this is authenticated, so there's no enumeration
-// concern in telling the caller their own account's real state.
-func (s *Service) ResendVerificationEmail(ctx context.Context, userID uuid.UUID) error {
-	u, err := s.repo.FindByID(ctx, userID)
-	if err != nil {
-		return apperror.NewInternal(err)
-	}
-	if u.EmailVerified {
-		return errAlreadyVerified()
-	}
-	s.sendVerificationEmail(ctx, u)
-	return nil
-}
-
-// VerifyEmail consumes a one-time verification token (GETDEL — see
-// tokenStore.ConsumeEmailVerifyToken) and marks the user verified.
-func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
-	_, err := s.recovery.VerifyEmail(ctx, hashToken(rawToken))
-	if err != nil {
-		if errors.Is(err, application.ErrInvalidToken) {
-			return errInvalidToken()
-		}
-		return apperror.NewInternal(fmt.Errorf("verify email: %w", err))
-	}
-	return nil
-}
-
-// BeginLogin accepts the browser client's state and S256 PKCE challenge and
-// asks the registered adapter to construct its authorization URL. The service
-// never sees an SDK config or provider-specific endpoint. It persists a hashed
-// state transaction so the backend can bind provider, PKCE challenge, and OIDC
-// nonce before the client-owned callback reaches ExchangeLogin.
-func (s *Service) BeginLogin(ctx context.Context, providerName string, in application.LoginStartInput) (*application.Authorization, error) {
-	provider, ok := s.providers.Lookup(providerName)
-	if !ok {
-		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider %q is not configured", providerName))
-	}
-	// state is an opaque client value: validate its wire-safe shape, but never
-	// trim or otherwise rewrite it. The frontend must receive the exact value it
-	// put in the authorization request when the provider redirects back.
-	if !validOAuthValue(in.State) || !validPKCEChallenge(in.CodeChallenge) || in.CodeChallengeMethod != "S256" {
-		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("state and S256 code challenge are required"))
-	}
-	nonce, err := randomToken()
-	if err != nil {
-		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("create oauth transaction: %w", err))
-	}
-	in.Nonce = nonce
-	authorization, err := provider.Begin(ctx, in)
-	if err != nil {
-		return nil, mapProviderError(err)
-	}
-	if strings.TrimSpace(authorization.URL) == "" {
-		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider returned an empty authorization URL"))
-	}
-	clock := s.now
-	if clock == nil {
-		clock = time.Now
-	}
-	if err := s.tokens.SetLoginTransaction(ctx, hashToken(in.State), loginTransaction{
-		Provider:      providerName,
-		CodeChallenge: in.CodeChallenge,
-		Nonce:         nonce,
-		ExpiresAt:     clock().Add(s.oauthStateTTL),
-	}); err != nil {
-		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("store oauth transaction: %w", err))
-	}
-	return &authorization, nil
-}
-
-type loginExchangeInput struct {
-	Code         string `json:"code"`
-	State        string `json:"state"`
-	CodeVerifier string `json:"code_verifier"`
-}
-
-func (s *Service) ExchangeLogin(ctx context.Context, providerName string, in loginExchangeInput) (*authResponse, error) {
-	provider, ok := s.providers.Lookup(providerName)
-	if !ok {
-		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider %q is not configured", providerName))
-	}
-	// state, code, and code_verifier are opaque protocol values. Do not trim
-	// them: changing a value after the browser/provider has seen it breaks the
-	// exact transaction binding. PKCE values also have a strict RFC 7636 shape.
-	if !validOAuthValue(in.State) || !validPKCEValue(in.CodeVerifier) {
-		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("state and code verifier are required"))
-	}
-	if !validOAuthValue(in.Code) {
-		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("authorization code is missing"))
-	}
-
-	transaction, ok, err := s.tokens.ConsumeLoginTransaction(ctx, hashToken(in.State))
-	if err != nil {
-		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("consume oauth transaction: %w", err))
-	}
-	if !ok || transaction.Provider != providerName || !validPKCEVerifier(in.CodeVerifier, transaction.CodeChallenge) {
-		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("oauth state or PKCE verifier is invalid"))
-	}
-
-	identity, err := provider.Complete(ctx, application.LoginCompleteInput{Code: in.Code, CodeVerifier: in.CodeVerifier, Nonce: transaction.Nonce})
-	if err != nil {
-		return nil, mapProviderError(err)
-	}
-	if identity.Provider != providerName {
-		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("provider identity name does not match the requested provider"))
-	}
-	u, err := s.findOrCreateExternalUser(ctx, identity)
-	if err != nil {
-		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("resolve external identity: %w", err))
-	}
-	return s.issueTokens(ctx, u)
-}
-
-func validPKCEVerifier(verifier, challenge string) bool {
-	if !validPKCEValue(verifier) || !validPKCEValue(challenge) {
-		return false
-	}
-	computed := pkceChallenge(verifier)
-	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
-}
-
-// OAuth state and authorization codes use the RFC 6749 VSCHAR shape. They are
-// opaque values, so the service validates the transport-safe range without
-// imposing a format or normalizing the value.
-func validOAuthValue(value string) bool {
-	if value == "" {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		if value[i] < 0x20 || value[i] > 0x7e {
-			return false
-		}
-	}
-	return true
-}
-
-// RFC 7636 defines code_verifier/code_challenge as 43–128 unreserved ASCII
-// characters. S256 is the only method accepted by this scaffold.
-func validPKCEValue(value string) bool {
-	if len(value) < 43 || len(value) > 128 {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		switch {
-		case c >= 'A' && c <= 'Z':
-		case c >= 'a' && c <= 'z':
-		case c >= '0' && c <= '9':
-		case c == '-' || c == '.' || c == '_' || c == '~':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validPKCEChallenge(challenge string) bool {
-	return validPKCEValue(challenge)
-}
-
-func pkceChallenge(verifier string) string {
-	sum := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
-}
-
-func mapProviderError(err error) error {
-	var oauthErr *application.OAuthError
-	if errors.As(err, &oauthErr) {
-		return oauthErr
-	}
-	if application.IsProviderUnavailable(err) {
-		return application.NewOAuthError(application.OAuthProviderUnavailable, err)
-	}
-	return application.NewOAuthError(application.OAuthFailed, err)
-}
-
-// findOrCreateExternalUser is provider-neutral identity resolution. A stable
-// provider subject wins; verified email may link a new identity to an existing
-// account; unverified email never takes over an existing account.
-func (s *Service) findOrCreateExternalUser(ctx context.Context, info application.ExternalIdentity) (*model.User, error) {
-	if strings.TrimSpace(info.Provider) == "" || strings.TrimSpace(info.Subject) == "" || strings.TrimSpace(info.Email) == "" {
-		return nil, fmt.Errorf("external identity is missing provider, subject, or email")
-	}
-	if len(info.Provider) > 20 {
-		return nil, fmt.Errorf("external identity provider name is too long")
-	}
-
-	provider := model.Provider(info.Provider)
-	if ident, err := s.repo.FindIdentityByProviderUID(ctx, provider, info.Subject); err == nil {
-		user, findErr := s.repo.FindByID(ctx, ident.UserID)
-		if findErr != nil {
-			return nil, fmt.Errorf("find user for existing identity: %w", findErr)
-		}
-		return user, nil
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("find external identity: %w", err)
-	}
-
-	providerUID := info.Subject
-	email := normalizeEmail(info.Email)
-	if info.EmailVerified {
-		if u, err := s.repo.FindByEmail(ctx, email); err == nil {
-			ident := &model.Identity{ID: id.New(), UserID: u.ID, Provider: provider, ProviderUID: &providerUID}
-			if err := s.repo.CreateIdentity(ctx, ident); err != nil {
-				return nil, fmt.Errorf("link external identity: %w", err)
-			}
-			return u, nil
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("find user by verified external email: %w", err)
-		}
-	}
-
-	u := &model.User{ID: id.New(), Email: email, Name: info.Name, AvatarURL: info.AvatarURL, EmailVerified: info.EmailVerified}
-	ident := &model.Identity{ID: id.New(), Provider: provider, ProviderUID: &providerUID}
-	if err := s.repo.CreateUserWithIdentity(ctx, u, ident); err != nil {
-		if dberr.IsDuplicate(err) {
-			return nil, errEmailTaken()
-		}
-		return nil, fmt.Errorf("create external user: %w", err)
-	}
-	return u, nil
-}
-
-// EnsureUser is idempotent: an existing user with this email is returned
-// as-is (password untouched — cmd/seed shouldn't silently reset a real
-// password on every deploy), otherwise a new local user+identity is
-// created. Used by cmd/seed only — nothing in the HTTP API calls this.
-func (s *Service) EnsureUser(ctx context.Context, email, password, name string) (*model.User, error) {
-	email = normalizeEmail(email)
-	if u, err := s.repo.FindByEmail(ctx, email); err == nil {
-		return u, nil
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	hashStr := string(hash)
-
-	u := &model.User{ID: id.New(), Email: email, Name: name}
-	i := &model.Identity{ID: id.New(), Provider: model.ProviderLocal, PasswordHash: &hashStr}
-	if err := s.repo.CreateUserWithIdentity(ctx, u, i); err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	return u, nil
-}
-
 // go-scaffold:user-service-methods
-
-func (s *Service) issueTokens(ctx context.Context, u *model.User, absoluteExpiresAt ...time.Time) (*authResponse, error) {
-	access, err := s.issueAccessToken(
-		u.ID,
-		// go-scaffold:issue-access-token-args
-	)
-	if err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	refresh, err := randomToken()
-	if err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	clock := s.now
-	if clock == nil {
-		clock = time.Now
-	}
-	now := clock()
-	abs := now.Add(s.refreshMaxTTL)
-	if len(absoluteExpiresAt) > 0 && !absoluteExpiresAt[0].IsZero() {
-		abs = absoluteExpiresAt[0]
-	}
-	expiresAt := now.Add(s.refreshTTL)
-	if abs.Before(expiresAt) {
-		expiresAt = abs
-	}
-	if !expiresAt.After(now) || !abs.After(now) {
-		return nil, apperror.NewInternal(fmt.Errorf("refresh token lifetime is exhausted"))
-	}
-	if err := s.tokens.SetRefreshToken(ctx, hashToken(refresh), refreshTokenRecord{UserID: u.ID, ExpiresAt: expiresAt, AbsoluteExpiresAt: abs}); err != nil {
-		return nil, apperror.NewInternal(err)
-	}
-	return &authResponse{
-		AccessToken:  access,
-		RefreshToken: refresh,
-		TokenType:    "Bearer",
-		ExpiresIn:    int(s.accessTTL.Seconds()),
-	}, nil
-}

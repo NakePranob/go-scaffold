@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -143,6 +143,34 @@ function assertFileOmits(filePath, needle) {
   if (!existsSync(filePath)) throw new Error(`missing file: ${filePath}`);
   const content = readFileSync(filePath, "utf8");
   if (content.includes(needle)) throw new Error(`${filePath} still contains "${needle}"`);
+}
+
+function base32Decode(value) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let buffer = 0;
+  let bits = 0;
+  const bytes = [];
+  for (const char of value.toUpperCase().replace(/=+$/, "")) {
+    const digit = alphabet.indexOf(char);
+    if (digit < 0) throw new Error(`invalid base32 secret from MFA setup: ${value}`);
+    buffer = (buffer << 5) | digit;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 0xff);
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function totpCode(secret, now = Date.now()) {
+  const counter = BigInt(Math.floor(now / 1000 / 30));
+  const message = Buffer.alloc(8);
+  message.writeBigUInt64BE(counter);
+  const digest = createHmac("sha1", base32Decode(secret)).update(message).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const value = (digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000;
+  return String(value).padStart(6, "0");
 }
 
 // Set by the "add worker" step once it patches fullApp's readyz to also ping
@@ -975,9 +1003,12 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   runMake(["db-create"], fullApp);
 
   // held in a ref because the rate-limit assertions below restart it
-  const authApiRef = { api: startApi(fullApp, "auth-api", fullDb, {
+  const mfaRuntimeOverrides = {
     REDIS_URL: sharedRedisUrl,
-  }) };
+    AUTH_MFA_ENABLED: "true",
+    MFA_ENCRYPTION_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+  };
+  const authApiRef = { api: startApi(fullApp, "auth-api", fullDb, mfaRuntimeOverrides) };
   execFileSync("sleep", ["3"]);
 
   const B = `${smoke.baseURL}/v1`;
@@ -1157,9 +1188,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   // works whichever store the project was scaffolded with.
   const resetRateLimits = () => {
     stopApi(authApiRef.api);
-    authApiRef.api = startApi(fullApp, "auth-api-ratelimit", fullDb, {
-      REDIS_URL: sharedRedisUrl,
-    });
+    authApiRef.api = startApi(fullApp, "auth-api-ratelimit", fullDb, mfaRuntimeOverrides);
     execFileSync("sleep", ["3"]);
   };
   resetRateLimits();
@@ -1196,6 +1225,52 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   // per-route, not one shared global counter.
   const loginStillWorks = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"burst1@example.com","password":"correcthorsebattery"}']);
   if (status(loginStillWorks) !== "200") throw new Error(`expected /auth/login to be unaffected by /auth/register's exhausted rate limit, got:\n${loginStillWorks}`);
+
+  // MFA: a user starts disabled, receives an otpauth URI, and is not forced
+  // through a second factor until the TOTP is confirmed. Once enabled, the
+  // password step returns only a one-use challenge; no refresh cookie is sent
+  // until /auth/mfa/verify succeeds with TOTP or a recovery code.
+  const jsonBody = (out) => JSON.parse(out.replace(/HTTPSTATUS:\d+$/, "").trim());
+  const mfaStatusBefore = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
+  const mfaStatusBeforeBody = jsonBody(mfaStatusBefore);
+  if (status(mfaStatusBefore) !== "200" || !mfaStatusBeforeBody.available || mfaStatusBeforeBody.enabled) {
+    throw new Error(`expected MFA to be available but disabled before enrollment, got:\n${mfaStatusBefore}`);
+  }
+  const mfaSetup = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/setup`, "-H", `Authorization: Bearer ${access}`]);
+  const mfaSetupBody = jsonBody(mfaSetup);
+  if (status(mfaSetup) !== "200" || !mfaSetupBody.secret || !mfaSetupBody.otpauth_uri?.startsWith("otpauth://totp/")) {
+    throw new Error(`expected an authenticator setup secret and URI, got:\n${mfaSetup}`);
+  }
+  const mfaCode = totpCode(mfaSetupBody.secret);
+  const mfaConfirm = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/confirm`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ code: mfaCode })]);
+  const mfaConfirmBody = jsonBody(mfaConfirm);
+  if (status(mfaConfirm) !== "200" || !Array.isArray(mfaConfirmBody.recovery_codes) || mfaConfirmBody.recovery_codes.length !== 10) {
+    throw new Error(`expected one-time recovery codes after MFA confirmation, got:\n${mfaConfirm}`);
+  }
+  const mfaStatusAfter = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
+  if (status(mfaStatusAfter) !== "200" || !jsonBody(mfaStatusAfter).enabled) throw new Error(`expected MFA to be enabled after confirmation, got:\n${mfaStatusAfter}`);
+
+  const mfaLogin = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
+  if (!/^HTTP\/1\.1 200/.test(mfaLogin) || !mfaLogin.includes('"mfa_required":true') || cookie(mfaLogin)) {
+    throw new Error(`expected password login to return an MFA challenge without a refresh cookie, got:\n${mfaLogin}`);
+  }
+  const mfaChallenge = field(mfaLogin, "challenge");
+  if (!mfaChallenge) throw new Error(`expected an opaque MFA challenge, got:\n${mfaLogin}`);
+  const mfaVerified = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: mfaChallenge, code: totpCode(mfaSetupBody.secret) })]);
+  if (!/^HTTP\/1\.1 200/.test(mfaVerified) || !cookie(mfaVerified) || !field(mfaVerified, "access_token")) throw new Error(`expected MFA verification to issue the normal session, got:\n${mfaVerified}`);
+  const mfaReplay = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: mfaChallenge, code: mfaCode })]);
+  if (status(mfaReplay) !== "401" || !mfaReplay.includes("AUTH_MFA_INVALID")) throw new Error(`expected one-use MFA challenge replay to fail, got:\n${mfaReplay}`);
+
+  const recoveryLogin = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
+  const recoveryLoginBody = jsonBody(recoveryLogin);
+  if (status(recoveryLogin) !== "200" || !recoveryLoginBody.mfa_required) throw new Error(`expected a second MFA challenge for recovery-code login, got:\n${recoveryLogin}`);
+  const recoveryVerified = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: recoveryLoginBody.challenge, code: mfaConfirmBody.recovery_codes[0] })]);
+  if (status(recoveryVerified) !== "200" || !field(recoveryVerified, "access_token")) throw new Error(`expected a recovery code to complete MFA login, got:\n${recoveryVerified}`);
+
+  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ code: totpCode(mfaSetupBody.secret) })]);
+  if (status(mfaDisable) !== "204") throw new Error(`expected a valid TOTP to disable MFA, got:\n${mfaDisable}`);
+  const mfaStatusDisabled = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
+  if (status(mfaStatusDisabled) !== "200" || jsonBody(mfaStatusDisabled).enabled) throw new Error(`expected MFA to be disabled after the authenticated disable flow, got:\n${mfaStatusDisabled}`);
 
   // no reset needed on the way out: the budget lives in this process, so
   // killing it is the reset, and every later step starts its own server.
@@ -1267,6 +1342,11 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
     "/v1/users/me:",
     "/v1/users/me/resend-verification:",
     "/v1/users/me/logout-all:",
+    "/v1/users/me/mfa:",
+    "/v1/users/me/mfa/setup:",
+    "/v1/users/me/mfa/confirm:",
+    "/v1/users/me/mfa/disable:",
+    "/v1/auth/mfa/verify:",
   ]) {
     if (!openapi.includes(p)) throw new Error(`expected ${p} in docs/openapi.yaml after add auth, got:\n${openapi}`);
   }

@@ -20,7 +20,10 @@ post:
           schema: { type: string, example: no-cache }
       content:
         application/json:
-          schema: { $ref: './schemas.yaml#/AuthResponse' }
+          schema:
+            oneOf:
+              - { $ref: './schemas.yaml#/AuthResponse' }
+              - { $ref: './schemas.yaml#/MFAChallengeResponse' }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
     "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }

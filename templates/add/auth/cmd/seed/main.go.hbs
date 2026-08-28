@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"{{goModule}}/internal/app/user"
-	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/platform/database"
 	"{{goModule}}/internal/shared/config"
 	// go-scaffold:seed-imports
@@ -31,10 +30,20 @@ func main() {
 	}
 
 	// go-scaffold:seed-services
-	svc := user.NewService(
-		user.NewRepository(db), nil, nil, cfg, application.NewProviderRegistry(),
+	svc := user.NewService(user.Dependencies{
+		Repository: user.NewRepository(db),
 		// go-scaffold:seed-user-service-args
-	)
+	}, user.AuthConfig{
+		JWTSecret:        cfg.JWTSecret,
+		JWTAccessTTL:     cfg.JWTAccessTTL,
+		JWTRefreshTTL:    cfg.JWTRefreshTTL,
+		JWTRefreshMaxTTL: cfg.JWTRefreshMaxTTL,
+		OAuthStateTTL:    cfg.OAuthStateTTL,
+		PasswordResetTTL: cfg.PasswordResetTTL,
+		PasswordResetURL: cfg.PasswordResetURL,
+		EmailVerifyTTL:   cfg.EmailVerifyTTL,
+		EmailVerifyURL:   cfg.EmailVerifyURL,
+	})
 	ctx := context.Background()
 
 	if email := os.Getenv("SEED_ADMIN_EMAIL"); email != "" {

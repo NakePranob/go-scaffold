@@ -4,32 +4,38 @@ import (
 	"context"
 	"time"
 
+	"{{goModule}}/internal/app/user/application"
+
 	"github.com/google/uuid"
 )
 
-// tokenStore is the short-lived-token surface Service needs — declared
-// consumer-side so it can be faked in tests, and so the backing store is a
-// choice rather than a hard dependency. Two implementations ship with the
-// scaffold and exactly one is written into a project:
-//
-//   `add auth --store postgres`  ->  tokenstore_pg.go     (default, no extra service)
-//   `add auth --store redis`     ->  tokenstore_redis.go  (exact across pods)
-//
-// Service never learns which one it got.
-type tokenStore interface {
+// refreshTokenStore is the session surface needed by the refresh/logout use
+// cases. Keeping this port narrow means a store for OAuth state or recovery
+// tokens cannot accidentally become a dependency of session logic.
+type RefreshTokenStore interface {
 	SetRefreshToken(ctx context.Context, tokenHash string, token refreshTokenRecord) error
 	GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 	ConsumeRefreshToken(ctx context.Context, tokenHash string) (refreshTokenRecord, bool, error)
 	DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error
 	RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error
 	IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
+}
+
+// oauthTransactionStore is the one-time authorization attempt surface. It is
+// intentionally separate from refresh sessions: the two have different TTL,
+// replay, and operational characteristics.
+type OAuthTransactionStore interface {
 	SetLoginTransaction(ctx context.Context, stateHash string, transaction loginTransaction) error
 	ConsumeLoginTransaction(ctx context.Context, stateHash string) (loginTransaction, bool, error)
-	WithTransaction(ctx context.Context, fn func(context.Context) error) error
+}
+
+// recoveryTokenPort is the durable one-time-token surface. Recovery owns the
+// transaction boundary that consumes a token and updates the user, while the
+// outer service also needs the two write methods to issue links.
+type RecoveryTokenStore interface {
+	application.RecoveryTokens
 	SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
-	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 	SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error
-	ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error)
 }
 
 // refreshTokenRecord carries both the sliding inactivity expiry and the fixed

@@ -1,0 +1,88 @@
+package user
+
+import (
+	"context"
+	"time"
+
+	"{{goModule}}/internal/app/user/application"
+
+	"github.com/google/uuid"
+)
+
+// Dependencies is the explicit composition contract for the auth application.
+// Each port represents one lifecycle or capability, so a new adapter does not
+// have to implement unrelated token operations just to be wired in.
+type Dependencies struct {
+	Repository        UserRepository
+	RefreshTokens     RefreshTokenStore
+	OAuthTransactions OAuthTransactionStore
+	RecoveryTokens    RecoveryTokenStore
+	MFA               MFAStore
+	Mailer            AuthMailer
+	Providers         ProviderRegistry
+	Roles             RoleChecker
+	Clock             func() time.Time
+}
+
+// MFASettings is the operator-side MFA policy. Enabled is a capability
+// switch; each user's enrollment is still disabled until that user confirms a
+// TOTP code. Keeping both switches lets an operator turn the feature off
+// without deleting user enrollments.
+type MFASettings struct {
+	Enabled           bool
+	Issuer            string
+	EncryptionKey     string
+	ChallengeTTL      time.Duration
+	TOTPWindow        int
+	RecoveryCodeCount int
+}
+
+// AuthConfig contains only auth policy. The application layer intentionally
+// does not depend on the generated project's shared config package.
+type AuthConfig struct {
+	JWTSecret         string
+	JWTAccessTTL      time.Duration
+	JWTRefreshTTL     time.Duration
+	JWTRefreshMaxTTL  time.Duration
+	OAuthStateTTL     time.Duration
+	PasswordResetTTL  time.Duration
+	PasswordResetURL  string
+	EmailVerifyTTL    time.Duration
+	EmailVerifyURL    string
+	MFA               MFASettings
+}
+
+// ProviderRegistry is the application-facing lookup port for external login
+// providers. The concrete registry lives in the application package; callers
+// may supply a test double or another registry without coupling Service to
+// that implementation.
+type ProviderRegistry interface {
+	Lookup(name string) (application.LoginProvider, bool)
+}
+
+// MFAEnrollment is the storage-neutral representation returned by MFAStore.
+// The secret is always encrypted at rest; it is never serialized by an API
+// response.
+type MFAEnrollment struct {
+	EncryptedSecret string
+	Enabled         bool
+}
+
+// MFAChallenge is a short-lived, one-use pre-session challenge. The raw
+// challenge is returned only to the client; stores receive its hash.
+type MFAChallenge struct {
+	UserID    uuid.UUID
+	ExpiresAt time.Time
+}
+
+// MFAStore owns durable MFA state. Implementations must make challenge and
+// recovery-code consumption atomic so concurrent requests cannot reuse them.
+type MFAStore interface {
+	GetEnrollment(ctx context.Context, userID uuid.UUID) (MFAEnrollment, bool, error)
+	PutPendingEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string) error
+	ConfirmEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string, recoveryCodeHashes []string) error
+	Disable(ctx context.Context, userID uuid.UUID) error
+	CreateChallenge(ctx context.Context, hash string, challenge MFAChallenge) error
+	ConsumeChallenge(ctx context.Context, hash string) (MFAChallenge, bool, error)
+	ConsumeRecoveryCode(ctx context.Context, userID uuid.UUID, hash string) (bool, error)
+}

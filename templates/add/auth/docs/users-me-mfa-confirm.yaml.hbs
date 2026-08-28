@@ -1,0 +1,19 @@
+post:
+  summary: Confirm MFA enrollment with a current TOTP code
+  operationId: confirmMyMFA
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/MFACodeInput' }
+  responses:
+    "200":
+      description: MFA enabled; recovery codes are returned once
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MFAConfirmResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }

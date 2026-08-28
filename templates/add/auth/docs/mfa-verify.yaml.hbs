@@ -1,0 +1,19 @@
+post:
+  summary: Complete a login with a TOTP or recovery code
+  operationId: verifyMFA
+  tags: [auth]
+  security: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/MFAChallengeInput' }
+  responses:
+    "200":
+      description: authenticated; refresh_token set as an httpOnly cookie
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/AuthResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }

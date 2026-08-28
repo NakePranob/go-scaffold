@@ -261,6 +261,6 @@ export async function generateMethod(
   if (docsRelativePath) {
     console.log(pc.green(`docs: docs/${docsRelativePath} (wired into docs/openapi.yaml)`));
   }
-  const implementationFile = paths.commandPath && paths.queryPath ? (type === "get" ? "queries.go" : "commands.go") : "service.go";
+  const implementationFile = cqrsPaths.length === 2 ? (type === "get" ? "queries.go" : "commands.go") : "service.go";
   console.log(pc.dim(`\nnext: fill in the TODO in ${implementationFile}, then \`go build ./...\` / \`go test ./...\``));
 }
