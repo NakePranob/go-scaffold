@@ -622,6 +622,29 @@ step("a command that needs a prompt fails with advice, not a question nobody can
   }
 });
 
+step("generate module names the missing non-TTY choices", () => {
+  goScaffold(["create", "module-flag-guide", "--defaults", "--no-docker"], scratch);
+  const app = path.join(scratch, "module-flag-guide");
+  goScaffold(["add", "auth", "--defaults"], app);
+  goScaffold(["add", "rbac", "--yes"], app);
+
+  expectThrows(
+    () => goScaffold(["generate", "module", "invoice", "--full"], app),
+    "missing: --cqrs"
+  );
+  expectThrows(
+    () => goScaffold(["generate", "module", "invoice", "--full", "--cqrs", "--auth"], app),
+    "missing: --permission <code>"
+  );
+  expectThrows(
+    () => goScaffold(["generate", "module", "--defaults"], app),
+    "missing: <name>"
+  );
+  if (existsSync(path.join(app, "internal", "app", "invoice"))) {
+    throw new Error("generate module wrote files before reporting missing non-TTY choices");
+  }
+});
+
 step("create stamps the CLI version into go-scaffold.config.json", () => {
   const cfg = JSON.parse(readFileSync(path.join(scratch, "full-app", "go-scaffold.config.json"), "utf8"));
   const { version } = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));

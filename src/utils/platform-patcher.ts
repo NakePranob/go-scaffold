@@ -45,7 +45,7 @@ export function patchComposeForRedis(composePath: string): void {
 export function patchCiForRedis(ciPath: string): void {
   if (!fs.existsSync(ciPath)) return;
   const content = fs.readFileSync(ciPath, "utf8");
-  if (/^\s{6}redis:/m.test(content)) return;
+  const hasRedisService = /^\s{6}redis:/m.test(content);
 
   // `steps:` sits one level under the job, so it's the first line that ends
   // the `services:` block — insert the service just above it.
@@ -55,7 +55,7 @@ export function patchCiForRedis(ciPath: string): void {
   // means CI runs without Redis and fails on a connection error that says
   // nothing about this — so say it here instead.
   const stepsLine = content.split("\n").find((l) => l.trimEnd() === "    steps:");
-  if (!stepsLine) {
+  if (!hasRedisService && !stepsLine) {
     console.error(
       pc.yellow(
         `skipped adding the Redis service to ${ciPath} — no \`steps:\` line at the expected indentation to anchor it to.\n` +
@@ -78,7 +78,33 @@ export function patchCiForRedis(ciPath: string): void {
     "",
   ].join("\n");
 
-  fs.writeFileSync(ciPath, content.replace(stepsLine, () => `${service}\n${stepsLine}`));
+  let patched = hasRedisService ? content : content.replace(stepsLine!, () => `${service}\n${stepsLine}`);
+
+  // The service alone is not enough: token-store tests deliberately skip when
+  // TEST_REDIS_URL is absent, so a generated workflow could report green while
+  // never exercising Redis. Add the required test variables alongside the
+  // existing PostgreSQL test variables, anchored on the actual go test line so
+  // we do not accidentally put them in the Postgres container's env block.
+  const testRunLine = "        run: go test ./...";
+  if (!patched.includes("REQUIRE_TEST_REDIS")) {
+    if (!patched.includes(testRunLine)) {
+      console.error(
+        pc.yellow(
+          `skipped requiring Redis integration tests in ${ciPath} — no \`run: go test ./...\` line to anchor the test environment to.\n` +
+            `Add TEST_REDIS_URL and REQUIRE_TEST_REDIS=true to the workflow's test step by hand.`
+        )
+      );
+    } else {
+      patched = patched.replace(
+        testRunLine,
+        '          TEST_REDIS_URL: redis://127.0.0.1:6379/0\n' +
+          '          REQUIRE_TEST_REDIS: "true"\n' +
+          testRunLine
+      );
+    }
+  }
+
+  fs.writeFileSync(ciPath, patched);
 }
 
 // patchConfigForRedis adds RedisURL to Config and its env() load to Load().

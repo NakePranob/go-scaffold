@@ -41,8 +41,20 @@ if not token or ttl < 1 then
 	-- failure to Service.Refresh.
 	return ""
 end
+
+-- Decode and validate the fields used by this script before mutating anything.
+-- Redis Lua does not roll back earlier writes when a later command errors; the
+-- old order could therefore delete a corrupt active token and then fail while
+-- decoding it, losing the only evidence needed to investigate or retry safely.
+local decoded, token_data = pcall(cjson.decode, token)
+if not decoded or type(token_data) ~= "table" or
+   type(token_data.user_id) ~= "string" or token_data.user_id == "" or
+   type(token_data.expires_at) ~= "string" or token_data.expires_at == "" or
+   type(token_data.absolute_expires_at) ~= "string" or token_data.absolute_expires_at == "" then
+	return redis.error_reply("invalid refresh token record")
+end
+
 redis.call("DEL", KEYS[1])
-local token_data = cjson.decode(token)
 redis.call("SREM", KEYS[3] .. token_data.user_id, ARGV[1])
 redis.call("SET", KEYS[2], token, "PX", ttl)
 return token

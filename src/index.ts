@@ -78,18 +78,60 @@ program
 //
 // --defaults is the escape hatch CI and scripts use: it takes the documented
 // defaults (minimal, no CQRS, no auth) and asks nothing.
+type ModuleWizardOptions = {
+  full?: boolean;
+  cqrs?: boolean;
+  auth?: boolean;
+  permission?: string;
+  defaults?: boolean;
+};
+
+function assertModuleWizardInputs(
+  name: string | undefined,
+  opts: ModuleWizardOptions,
+  config: ReturnType<typeof readConfig>
+): void {
+  if (process.stdin.isTTY) return;
+
+  const missing: string[] = [];
+  if (name === undefined) missing.push("<name>");
+
+  // --defaults answers every optional wizard question. The name is still
+  // required because there is no safe module name to invent.
+  if (!opts.defaults) {
+    if (opts.full === undefined) missing.push("--full or --no-full");
+    if (opts.cqrs === undefined) missing.push("--cqrs (or --defaults for no CQRS)");
+    if (config.features.auth && opts.auth === undefined) {
+      missing.push("--auth (or --defaults for no auth)");
+    }
+    if (opts.auth && config.features.rbac && opts.permission === undefined) {
+      missing.push("--permission <code> (or --defaults for no permission)");
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `no interactive terminal to prompt on — \`generate module\` is missing: ${missing.join(", ")}. ` +
+        "Pass the missing choices as flags, or add --defaults."
+    );
+  }
+}
+
 async function runModuleWizard(
   name: string | undefined,
-  opts: { full?: boolean; cqrs?: boolean; auth?: boolean; permission?: string; defaults?: boolean }
+  opts: ModuleWizardOptions
 ): Promise<void> {
   let { full, cqrs, auth, permission } = opts;
+  // Read before checking the prompt contract so the error can name the
+  // feature-dependent auth/RBAC choices, and so a non-project still fails
+  // with the useful project error rather than a list of flags.
+  const config = readConfig(process.cwd());
+  assertModuleWizardInputs(name, opts, config);
 
   if (!opts.defaults) {
-    // read first, so "not a go-scaffold project" fails before we ask anything,
-    // and so the auth/permission questions are only asked when the project
-    // actually has the features they depend on — offering them otherwise
-    // would present a choice whose only outcome is generateModule's error.
-    const config = readConfig(process.cwd());
+    // auth/permission questions are only asked when the project actually has
+    // the features they depend on — offering them otherwise would present a
+    // choice whose only outcome is generateModule's error.
     if (name === undefined) name = await promptModuleName();
     if (full === undefined) full = await promptModuleShape();
     if (cqrs === undefined) cqrs = await promptModuleCqrs();

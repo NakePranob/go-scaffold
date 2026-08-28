@@ -65,6 +65,11 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
   assert.ok(!has(app, "internal/app/user/tokenstore_pg.go"), "the Postgres store must not be written");
   assert.ok(has(app, "internal/platform/cache/redis.go"), "add auth pulls Redis in on this path");
 
+  const ci = read(app, ".github/workflows/ci.yml");
+  assert.match(ci, /redis:\n\s+image: redis:7-alpine/, "Redis auth must add a real Redis service to CI");
+  assert.match(ci, /TEST_REDIS_URL: redis:\/\/127\.0\.0\.1:6379\/0/, "Redis auth CI must point tests at the service");
+  assert.match(ci, /REQUIRE_TEST_REDIS: "true"/, "Redis auth CI must not allow integration tests to skip");
+
   const main = read(app, "cmd/api/wiring.go");
   const composition = read(app, "internal/app/user/composition.go");
   assert.match(composition, /NewRedisTokenStore\(rdb, db\)/);

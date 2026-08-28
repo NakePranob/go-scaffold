@@ -13,6 +13,16 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -30,6 +40,23 @@ jobs:
       - run: pnpm run build
       - run: pnpm run test:unit
       - run: pnpm run test:integration
+
+      # Build a fresh Redis-backed auth project from the CLI and force its
+      # real Redis integration tests to run. `go test` otherwise skips those
+      # tests when TEST_REDIS_URL is absent, which can make a broken Lua
+      # rotation script look green in CI.
+      - name: generated Redis auth integration
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:6379/15
+          REQUIRE_TEST_REDIS: "true"
+        run: |
+          scratch="$(mktemp -d)"
+          cd "$scratch"
+          node "$GITHUB_WORKSPACE/bin/go-scaffold.js" create redis-auth-app --defaults --no-docker
+          cd redis-auth-app
+          node "$GITHUB_WORKSPACE/bin/go-scaffold.js" add auth --store redis --yes
+          go mod tidy
+          go test -race ./...
 
       # The smoke suite shells out to all of these. Without them its steps
       # skip, and a skipped step used to count as a pass.

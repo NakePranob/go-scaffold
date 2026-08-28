@@ -2,9 +2,11 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -37,6 +39,24 @@ func redisClientForTest(t *testing.T) *redis.Client {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+func TestRefreshTokenRecord_JSONUsesLuaFieldNames(t *testing.T) {
+	raw, err := json.Marshal(testRefreshTokenRecord(uuid.New()))
+	if err != nil {
+		t.Fatalf("marshal refresh token record: %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode refresh token record: %v", err)
+	}
+	if _, ok := payload["user_id"]; !ok {
+		t.Fatalf("Redis refresh payload must contain user_id, got %s", raw)
+	}
+	if _, ok := payload["UserID"]; ok {
+		t.Fatalf("Redis refresh payload must not contain Go field name UserID: %s", raw)
+	}
 }
 
 func TestRedisTokenStore_ConsumeRefreshToken_ConcurrentRealRedis(t *testing.T) {
@@ -85,6 +105,29 @@ func TestRedisTokenStore_ConsumeRefreshToken_ConcurrentRealRedis(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Fatalf("expected exactly one real-Redis refresh winner, got %d", winners)
+	}
+}
+
+func TestRedisTokenStore_ConsumeRefreshToken_MalformedRecordDoesNotDelete(t *testing.T) {
+	client := redisClientForTest(t)
+	store := NewRedisTokenStore(client, nil)
+	ctx := context.Background()
+	hash := "real-redis-malformed-" + uuid.NewString()
+	key := refreshKeyPrefix + hash
+	if err := client.Set(ctx, key, "not-json", time.Minute).Err(); err != nil {
+		t.Fatalf("seed malformed refresh token: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Del(ctx, key).Err() })
+
+	if _, ok, err := store.ConsumeRefreshToken(ctx, hash); err == nil || ok {
+		t.Fatalf("malformed refresh token must fail without being consumed, ok=%t err=%v", ok, err)
+	}
+	exists, err := client.Exists(ctx, key).Result()
+	if err != nil {
+		t.Fatalf("check malformed refresh token: %v", err)
+	}
+	if exists != 1 {
+		t.Fatal("malformed refresh token was deleted before validation")
 	}
 }
 

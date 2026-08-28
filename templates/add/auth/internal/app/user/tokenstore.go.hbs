@@ -36,9 +36,9 @@ type tokenStore interface {
 // absolute expiry. A rotation may move ExpiresAt forward, but it must never
 // move AbsoluteExpiresAt forward.
 type refreshTokenRecord struct {
-	UserID            uuid.UUID
-	ExpiresAt         time.Time
-	AbsoluteExpiresAt time.Time
+	UserID            uuid.UUID `json:"user_id"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
 }
 
 // loginTransaction is the server-owned binding for a browser authorization
