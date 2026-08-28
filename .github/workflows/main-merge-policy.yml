@@ -1,0 +1,30 @@
+name: main merge policy
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  main-merge-policy:
+    name: main-merge-policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch the target branch
+        env:
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: git fetch --no-tags origin "$BASE_BRANCH"
+
+      - name: Require a release version bump
+        env:
+          BASE_REF: FETCH_HEAD
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: node scripts/check-main-merge.mjs "$BASE_REF" "$HEAD_BRANCH"

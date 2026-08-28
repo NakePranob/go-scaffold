@@ -34,6 +34,77 @@ node bin/go-scaffold.js create my-api --defaults
 depending on your machine's npm/pnpm global-bin config — running
 `node bin/go-scaffold.js ...` directly sidesteps that.
 
+## Release: npm is locked to Git
+
+Git is the release source of truth. The package version, annotated tag, and
+tagged commit must agree before npm can publish:
+
+```text
+package.json 0.4.2
+       │
+       └── annotated tag v0.4.2 ──> the exact release commit
+                                      │
+                                      └── npm @nakedev/go-scaffold@0.4.2
+```
+
+`npm publish` runs `release:check` first, so publishing from an untagged,
+lightweight-tagged, dirty, or mismatched checkout fails before anything is
+sent to npm. The GitHub Actions workflow at
+`.github/workflows/release.yml` repeats that check, runs the full verification
+gate, publishes from the tag, and creates the GitHub Release.
+
+### One-time npm setup
+
+The preferred setup is npm Trusted Publishing with GitHub Actions (OIDC):
+
+1. In npm package settings for `@nakedev/go-scaffold`, add a GitHub Actions
+   trusted publisher for `NakePranob/go-scaffold`.
+2. Set the workflow filename to `release.yml` and environment to
+   `npm-release`.
+3. Allow `npm publish`. The workflow already requests the required OIDC
+   permission and uses Node 24.
+
+If Trusted Publishing is not used, add an npm granular token as the GitHub
+repository/environment secret `NPM_TOKEN`. Never commit a token or put it in
+`.npmrc`.
+
+### Branch policy
+
+`develop` is the integration branch. A PR into `main` must come from
+`develop` or `release/*`, and must bump `package.json` to a semver greater than
+the version on `main`. PRs into `develop` do not need a version bump.
+
+The `main-merge-policy` workflow checks this automatically. In GitHub branch
+rules, protect `main`, require a pull request, require the
+`main-merge-policy`, `verify`, and `packaged-artifact` checks, and disable
+force-pushes. Protect the `v*` tag pattern from updates and deletion as well.
+
+### Release flow
+
+```bash
+git switch develop
+git pull --ff-only origin develop
+git switch -c release/v0.4.2
+npm version 0.4.2 --no-git-tag-version
+pnpm run verify
+git add package.json
+git commit -m "chore: release v0.4.2"
+git push -u origin release/v0.4.2
+# open a PR from release/v0.4.2 into main
+
+# after the PR is merged, tag the merge commit on main
+git switch main
+git pull --ff-only origin main
+git tag -a v0.4.2 -m "v0.4.2"
+git push origin v0.4.2
+```
+
+Pushing the tag starts the release workflow. To retry a failed publish for a
+tag created after this workflow landed, use GitHub Actions' **Run workflow**
+with that tag; do not create a second tag for the same package version. A tag
+created before this guard existed should not be moved after it has been
+pushed — use the next patch version instead.
+
 ## Requirements
 
 - Node.js `>=22.13` to run the CLI

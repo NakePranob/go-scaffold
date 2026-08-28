@@ -1,0 +1,93 @@
+name: release
+
+on:
+  # Git is the release source of truth. A package can only be published from
+  # an explicitly pushed vX.Y.Z tag that points at the matching package.json.
+  push:
+    tags:
+      - "v*.*.*"
+  # Lets us retry a failed npm publish (for example after configuring the
+  # trusted publisher) without creating another commit or tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, for example v0.4.1"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+      id-token: write
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          # npm recommends no dependency cache for release builds.
+          package-manager-cache: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check package version and Git tag
+        run: pnpm run release:check -- "$RELEASE_TAG"
+
+      # Keep the release gate equivalent to CI: the smoke suite exercises the
+      # generated projects and needs these tools available on PATH.
+      - name: Install smoke-test tools
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Publish package from the verified tag
+        run: npm publish --provenance --access public
+        env:
+          # Optional fallback. With npm Trusted Publishing configured, OIDC
+          # is used instead and no long-lived npm token is needed.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $RELEASE_TAG already exists"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi

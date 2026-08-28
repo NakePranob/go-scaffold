@@ -1,6 +1,6 @@
 {
   "name": "@nakedev/go-scaffold",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard",
   "repository": {
     "type": "git",
@@ -26,8 +26,10 @@
     "test:e2e": "playwright test --config=playwright.config.mjs",
     "test:e2e:install": "playwright install chromium",
     "verify": "pnpm run build && pnpm run test",
+    "release:check": "node scripts/check-release.mjs",
+    "policy:main": "node scripts/check-main-merge.mjs",
     "prepack": "rm -rf dist && pnpm run build",
-    "prepublishOnly": "pnpm run verify"
+    "prepublishOnly": "pnpm run release:check && pnpm run verify"
   },
   "keywords": [
     "go",
