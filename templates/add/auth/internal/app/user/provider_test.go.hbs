@@ -51,16 +51,18 @@ func oauthErrorCode(t *testing.T, err error) application.OAuthErrorCode {
 	return oauthErr.Code
 }
 
+const testOAuthVerifier = "client-code-verifier-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 func validLoginStart() application.LoginStartInput {
 	return application.LoginStartInput{
-		State:               "client-state",
-		CodeChallenge:       pkceChallenge("client-code-verifier"),
+		State:               "client state",
+		CodeChallenge:       pkceChallenge(testOAuthVerifier),
 		CodeChallengeMethod: "S256",
 	}
 }
 
 func validLoginExchange() loginExchangeInput {
-	return loginExchangeInput{Code: "code", State: "client-state", CodeVerifier: "client-code-verifier"}
+	return loginExchangeInput{Code: "code", State: "client state", CodeVerifier: testOAuthVerifier}
 }
 
 func validFakeProvider(t *testing.T) (*fakeLoginProvider, *Service) {
@@ -79,7 +81,7 @@ func validFakeProvider(t *testing.T) (*fakeLoginProvider, *Service) {
 		}.Encode()}, nil
 	}
 	provider.completeFn = func(in application.LoginCompleteInput) (application.ExternalIdentity, error) {
-		if in.Code != "code" || in.CodeVerifier != "client-code-verifier" || strings.TrimSpace(in.Nonce) == "" {
+		if in.Code != "code" || in.CodeVerifier != testOAuthVerifier || strings.TrimSpace(in.Nonce) == "" {
 			t.Fatalf("unexpected complete input: %+v", in)
 		}
 		return application.ExternalIdentity{
@@ -106,7 +108,7 @@ func TestService_BeginLoginUsesRegistryAndPreservesClientStateAndS256PKCE(t *tes
 	if err != nil {
 		t.Fatalf("parse authorization URL: %v", err)
 	}
-	if parsed.Query().Get("state") != "client-state" || parsed.Query().Get("code_challenge") != pkceChallenge("client-code-verifier") || parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("nonce") == "" {
+	if parsed.Query().Get("state") != "client state" || parsed.Query().Get("code_challenge") != pkceChallenge(testOAuthVerifier) || parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("nonce") == "" {
 		t.Fatalf("authorization URL did not preserve client state/PKCE: %s", start.URL)
 	}
 }
@@ -120,6 +122,9 @@ func TestService_BeginLoginRejectsMissingStateOrNonS256PKCE(t *testing.T) {
 		{name: "missing state", in: application.LoginStartInput{CodeChallenge: "challenge", CodeChallengeMethod: "S256"}},
 		{name: "missing challenge", in: application.LoginStartInput{State: "state", CodeChallengeMethod: "S256"}},
 		{name: "plain challenge method", in: application.LoginStartInput{State: "state", CodeChallenge: "challenge", CodeChallengeMethod: "plain"}},
+		{name: "short challenge", in: application.LoginStartInput{State: "state", CodeChallenge: "short", CodeChallengeMethod: "S256"}},
+		{name: "invalid challenge character", in: application.LoginStartInput{State: "state", CodeChallenge: strings.Repeat("!", 43), CodeChallengeMethod: "S256"}},
+		{name: "lowercase challenge method", in: application.LoginStartInput{State: "state", CodeChallenge: strings.Repeat("A", 43), CodeChallengeMethod: "s256"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,9 +206,9 @@ func TestService_ExchangeLoginRejectsMissingStatePKCEAndCode(t *testing.T) {
 		in   loginExchangeInput
 		want application.OAuthErrorCode
 	}{
-		{name: "missing state", in: loginExchangeInput{Code: "code", CodeVerifier: "verifier"}, want: application.OAuthStateInvalid},
+		{name: "missing state", in: loginExchangeInput{Code: "code", CodeVerifier: testOAuthVerifier}, want: application.OAuthStateInvalid},
 		{name: "missing verifier", in: loginExchangeInput{Code: "code", State: "state"}, want: application.OAuthStateInvalid},
-		{name: "missing code", in: loginExchangeInput{State: "state", CodeVerifier: "verifier"}, want: application.OAuthFailed},
+		{name: "missing code", in: loginExchangeInput{State: "state", CodeVerifier: testOAuthVerifier}, want: application.OAuthFailed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -221,7 +226,7 @@ func TestService_ExchangeLoginConsumesStateAndBindsThePKCEVerifier(t *testing.T)
 		t.Fatalf("begin login: %v", err)
 	}
 	wrong := validLoginExchange()
-	wrong.CodeVerifier = "another-verifier"
+	wrong.CodeVerifier = testOAuthVerifier + "x"
 	if _, err := svc.ExchangeLogin(context.Background(), "fake", wrong); oauthErrorCode(t, err) != application.OAuthStateInvalid {
 		t.Fatalf("wrong verifier should be rejected as state invalid: %v", err)
 	}

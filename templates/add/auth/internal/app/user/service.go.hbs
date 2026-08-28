@@ -425,12 +425,12 @@ func (s *Service) BeginLogin(ctx context.Context, providerName string, in applic
 	if !ok {
 		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider %q is not configured", providerName))
 	}
-	in.State = strings.TrimSpace(in.State)
-	in.CodeChallenge = strings.TrimSpace(in.CodeChallenge)
-	if in.State == "" || in.CodeChallenge == "" || !strings.EqualFold(strings.TrimSpace(in.CodeChallengeMethod), "S256") {
+	// state is an opaque client value: validate its wire-safe shape, but never
+	// trim or otherwise rewrite it. The frontend must receive the exact value it
+	// put in the authorization request when the provider redirects back.
+	if !validOAuthValue(in.State) || !validPKCEChallenge(in.CodeChallenge) || in.CodeChallengeMethod != "S256" {
 		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("state and S256 code challenge are required"))
 	}
-	in.CodeChallengeMethod = "S256"
 	nonce, err := randomToken()
 	if err != nil {
 		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("create oauth transaction: %w", err))
@@ -469,13 +469,13 @@ func (s *Service) ExchangeLogin(ctx context.Context, providerName string, in log
 	if !ok {
 		return nil, application.NewOAuthError(application.OAuthProviderUnavailable, fmt.Errorf("provider %q is not configured", providerName))
 	}
-	in.State = strings.TrimSpace(in.State)
-	in.CodeVerifier = strings.TrimSpace(in.CodeVerifier)
-	if in.State == "" || in.CodeVerifier == "" {
+	// state, code, and code_verifier are opaque protocol values. Do not trim
+	// them: changing a value after the browser/provider has seen it breaks the
+	// exact transaction binding. PKCE values also have a strict RFC 7636 shape.
+	if !validOAuthValue(in.State) || !validPKCEValue(in.CodeVerifier) {
 		return nil, application.NewOAuthError(application.OAuthStateInvalid, fmt.Errorf("state and code verifier are required"))
 	}
-	in.Code = strings.TrimSpace(in.Code)
-	if in.Code == "" {
+	if !validOAuthValue(in.Code) {
 		return nil, application.NewOAuthError(application.OAuthFailed, fmt.Errorf("authorization code is missing"))
 	}
 
@@ -502,8 +502,50 @@ func (s *Service) ExchangeLogin(ctx context.Context, providerName string, in log
 }
 
 func validPKCEVerifier(verifier, challenge string) bool {
+	if !validPKCEValue(verifier) || !validPKCEValue(challenge) {
+		return false
+	}
 	computed := pkceChallenge(verifier)
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
+}
+
+// OAuth state and authorization codes use the RFC 6749 VSCHAR shape. They are
+// opaque values, so the service validates the transport-safe range without
+// imposing a format or normalizing the value.
+func validOAuthValue(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// RFC 7636 defines code_verifier/code_challenge as 43–128 unreserved ASCII
+// characters. S256 is the only method accepted by this scaffold.
+func validPKCEValue(value string) bool {
+	if len(value) < 43 || len(value) > 128 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '.' || c == '_' || c == '~':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validPKCEChallenge(challenge string) bool {
+	return validPKCEValue(challenge)
 }
 
 func pkceChallenge(verifier string) string {

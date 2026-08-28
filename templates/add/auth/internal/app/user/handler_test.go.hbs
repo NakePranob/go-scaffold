@@ -25,6 +25,8 @@ func (allowAllAuthorizer) Require(_ string) gin.HandlerFunc {
 	return func(c *gin.Context) { c.Next() }
 }
 
+const handlerOAuthVerifier = "client-code-verifier-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 func newOAuthTestRouter(t *testing.T) (*gin.Engine, *fakeLoginProvider) {
 	t.Helper()
 	provider := &fakeLoginProvider{name: "fake"}
@@ -67,7 +69,7 @@ func newCrossSiteTestRouter(t *testing.T) *gin.Engine {
 func beginOAuthFlow(t *testing.T, router *gin.Engine) (string, string) {
 	t.Helper()
 	const state = "client-state"
-	const verifier = "client-code-verifier"
+	const verifier = handlerOAuthVerifier
 	request := httptest.NewRequest(http.MethodGet, "/auth/fake/login?"+url.Values{
 		"state":                 {state},
 		"code_challenge":        {pkceChallenge(verifier)},
@@ -138,7 +140,7 @@ func TestHandler_ProviderCallbackIsFrontendOwnedAndErrorsDoNotRedirect(t *testin
 	}
 
 	invalid := httptest.NewRequest(http.MethodPost, "/auth/fake/exchange?return_to=https%3A%2F%2Fevil.example", strings.NewReader(
-		"{\"code\":\"code\",\"state\":\"\",\"code_verifier\":\"verifier\",\"error_description\":\"do-not-leak\"}",
+		"{\"code\":\"code\",\"state\":\"\",\"code_verifier\":\""+handlerOAuthVerifier+"\",\"error_description\":\"do-not-leak\"}",
 	))
 	invalid.Header.Set("Content-Type", "application/json")
 	invalidResponse := httptest.NewRecorder()
@@ -189,9 +191,9 @@ func TestHandler_ProviderExchangeRejectsMissingStatePKCEAndCode(t *testing.T) {
 		code string
 	}{
 		{name: "malformed JSON", body: "{", code: "oauth_failed"},
-		{name: "missing state", body: "{\"code\":\"code\",\"code_verifier\":\"verifier\"}", code: "oauth_state_invalid"},
+		{name: "missing state", body: "{\"code\":\"code\",\"code_verifier\":\"" + handlerOAuthVerifier + "\"}", code: "oauth_state_invalid"},
 		{name: "missing verifier", body: "{\"code\":\"code\",\"state\":\"state\"}", code: "oauth_state_invalid"},
-		{name: "missing code", body: "{\"state\":\"state\",\"code_verifier\":\"verifier\"}", code: "oauth_failed"},
+		{name: "missing code", body: "{\"state\":\"state\",\"code_verifier\":\"" + handlerOAuthVerifier + "\"}", code: "oauth_failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

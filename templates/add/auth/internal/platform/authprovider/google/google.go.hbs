@@ -97,7 +97,7 @@ func (p *Provider) Begin(_ context.Context, in application.LoginStartInput) (app
 	if p == nil || p.oauth == nil || p.oauth.ClientID == "" || p.oauth.ClientSecret == "" || p.oauth.RedirectURL == "" {
 		return application.Authorization{}, application.NewProviderUnavailable(fmt.Errorf("google oauth is not configured"))
 	}
-	if in.State == "" || in.CodeChallenge == "" || in.CodeChallengeMethod != "S256" || in.Nonce == "" {
+	if !validOAuthValue(in.State) || !validPKCEValue(in.CodeChallenge) || in.CodeChallengeMethod != "S256" || !validOAuthValue(in.Nonce) {
 		return application.Authorization{}, application.NewProviderFailure(fmt.Errorf("invalid oauth state or PKCE parameters"))
 	}
 	return application.Authorization{
@@ -145,7 +145,7 @@ func (p *Provider) Complete(ctx context.Context, in application.LoginCompleteInp
 	if p == nil || p.oauth == nil {
 		return application.ExternalIdentity{}, application.NewProviderUnavailable(fmt.Errorf("google oauth is not configured"))
 	}
-	if strings.TrimSpace(in.Code) == "" || in.CodeVerifier == "" {
+	if !validOAuthValue(in.Code) || !validPKCEValue(in.CodeVerifier) || !validOAuthValue(in.Nonce) {
 		return application.ExternalIdentity{}, application.NewProviderFailure(fmt.Errorf("authorization code and PKCE verifier are required"))
 	}
 
@@ -223,6 +223,40 @@ func (p *Provider) Complete(ctx context.Context, in application.LoginCompleteInp
 		Name:          name,
 		AvatarURL:     picture,
 	}, nil
+}
+
+// OAuth state and authorization codes are opaque RFC 6749 VSCHAR values. The
+// provider validates their transport-safe shape without normalizing them.
+func validOAuthValue(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// RFC 7636 defines code_verifier/code_challenge as 43–128 unreserved ASCII
+// characters. S256 is the only method accepted by this scaffold.
+func validPKCEValue(value string) bool {
+	if len(value) < 43 || len(value) > 128 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '.' || c == '_' || c == '~':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Provider) validateIDToken(ctx context.Context, raw, expectedNonce string) (idTokenClaims, error) {

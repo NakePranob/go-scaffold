@@ -35,6 +35,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
 
   const handler = read(project, "internal", "app", "user", "handler.go");
   const service = read(project, "internal", "app", "user", "service.go");
+  const googleProvider = read(project, "internal", "platform", "authprovider", "google", "google.go");
   const composition = read(project, "internal", "app", "user", "composition.go");
   const config = read(project, "internal", "shared", "config", "config.go");
   const env = read(project, ".env.example");
@@ -44,6 +45,12 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(handler, /POST\("\/:provider\/exchange", h\.providerExchange\)/);
   assert.doesNotMatch(handler, /providerCallback|StatusSeeOther|RedirectTarget/);
   assert.doesNotMatch(service, /oauth2\.Config|GoogleLoginURL|GoogleCallback|findOrCreateGoogleUser|issueOAuthState/);
+  assert.match(service, /validPKCEChallenge\(in\.CodeChallenge\)/);
+  assert.match(service, /in\.CodeChallengeMethod != "S256"/);
+  assert.doesNotMatch(service, /TrimSpace\(in\.(State|Code|CodeVerifier|CodeChallenge)/);
+  assert.match(googleProvider, /validPKCEValue\(in\.CodeChallenge\)/);
+  assert.match(googleProvider, /validPKCEValue\(in\.CodeVerifier\)/);
+  assert.doesNotMatch(googleProvider, /TrimSpace\(in\.(Code|CodeVerifier)/);
   assert.match(composition, /application\.NewProviderRegistry/);
   assert.match(composition, /authprovider\/google/);
   assert.match(composition, /NewHandlerWithOrigins/);
@@ -64,6 +71,8 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(read(project, "internal", "app", "user", "service.go"), /ConsumeLoginTransaction/);
   assert.match(read(project, "internal", "app", "user", "handler.go"), /Cache-Control/);
   assert.match(read(project, "docs", "auth", "provider-exchange.yaml"), /providerExchange/);
+  assert.match(read(project, "docs", "auth", "provider-login.yaml"), /minLength: 43/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));
   assert.ok(existsSync(path.join(project, "internal", "platform", "authprovider", "google", "google.go")));

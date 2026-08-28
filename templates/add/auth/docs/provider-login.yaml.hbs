@@ -16,7 +16,11 @@ get:
     - name: code_challenge
       in: query
       required: true
-      schema: { type: string, minLength: 1 }
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 128
+        pattern: '^[A-Za-z0-9._~-]+$'
     - name: code_challenge_method
       in: query
       required: true

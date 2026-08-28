@@ -6,7 +6,7 @@
 // tests inside the generated project skip gracefully if the DB isn't up,
 // the same behavior the CLI itself scaffolds for every project.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1114,8 +1114,8 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   // the login redirect targets Google with browser-supplied state + PKCE
   // params, and the browser-owned callback uses the JSON exchange endpoint.
   const googleState = "smoke-client-state";
-  const googleChallenge = "smoke-client-code-challenge";
-  const googleVerifier = "smoke-client-code-verifier";
+  const googleVerifier = "smoke-client-code-verifier-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const googleChallenge = createHash("sha256").update(googleVerifier).digest("base64url");
   const googleLogin = run("curl", ["-s", "-i", `${B}/auth/google/login?state=${googleState}&code_challenge=${googleChallenge}&code_challenge_method=S256`]);
   if (!/^HTTP\/1\.1 302/.test(googleLogin)) throw new Error(`expected 302 on GET /auth/google/login, got:\n${googleLogin}`);
   const googleLocation = googleLogin.match(/^Location: (.+)$/m)?.[1]?.trim();

@@ -20,7 +20,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const oidcFixtureNonce = "server-nonce"
+const (
+	oidcFixtureNonce   = "server-nonce"
+	oidcFixtureVerifier = "verifier-that-the-service-bound-to-state-0123456789"
+)
 
 func newOIDCProviderFixture(t *testing.T, userInfoStatus int) (*Provider, *httptest.Server) {
 	t.Helper()
@@ -112,7 +115,7 @@ func TestProvider_Begin_UsesStateAndS256PKCE(t *testing.T) {
 
 	authorization, err := provider.Begin(context.Background(), application.LoginStartInput{
 		State:               "signed-state",
-		CodeChallenge:       "s256-challenge",
+		CodeChallenge:       strings.Repeat("A", 43),
 		CodeChallengeMethod: "S256",
 		Nonce:               "signed-nonce",
 	})
@@ -126,8 +129,8 @@ func TestProvider_Begin_UsesStateAndS256PKCE(t *testing.T) {
 	if got := parsed.Query().Get("state"); got != "signed-state" {
 		t.Fatalf("state = %q, want signed-state", got)
 	}
-	if got := parsed.Query().Get("code_challenge"); got != "s256-challenge" {
-		t.Fatalf("code_challenge = %q, want s256-challenge", got)
+	if got := parsed.Query().Get("code_challenge"); got != strings.Repeat("A", 43) {
+		t.Fatalf("code_challenge = %q, want a valid 43-character S256 challenge", got)
 	}
 	if got := parsed.Query().Get("code_challenge_method"); got != "S256" {
 		t.Fatalf("code_challenge_method = %q, want S256", got)
@@ -140,12 +143,68 @@ func TestProvider_Begin_UsesStateAndS256PKCE(t *testing.T) {
 	}
 }
 
+func TestProvider_Begin_RejectsInvalidOAuthAndPKCEParameters(t *testing.T) {
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://provider.example.test/authorize",
+			TokenURL: "https://provider.example.test/token",
+		},
+	})
+	validChallenge := strings.Repeat("A", 43)
+	tests := []struct {
+		name string
+		in   application.LoginStartInput
+	}{
+		{name: "short challenge", in: application.LoginStartInput{State: "state", CodeChallenge: "short", CodeChallengeMethod: "S256", Nonce: "nonce"}},
+		{name: "invalid challenge character", in: application.LoginStartInput{State: "state", CodeChallenge: strings.Repeat("!", 43), CodeChallengeMethod: "S256", Nonce: "nonce"}},
+		{name: "lowercase challenge method", in: application.LoginStartInput{State: "state", CodeChallenge: validChallenge, CodeChallengeMethod: "s256", Nonce: "nonce"}},
+		{name: "missing nonce", in: application.LoginStartInput{State: "state", CodeChallenge: validChallenge, CodeChallengeMethod: "S256"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := provider.Begin(context.Background(), tt.in); err == nil || application.IsProviderUnavailable(err) {
+				t.Fatalf("expected a controlled provider failure, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestProvider_Complete_RejectsInvalidOAuthAndPKCEParameters(t *testing.T) {
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "http://127.0.0.1:1/authorize",
+			TokenURL: "http://127.0.0.1:1/token",
+		},
+	})
+	tests := []struct {
+		name string
+		in   application.LoginCompleteInput
+	}{
+		{name: "missing code", in: application.LoginCompleteInput{CodeVerifier: oidcFixtureVerifier, Nonce: "nonce"}},
+		{name: "short verifier", in: application.LoginCompleteInput{Code: "code", CodeVerifier: "short", Nonce: "nonce"}},
+		{name: "invalid verifier character", in: application.LoginCompleteInput{Code: "code", CodeVerifier: strings.Repeat("!", 43), Nonce: "nonce"}},
+		{name: "missing nonce", in: application.LoginCompleteInput{Code: "code", CodeVerifier: oidcFixtureVerifier}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := provider.Complete(context.Background(), tt.in); err == nil || application.IsProviderUnavailable(err) {
+				t.Fatalf("expected a controlled provider failure before upstream exchange, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestProvider_Complete_ExchangesCodeAndNormalizesIdentity(t *testing.T) {
-	const verifier = "verifier-that-the-service-bound-to-state"
 	provider, server := newOIDCProviderFixture(t, 0)
 	defer server.Close()
 
-	identity, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: verifier, Nonce: oidcFixtureNonce})
+	identity, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: oidcFixtureNonce})
 	if err != nil {
 		t.Fatalf("complete login: %v", err)
 	}
@@ -157,7 +216,7 @@ func TestProvider_Complete_ExchangesCodeAndNormalizesIdentity(t *testing.T) {
 func TestProvider_Complete_RejectsAnOIDCNonceMismatch(t *testing.T) {
 	provider, server := newOIDCProviderFixture(t, 0)
 	defer server.Close()
-	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: "wrong-nonce"})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: "wrong-nonce"})
 	if err == nil || application.IsProviderUnavailable(err) {
 		t.Fatalf("expected a controlled OIDC validation failure, got %T: %v", err, err)
 	}
@@ -180,7 +239,7 @@ func TestProvider_Complete_RejectsMissingIDToken(t *testing.T) {
 		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
 		HTTPClient:   server.Client(),
 	})
-	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: "nonce"})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: "nonce"})
 	if err == nil || application.IsProviderUnavailable(err) {
 		t.Fatalf("expected missing ID token to be a provider failure, got %T: %v", err, err)
 	}
@@ -204,7 +263,7 @@ func TestProvider_Complete_MapsAccessDeniedToControlledOAuthCode(t *testing.T) {
 		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
 		HTTPClient:   server.Client(),
 	})
-	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: "nonce"})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: "nonce"})
 	var oauthErr *application.OAuthError
 	if !errors.As(err, &oauthErr) || oauthErr.Code != application.OAuthDenied || strings.Contains(err.Error(), "provider detail") {
 		t.Fatalf("expected controlled oauth_denied without provider detail, got %T: %v", err, err)
@@ -236,7 +295,7 @@ func TestProvider_Complete_ClassifiesExchangeUpstreamFailureAsUnavailable(t *tes
 		Endpoint:     oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
 		HTTPClient:   server.Client(),
 	})
-	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier"})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: "nonce"})
 	if !application.IsProviderUnavailable(err) {
 		t.Fatalf("expected exchange upstream failure to be unavailable, got %T: %v", err, err)
 	}
@@ -246,7 +305,7 @@ func TestProvider_Complete_ClassifiesUserInfoUpstreamFailureAsUnavailable(t *tes
 	provider, server := newOIDCProviderFixture(t, http.StatusServiceUnavailable)
 	defer server.Close()
 
-	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: "verifier", Nonce: oidcFixtureNonce})
+	_, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: oidcFixtureNonce})
 	if !application.IsProviderUnavailable(err) {
 		t.Fatalf("expected userinfo upstream failure to be unavailable, got %T: %v", err, err)
 	}
