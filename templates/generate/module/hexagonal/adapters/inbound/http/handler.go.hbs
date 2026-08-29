@@ -1,0 +1,182 @@
+// Package httpadapter is the Gin inbound adapter for {{pkg}}.
+package httpadapter
+
+import (
+	"errors"
+	"net/http"
+
+	"{{goModule}}/internal/app/{{modulePath}}/application"
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/httpx"
+{{#if auth}}	"{{goModule}}/internal/shared/middleware"
+{{/if}}
+	"{{goModule}}/internal/shared/pagination"
+
+	"github.com/gin-gonic/gin"
+)
+
+type Handler struct {
+{{#if cqrs}}
+	commands application.CommandPort
+	queries  application.QueryPort
+{{else}}
+	svc application.ServicePort
+{{/if}}
+{{#if auth}}
+	jwtSecret string
+{{/if}}
+{{#if permission}}
+	authz *middleware.Authz
+{{/if}}
+}
+
+{{#if cqrs}}
+func NewHandler(commands application.CommandPort, queries application.QueryPort{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+	h := &Handler{commands: commands, queries: queries}
+{{#if auth}}
+	h.jwtSecret = jwtSecret
+{{/if}}
+{{#if permission}}
+	h.authz = authz
+{{/if}}
+	return h
+}
+{{else}}
+func NewHandler(svc application.ServicePort{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+	h := &Handler{svc: svc}
+{{#if auth}}
+	h.jwtSecret = jwtSecret
+{{/if}}
+{{#if permission}}
+	h.authz = authz
+{{/if}}
+	return h
+}
+{{/if}}
+
+func (h *Handler) Register(rg gin.IRouter) {
+	g := rg.Group("/{{plural}}"{{#if auth}}, middleware.RequireAuth(h.jwtSecret){{/if}}{{#if permission}}, h.authz.Require("{{permission}}"){{/if}})
+	g.POST("", h.create)
+	g.GET("", h.list)
+	g.GET("/:id", h.get)
+	g.PUT("/:id", h.update)
+	g.DELETE("/:id", h.delete)
+	// go-scaffold:handler-routes
+}
+
+func appError(err error) error {
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return applicationError(http.StatusNotFound, "{{errorPrefix}}_NOT_FOUND", "{{pkg}} not found")
+	case errors.Is(err, domain.ErrConflict):
+		return applicationError(http.StatusConflict, "{{errorPrefix}}_CONFLICT", "{{pkg}} already exists")
+	case errors.Is(err, domain.ErrStaleVersion):
+		return applicationError(http.StatusConflict, "{{errorPrefix}}_STALE", "{{pkg}} was modified by someone else — reload and try again")
+	case errors.Is(err, domain.ErrHasReferences):
+		return applicationError(http.StatusConflict, "{{errorPrefix}}_HAS_REFERENCES", "{{pkg}} still has related records")
+	case errors.Is(err, domain.ErrNotImplemented):
+		return applicationError(http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+	default:
+		return apperror.NewInternal(err)
+	}
+}
+
+func applicationError(status int, code, message string) *apperror.AppError {
+	// The HTTP adapter is the only layer allowed to create an HTTP error.
+	return apperror.New(status, code, message)
+}
+
+func (h *Handler) create(c *gin.Context) {
+	var in application.CreateInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+{{#if cqrs}}
+	m, err := h.commands.Create(c.Request.Context(), in)
+{{else}}
+	m, err := h.svc.Create(c.Request.Context(), in)
+{{/if}}
+	if err != nil {
+		c.Error(appError(err))
+		return
+	}
+	c.JSON(http.StatusCreated, application.ToResponse(m))
+}
+
+func (h *Handler) list(c *gin.Context) {
+	p := pagination.Parse(c)
+{{#if cqrs}}
+	items, err := h.queries.List(c.Request.Context(), p.Limit, p.Offset)
+{{else}}
+	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+{{/if}}
+	if err != nil {
+		c.Error(appError(err))
+		return
+	}
+	out := make([]application.Response, len(items))
+	for i := range items {
+		out[i] = application.ToResponse(&items[i])
+	}
+	c.JSON(http.StatusOK, p.Response(out))
+}
+
+func (h *Handler) get(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+{{#if cqrs}}
+	m, err := h.queries.Get(c.Request.Context(), id)
+{{else}}
+	m, err := h.svc.Get(c.Request.Context(), id)
+{{/if}}
+	if err != nil {
+		c.Error(appError(err))
+		return
+	}
+	c.JSON(http.StatusOK, application.ToResponse(m))
+}
+
+func (h *Handler) update(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	var in application.UpdateInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+{{#if cqrs}}
+	m, err := h.commands.Update(c.Request.Context(), id, in)
+{{else}}
+	m, err := h.svc.Update(c.Request.Context(), id, in)
+{{/if}}
+	if err != nil {
+		c.Error(appError(err))
+		return
+	}
+	c.JSON(http.StatusOK, application.ToResponse(m))
+}
+
+func (h *Handler) delete(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+{{#if cqrs}}
+	err := h.commands.Delete(c.Request.Context(), id)
+{{else}}
+	err := h.svc.Delete(c.Request.Context(), id)
+{{/if}}
+	if err != nil {
+		c.Error(appError(err))
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// go-scaffold:handler-funcs

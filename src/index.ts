@@ -30,6 +30,7 @@ import {
   promptModuleSurface,
 } from "./prompts/generate-wizard";
 import { configureProject, showProjectConfig, validateProjectConfig } from "./commands/config";
+import { checkProject } from "./commands/check";
 import { isProjectDir, parseModuleProfile, readConfig } from "./utils/config";
 import { architectureForModuleProfile, moduleProfileFor } from "./utils/module-profile";
 
@@ -54,9 +55,20 @@ program
   .name("go-scaffold")
   .description(
     "Scaffold Gin + GORM + Postgres Go backend projects with a consistent domain-module standard\n\n" +
-      "Run `go-scaffold` with no arguments to pick what to do from a menu. Interactive commands ask for values you omit; read-only commands (`config show`, `config validate`) print or check state without prompts."
+      "Run `go-scaffold` with no arguments to pick what to do from a menu. Interactive commands ask for values you omit; read-only commands (`check`, `config show`, `config validate`) print or check state without prompts."
   )
   .version(cliVersion());
+
+program
+  .command("check")
+  .description("validate the hexagonal split layout, layer dependencies, and service/CQRS contract")
+  .action(() => {
+    try {
+      checkProject();
+    } catch (err) {
+      fail(err);
+    }
+  });
 
 program
   .command("create [name]")

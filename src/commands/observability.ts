@@ -2,8 +2,7 @@ import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
-import { applyTemplateEntries, getTemplatesRoot, gofmtTree, renderString } from "../utils/template-renderer";
-import { ProjectConfig } from "../types";
+import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { OBSERVABILITY_FILES } from "../templates/observability-manifest";
 import {
   patchConfigForObservability,
@@ -14,6 +13,7 @@ import {
 } from "../utils/observability-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
+import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // addObservability scaffolds Prometheus metrics (GET /metrics) and
 // OpenTelemetry tracing for Gin + GORM, wiring both into the files `create`
@@ -61,7 +61,7 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
   // docs saying `enabled` while the config it never reached still said false —
   // a disagreement no later command could converge, since the "already added"
   // guard then blocks a re-run.
-  const staleDocs = refreshArchitectDocs(projectDir, config);
+  const staleDocs = refreshProjectDocs(projectDir, config, { observability: true });
   writeConfig(projectDir, { ...config, features: { ...config.features, observability: true } });
 
   if (opts.silent) return;
@@ -77,67 +77,10 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
       pc.yellow("cmd/worker is not instrumented — it initialises no tracer provider, so its spans are dropped and it exposes no /metrics")
     );
   }
-  if (staleDocs.length) {
-    // Deliberately not "you edited these". The comparison is a whole-file
-    // match against today's template, and techstack.md embeds pinned
-    // dependency versions — so every release that bumps one makes every
-    // project scaffolded before it look edited. Which is exactly the
-    // population this function exists for.
-    console.log(
-      pc.yellow(
-        `\nnote: couldn't safely rewrite ${staleDocs.join(" and ")} — ` +
-          `${staleDocs.length > 1 ? "they don't" : "it doesn't"} match what this go-scaffold\n` +
-          `  would have generated, so ${staleDocs.length > 1 ? "they were" : "it was"} left alone rather than overwriting your edits.\n` +
-          `  ${staleDocs.length > 1 ? "They still describe" : "It still describes"} this project as having no metrics or tracing; update by hand.`
-      )
-    );
-  }
+  if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add observability")));
   console.log(
     pc.dim(
       "\nnext: go mod tidy, then set OTEL_EXPORTER_OTLP_ENDPOINT to export traces (empty = tracing no-ops, /metrics works either way)"
     )
   );
-}
-
-// The architecture docs gate their observability sections on a `create`-time
-// flag, so adding the feature afterwards used to leave techstack.md saying
-// `disabled` and architecture.md missing the section entirely — while the
-// README promises `create --observability` and this command produce the same
-// project.
-//
-// Re-rendering from the templates rather than string-patching keeps the prose
-// in one place (the .hbs), but would also silently discard a user's edits. So
-// it first renders what the file *should* look like today, with observability
-// still off: only a byte-for-byte match proves nobody has touched it. Returns
-// the docs it declined to overwrite, for the caller to warn about.
-function refreshArchitectDocs(projectDir: string, config: ProjectConfig): string[] {
-  const docs = [
-    { template: "create/features/docs/architecture.md.hbs", output: path.join("docs", "architect", "architecture.md") },
-    { template: "create/features/docs/techstack.md.hbs", output: path.join("docs", "architect", "techstack.md") },
-  ];
-  // only what the two templates actually reference — projectName, apiPrefix,
-  // architecture defaults and the feature flags
-  const base = { projectName: config.projectName, apiPrefix: config.apiPrefix, ...config.architecture, ...config.features };
-
-  const root = getTemplatesRoot();
-  const skipped: string[] = [];
-  for (const doc of docs) {
-    const outputPath = path.join(projectDir, doc.output);
-    if (!fs.existsSync(outputPath)) continue;
-    const source = fs.readFileSync(path.join(root, doc.template), "utf8");
-    // compare with line endings normalised — a Windows checkout with
-    // core.autocrlf=true would otherwise never match, and the feature would
-    // silently never fire there
-    const onDisk = lf(fs.readFileSync(outputPath, "utf8"));
-    if (onDisk !== lf(renderString(source, { ...base, observability: false }))) {
-      skipped.push(doc.output);
-      continue;
-    }
-    fs.writeFileSync(outputPath, renderString(source, { ...base, observability: true }));
-  }
-  return skipped;
-}
-
-function lf(text: string): string {
-  return text.replace(/\r\n/g, "\n");
 }

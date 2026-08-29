@@ -1,0 +1,95 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+	"{{goModule}}/internal/shared/dberr"
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+var _ ports.Repository = (*Repository)(nil)
+
+type Repository struct {
+	db *gorm.DB
+}
+
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{db: db}
+}
+
+func (r *Repository) Create(ctx context.Context, m *domain.{{pascalName}}) error {
+	if err := tx.From(ctx, r.db).WithContext(ctx).Create(fromDomain(m)).Error; err != nil {
+		return mapDatabaseError(err)
+	}
+	return nil
+}
+
+func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
+	var rows []{{pascalName}}Model
+	if err := tx.From(ctx, r.db).WithContext(ctx).Order("id desc").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	items := make([]domain.{{pascalName}}, len(rows))
+	for i := range rows {
+		items[i] = *toDomain(&rows[i])
+	}
+	return items, nil
+}
+
+func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {
+	var row {{pascalName}}Model
+	if err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+		return nil, mapDatabaseError(err)
+	}
+	return toDomain(&row), nil
+}
+
+func (r *Repository) Update(ctx context.Context, m *domain.{{pascalName}}) error {
+	expected := m.Version
+	row := fromDomain(m)
+	row.Version = expected + 1
+	result := tx.From(ctx, r.db).WithContext(ctx).
+		Model(&{{pascalName}}Model{}).
+		Where("id = ? AND version = ?", m.ID, expected).
+		Select("*").Omit("id", "created_at").Updates(row)
+	if result.Error != nil {
+		return mapDatabaseError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return domain.ErrStaleVersion
+	}
+	m.Version = row.Version
+	return nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
+	result := tx.From(ctx, r.db).WithContext(ctx).Delete(&{{pascalName}}Model{}, "id = ?", id)
+	if result.Error != nil {
+		return mapDatabaseError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func mapDatabaseError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return domain.ErrNotFound
+	}
+	if dberr.IsDuplicate(err) {
+		return domain.ErrConflict
+	}
+	if dberr.IsForeignKey(err) {
+		return domain.ErrHasReferences
+	}
+	return err
+}
+
+// go-scaffold:repository-methods

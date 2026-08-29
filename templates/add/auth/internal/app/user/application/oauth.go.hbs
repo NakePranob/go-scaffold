@@ -74,10 +74,10 @@ func (r ProviderRegistry) Lookup(name string) (LoginProvider, bool) {
 type OAuthErrorCode string
 
 const (
-	OAuthDenied             OAuthErrorCode = "oauth_denied"
-	OAuthStateInvalid       OAuthErrorCode = "oauth_state_invalid"
+	OAuthDenied              OAuthErrorCode = "oauth_denied"
+	OAuthStateInvalid        OAuthErrorCode = "oauth_state_invalid"
 	OAuthProviderUnavailable OAuthErrorCode = "oauth_provider_unavailable"
-	OAuthFailed             OAuthErrorCode = "oauth_failed"
+	OAuthFailed              OAuthErrorCode = "oauth_failed"
 )
 
 // OAuthError is the public, controlled error contract for the browser login

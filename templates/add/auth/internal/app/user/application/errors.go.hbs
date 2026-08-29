@@ -1,0 +1,62 @@
+package application
+
+import (
+	"fmt"
+
+	"{{goModule}}/internal/app/user/domain"
+)
+
+// Use-case errors carry a stable business code and a domain sentinel. The
+// inbound adapter decides how those errors map to HTTP; application code does
+// not know status codes or response envelopes.
+func errNotFound() error {
+	return domain.Rule("USER_NOT_FOUND", "user not found", domain.ErrNotFound)
+}
+
+func errEmailTaken() error {
+	return domain.Rule("USER_EMAIL_TAKEN", "email already registered", domain.ErrEmailTaken)
+}
+
+func errTooManyAttempts() error {
+	return domain.Rule("AUTH_TOO_MANY_ATTEMPTS", "too many failed attempts - try again later", domain.ErrTooManyAttempts)
+}
+
+func errInvalidCredentials() error {
+	return domain.Rule("AUTH_INVALID_CREDENTIALS", "invalid email or password", domain.ErrInvalidCredential)
+}
+
+func errInvalidToken() error {
+	return domain.Rule("AUTH_INVALID_TOKEN", "invalid or expired token", domain.ErrInvalidToken)
+}
+
+func errAlreadyVerified() error {
+	return domain.Rule("AUTH_ALREADY_VERIFIED", "email is already verified", domain.ErrAlreadyVerified)
+}
+
+func errMFAUnavailable() error {
+	return domain.Rule("AUTH_MFA_UNAVAILABLE", "multi-factor authentication is not enabled", domain.ErrMFAUnavailable)
+}
+
+func errMFAInvalid() error {
+	return domain.Rule("AUTH_MFA_INVALID", "invalid or expired multi-factor authentication code", domain.ErrMFAInvalid)
+}
+
+func errMFAAlreadyEnabled() error {
+	return domain.Rule("AUTH_MFA_ALREADY_ENABLED", "multi-factor authentication is already enabled", domain.ErrMFAAlreadyEnabled)
+}
+
+func errMFANotEnrolled() error {
+	return domain.Rule("AUTH_MFA_NOT_ENROLLED", "multi-factor authentication is not enabled for this user", domain.ErrMFANotEnrolled)
+}
+
+func errMFASetupRequired() error {
+	return domain.Rule("AUTH_MFA_SETUP_REQUIRED", "complete multi-factor authentication setup first", domain.ErrMFASetupRequired)
+}
+
+func errMFAConfig() error {
+	return fmt.Errorf("multi-factor authentication encryption key is invalid")
+}
+
+func errUnknownRole() error {
+	return domain.Rule("USER_UNKNOWN_ROLE", "unknown role code", domain.ErrUnknownRole)
+}

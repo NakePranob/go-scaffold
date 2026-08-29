@@ -1,0 +1,25 @@
+package application
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+)
+
+type CommandPort interface {
+	// go-scaffold:command-interface
+}
+
+type CommandHandler struct {
+	repo ports.CommandRepository
+}
+
+func NewCommandHandler(repo ports.CommandRepository) *CommandHandler {
+	return &CommandHandler{repo: repo}
+}
+
+var _ context.Context
+var _ *domain.{{pascalName}}
+
+// go-scaffold:command-methods

@@ -6,12 +6,13 @@ CREATE TABLE user_svc.users (
     name           VARCHAR(255) NOT NULL DEFAULT '',
     avatar_url     TEXT NOT NULL DEFAULT '',
     email_verified BOOLEAN NOT NULL DEFAULT false,
+    role           VARCHAR(20) NOT NULL DEFAULT 'staff',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- A unique INDEX, not an inline UNIQUE constraint, and named to match the
--- `uniqueIndex:idx_users_email` tag on model.User exactly. Postgres names an
+-- `uniqueIndex:idx_users_email` tag on the outbound persistence model exactly. Postgres names an
 -- inline UNIQUE "users_email_key"; the development bootstrap then sees
 -- uniqueness it didn't create and tries to drop it under its own
 -- name, which fails the boot with

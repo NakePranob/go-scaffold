@@ -3,33 +3,46 @@ package role
 import (
 	"time"
 
+	httpadapter "{{goModule}}/internal/app/role/adapters/inbound/http"
+	"{{goModule}}/internal/app/role/adapters/outbound/postgres"
+	"{{goModule}}/internal/app/role/application"
+	"{{goModule}}/internal/app/role/domain"
+	"{{goModule}}/internal/app/role/ports"
 	"{{goModule}}/internal/shared/middleware"
 
 	"gorm.io/gorm"
 )
 
-// Composition groups role's service, authorization adapter, and HTTP handler
-// so cmd/api can register the feature without constructing its internals.
+// Composition is the only public graph exposed to cmd/api. The feature root
+// owns the role repository, application service, permission cache, and HTTP
+// adapter; process wiring does not construct any of those internals.
 type Composition struct {
-	Service *Service
+	Service *application.Service
 	Authz   *middleware.Authz
-	Handler *Handler
+	Handler *httpadapter.Handler
 }
 
-// NewServiceFromDB is the role feature's persistence composition boundary.
+type Service = application.Service
+type ServicePort = application.ServicePort
+type Repository = postgres.Repository
+type CreateInput = application.CreateInput
+type SetPermissionsInput = application.SetPermissionsInput
+type Role = domain.Role
+type Permission = domain.Permission
+type AuthorizationPort = ports.AuthorizationPort
+
+const PermRoleManage = application.PermRoleManage
+
 func NewServiceFromDB(db *gorm.DB) *Service {
-	return NewService(NewRepository(db))
+	return application.NewService(postgres.NewRepository(db))
 }
 
-// NewCompositionFromDB builds role and its authorization middleware locally.
-// The API binary supplies the shared DB/config values and only registers the
-// returned handlers.
 func NewCompositionFromDB(db *gorm.DB, jwtSecret string, cacheTTL time.Duration) *Composition {
 	service := NewServiceFromDB(db)
 	authz := middleware.NewAuthz(service.PermissionsOf, cacheTTL)
 	return &Composition{
 		Service: service,
 		Authz:   authz,
-		Handler: NewHandler(service, jwtSecret, authz),
+		Handler: httpadapter.NewHandler(service, jwtSecret, authz),
 	}
 }

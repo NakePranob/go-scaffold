@@ -1,0 +1,75 @@
+package application
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+type RegisterInput struct {
+	Email    string
+	Password string
+	Name     string
+}
+
+type LoginInput struct {
+	Email    string
+	Password string
+}
+
+type LoginExchangeInput struct {
+	Code         string
+	State        string
+	CodeVerifier string
+}
+
+type AuthResponse struct {
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	ExpiresIn    int
+}
+
+type AuthResult struct {
+	*AuthResponse
+	MFAChallenge string
+}
+
+func TokenResult(auth *AuthResponse) *AuthResult {
+	return &AuthResult{AuthResponse: auth}
+}
+
+func ChallengeResult(challenge string) *AuthResult {
+	return &AuthResult{MFAChallenge: challenge}
+}
+
+// Response is the generic application response used by generated method
+// extensions. Auth's HTTP adapter may expose a richer meResponse, but method
+// generation still has one stable transport-neutral mapping seam.
+type Response struct {
+	ID            uuid.UUID `json:"id"`
+	Email         string    `json:"email"`
+	Name          string    `json:"name"`
+	AvatarURL     string    `json:"avatar_url"`
+	EmailVerified bool      `json:"email_verified"`
+	Role          string    `json:"role"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func ToResponse(user *domain.User) Response {
+	return Response{
+		ID:            user.ID,
+		Email:         user.Email,
+		Name:          user.Name,
+		AvatarURL:     user.AvatarURL,
+		EmailVerified: user.EmailVerified,
+		Role:          user.Role,
+		CreatedAt:     user.CreatedAt,
+		UpdatedAt:     user.UpdatedAt,
+	}
+}
+
+// go-scaffold:dto

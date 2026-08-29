@@ -1,0 +1,90 @@
+// Package ports contains user auth's application-owned outbound contracts.
+package ports
+
+import (
+	"context"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+type UserRepository interface {
+	FindByEmail(context.Context, string) (*domain.User, error)
+	FindByID(context.Context, uuid.UUID) (*domain.User, error)
+	UpdateUser(context.Context, *domain.User) error
+	FindAll(context.Context, int, int) ([]domain.User, error)
+	FindIdentity(context.Context, uuid.UUID, domain.Provider) (*domain.Identity, error)
+	FindIdentityByProviderUID(context.Context, domain.Provider, string) (*domain.Identity, error)
+	CreateUserWithIdentity(context.Context, *domain.User, *domain.Identity) error
+	CreateIdentity(context.Context, *domain.Identity) error
+	UpdateIdentity(context.Context, *domain.Identity) error
+	LoginLockedUntil(context.Context, string) (time.Time, error)
+	RecordLoginFailure(context.Context, string, int, time.Duration) error
+	ClearLoginFailures(context.Context, string) error
+	// go-scaffold:repository-interface
+}
+
+type AuthMailer interface {
+	Send(context.Context, string, string, string) error
+}
+
+type RoleChecker interface {
+	CodeExists(context.Context, string) (bool, error)
+}
+
+type RefreshTokenRecord struct {
+	UserID            uuid.UUID `json:"user_id"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
+}
+
+type RefreshTokenStore interface {
+	SetRefreshToken(context.Context, string, RefreshTokenRecord) error
+	GetRefreshToken(context.Context, string) (uuid.UUID, bool, error)
+	ConsumeRefreshToken(context.Context, string) (RefreshTokenRecord, bool, error)
+	DeleteRefreshToken(context.Context, string, uuid.UUID) error
+	RevokeAllRefreshTokens(context.Context, uuid.UUID) error
+	IsRefreshTokenUsed(context.Context, string) (uuid.UUID, bool, error)
+}
+
+type LoginTransaction struct {
+	Provider      string    `json:"provider"`
+	CodeChallenge string    `json:"code_challenge"`
+	Nonce         string    `json:"nonce"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+type OAuthTransactionStore interface {
+	SetLoginTransaction(context.Context, string, LoginTransaction) error
+	ConsumeLoginTransaction(context.Context, string) (LoginTransaction, bool, error)
+}
+
+type RecoveryTokenStore interface {
+	WithTransaction(context.Context, func(context.Context) error) error
+	ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error)
+	ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error)
+	SetPasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error
+	SetEmailVerifyToken(context.Context, string, uuid.UUID, time.Duration) error
+}
+
+type MFAEnrollment struct {
+	EncryptedSecret string
+	Enabled         bool
+}
+
+type MFAChallenge struct {
+	UserID    uuid.UUID
+	ExpiresAt time.Time
+}
+
+type MFAStore interface {
+	GetEnrollment(context.Context, uuid.UUID) (MFAEnrollment, bool, error)
+	PutPendingEnrollment(context.Context, uuid.UUID, string) error
+	ConfirmEnrollment(context.Context, uuid.UUID, string, []string) error
+	Disable(context.Context, uuid.UUID) error
+	CreateChallenge(context.Context, string, MFAChallenge) error
+	ConsumeChallenge(context.Context, string) (MFAChallenge, bool, error)
+	ConsumeRecoveryCode(context.Context, uuid.UUID, string) (bool, error)
+}

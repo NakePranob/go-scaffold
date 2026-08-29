@@ -1,0 +1,47 @@
+package application
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/role/domain"
+)
+
+const PermRoleManage = "role:manage"
+
+type CreateInput struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+type SetPermissionsInput struct {
+	PermissionCodes *[]string `json:"permission_codes"`
+}
+
+type RoleListItem struct {
+	Role        domain.Role
+	Permissions []string
+}
+
+type RoleResponse struct {
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	IsSystem    bool      `json:"is_system"`
+	Permissions []string  `json:"permissions"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type PermissionResponse struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+}
+
+func ToRoleResponse(item RoleListItem) RoleResponse {
+	return RoleResponse{
+		Code: item.Role.Code, Name: item.Role.Name, IsSystem: item.Role.IsSystem,
+		Permissions: item.Permissions, CreatedAt: item.Role.CreatedAt,
+	}
+}
+
+func ToPermissionResponse(item domain.Permission) PermissionResponse {
+	return PermissionResponse{Code: item.Code, Description: item.Description}
+}

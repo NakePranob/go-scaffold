@@ -1,0 +1,200 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+const testMFAEncryptionKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+func configuredMFATestService(t *testing.T) (*Service, *fakeMFAStore, uuid.UUID, time.Time) {
+	t.Helper()
+	userID := uuid.New()
+	mfa := newFakeMFAStore()
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "mfa@example.com"}}, newFakeTokenStore())
+	now := time.Now()
+	svc.mfa = mfa
+	svc.now = func() time.Time { return now }
+	svc.config.MFA = MFASettings{
+		Enabled:           true,
+		Issuer:            "Example",
+		EncryptionKey:     testMFAEncryptionKey,
+		ChallengeTTL:      5 * time.Minute,
+		TOTPWindow:        1,
+		RecoveryCodeCount: 10,
+	}
+	return svc, mfa, userID, now
+}
+
+func TestTOTPCodeMatchesRFC6238SHA1Vector(t *testing.T) {
+	secret := "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	code, err := totpCode(secret, time.Unix(59, 0))
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	if code != "287082" {
+		t.Fatalf("expected RFC 6238 six-digit code 287082, got %s", code)
+	}
+}
+
+func TestMFADefaultIsDisabled(t *testing.T) {
+	userID := uuid.New()
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "default@example.com"}}, newFakeTokenStore())
+
+	status, err := svc.MFAStatus(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("read default MFA status: %v", err)
+	}
+	if status.Available || status.Enabled {
+		t.Fatalf("MFA must be disabled and unavailable by default: %+v", status)
+	}
+}
+
+func TestValidateMFASettingsRejectsUnsafeEnabledConfiguration(t *testing.T) {
+	valid := MFASettings{
+		Enabled:           true,
+		EncryptionKey:     testMFAEncryptionKey,
+		ChallengeTTL:      5 * time.Minute,
+		TOTPWindow:        1,
+		RecoveryCodeCount: 10,
+	}
+	if err := ValidateMFASettings(valid); err != nil {
+		t.Fatalf("valid MFA settings rejected: %v", err)
+	}
+
+	for name, settings := range map[string]MFASettings{
+		"missing encryption key":  validWithMFAOverride(valid, func(s *MFASettings) { s.EncryptionKey = "" }),
+		"non-positive challenge":  validWithMFAOverride(valid, func(s *MFASettings) { s.ChallengeTTL = 0 }),
+		"wide TOTP window":        validWithMFAOverride(valid, func(s *MFASettings) { s.TOTPWindow = 4 }),
+		"too few recovery codes":  validWithMFAOverride(valid, func(s *MFASettings) { s.RecoveryCodeCount = 4 }),
+		"too many recovery codes": validWithMFAOverride(valid, func(s *MFASettings) { s.RecoveryCodeCount = 21 }),
+	} {
+		if err := ValidateMFASettings(settings); err == nil {
+			t.Errorf("%s: expected invalid enabled configuration to fail", name)
+		}
+	}
+	if err := ValidateMFASettings(MFASettings{Enabled: false}); err != nil {
+		t.Fatalf("disabled MFA should not require an encryption key: %v", err)
+	}
+}
+
+func validWithMFAOverride(base MFASettings, override func(*MFASettings)) MFASettings {
+	copy := base
+	override(&copy)
+	return copy
+}
+
+func TestMFAEnrollmentIsPendingUntilTOTPConfirmation(t *testing.T) {
+	svc, store, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup MFA: %v", err)
+	}
+	if setup.Secret == "" || !strings.HasPrefix(setup.OTPAuthURI, "otpauth://totp/") {
+		t.Fatalf("unexpected setup response: %+v", setup)
+	}
+	if strings.Contains(store.enrollments[userID].EncryptedSecret, setup.Secret) {
+		t.Fatal("MFA secret must not be stored in plaintext")
+	}
+
+	status, err := svc.MFAStatus(ctx, userID)
+	if err != nil || !status.Available || status.Enabled {
+		t.Fatalf("expected available but disabled pending enrollment: %+v, %v", status, err)
+	}
+	code, _ := totpCode(setup.Secret, now)
+	codes, err := svc.ConfirmMFA(ctx, userID, code)
+	if err != nil {
+		t.Fatalf("confirm MFA: %v", err)
+	}
+	if len(codes) != 10 {
+		t.Fatalf("expected 10 recovery codes, got %d", len(codes))
+	}
+	status, err = svc.MFAStatus(ctx, userID)
+	if err != nil || !status.Enabled {
+		t.Fatalf("expected enabled MFA status: %+v, %v", status, err)
+	}
+}
+
+func TestMFAChallengeIsRequiredAndOneUse(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	secret, err := newTOTPSecret()
+	if err != nil {
+		t.Fatalf("secret: %v", err)
+	}
+	encrypted, err := encryptMFASecret(testMFAEncryptionKey, secret)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if err := svc.mfa.ConfirmEnrollment(ctx, userID, encrypted, []string{}); err == nil {
+		t.Fatal("expected store to reject an enrollment without recovery codes")
+	}
+	// Use the service path so the exact recovery-code policy is exercised.
+	if err := svc.mfa.PutPendingEnrollment(ctx, userID, encrypted); err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	code, _ := totpCode(secret, now)
+	if _, err := svc.ConfirmMFA(ctx, userID, code); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	result, err := svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
+	if err != nil || result.MFAChallenge == "" || result.AuthResponse != nil {
+		t.Fatalf("expected pre-session MFA challenge: %+v, %v", result, err)
+	}
+	auth, err := svc.VerifyMFA(ctx, result.MFAChallenge, code)
+	if err != nil || auth == nil || auth.AccessToken == "" || auth.RefreshToken == "" {
+		t.Fatalf("verify MFA: %+v, %v", auth, err)
+	}
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, code); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("expected one-use challenge rejection, got %v", err)
+	}
+}
+
+func TestMFARecoveryCodeIsOneUse(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	code, _ := totpCode(setup.Secret, now)
+	recoveryCodes, err := svc.ConfirmMFA(ctx, userID, code)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	result, err := svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
+	if err != nil {
+		t.Fatalf("login challenge: %v", err)
+	}
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, recoveryCodes[0]); err != nil {
+		t.Fatalf("verify with recovery code: %v", err)
+	}
+	result, err = svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
+	if err != nil {
+		t.Fatalf("second login challenge: %v", err)
+	}
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, recoveryCodes[0]); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("expected consumed recovery code rejection, got %v", err)
+	}
+}
+
+func codeOfMFAError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ruleErr *domain.RuleError
+	if errors.As(err, &ruleErr) {
+		return ruleErr.Code
+	}
+	return ""
+}

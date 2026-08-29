@@ -76,6 +76,7 @@ Run from the project root and pass every value as a flag:
 go-scaffold generate module <name> [--profile <lean|crud|cqrs>] [--defaults] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 go-scaffold generate migration <name>
+go-scaffold check
 go-scaffold config
 go-scaffold add auth --store <postgres|redis> --browser-topology <same-origin|same-site|cross-site> [--defaults] [--yes]
 go-scaffold add worker --queue <postgres|redis> [--defaults]
@@ -116,10 +117,10 @@ corresponding features installed. There is no final confirmation for module
 generation; review the profile and flags before running it.
 
 `go-scaffold config` changes defaults for future modules only. Existing modules
-are not rewritten. `config show` and `config validate` are intentionally
-read-only and do not open a wizard. The bare `generate` command first asks
-whether to generate a module, method, or migration; the bare `add` command
-first asks which infrastructure feature to add.
+are not rewritten. `check`, `config show`, and `config validate` are
+intentionally read-only and do not open a wizard. The bare `generate` command
+first asks whether to generate a module, method, or migration; the bare `add`
+command first asks which infrastructure feature to add.
 
 ## Generated module contract
 
@@ -128,24 +129,29 @@ defaults. On a fresh project that is a Lean module with:
 
 ~~~text
 internal/app/<pkg>/
-  model/model.go
-  dto.go
-  errors.go
-  repository.go
-  service.go
+  domain/entity.go
+  domain/errors.go
+  ports/repository.go
+  application/dto.go
+  application/service.go
+  application/service_test.go
+  adapters/inbound/http/handler.go
+  adapters/inbound/http/handler_test.go
+  adapters/outbound/postgres/model.go
+  adapters/outbound/postgres/repository.go
+  adapters/outbound/postgres/repository_test.go
   composition.go
-  handler.go
-  service_test.go
-  handler_test.go
-  repository_test.go
 migrations/<version>_create_<plural>.{up,down}.sql
 ~~~
 
 The Lean/minimal module has no endpoint yet, but includes the complete
 data-access surface and test seams needed by generate method. The CRUD profile
 adds a CRUD starter and routes list/get/create/update/delete. The CQRS profile
-adds separate commands.go and queries.go application handlers; Advanced can
-combine CRUD + CQRS, or use CQRS alone before adding methods one at a time.
+replaces `application/service.go` and its test with
+`application/commands.go`, `application/queries.go`, and
+`application/cqrs_test.go`; Advanced can combine CRUD + CQRS, or use CQRS
+alone before adding methods one at a time. Service and CQRS are mutually
+exclusive within one module, but may coexist across modules.
 With OpenAPI enabled it also creates the per-domain documents and updates
 docs/openapi.yaml.
 
@@ -182,11 +188,13 @@ This project is modular plus Hexagonal/DDD-friendly, with CQRS available via
 the `cqrs` profile or the backwards-compatible
 `go-scaffold generate module <name> --cqrs` flag:
 
-- handlers are inbound adapters and know HTTP/Gin only;
-- services or commands.go/queries.go (and, for complex flows,
-  internal/app/<feature>/application/) are application/use-case boundaries and
-  depend on narrow ports;
-- models and domain invariants stay independent of Gin, GORM, Redis, and HTTP;
+- `adapters/inbound/http` handlers are inbound adapters and know HTTP/Gin only;
+- `application/service.go` or `application/commands.go` plus
+  `application/queries.go` are application/use-case boundaries and depend on
+  narrow ports. The service and CQRS shapes are mutually exclusive inside one
+  module;
+- `domain/` entities and invariants stay independent of Gin, GORM, Redis, and
+  HTTP; persistence models belong under `adapters/outbound/postgres`;
 - repositories/token stores/mail/queue clients are outbound adapters;
 - composition.go wires one feature locally, while cmd/api/wiring.go wires
   the process.
@@ -209,13 +217,13 @@ handler -> application/use case -> domain + ports -> adapters
                                   +--- composition -+
 ~~~
 
-The generated auth facade is a pragmatic compatibility boundary: its service
-contracts currently use the feature's `model` values and shared `apperror`,
-while handlers own Gin and provider adapters own SDK configuration. Do not
-broaden that coupling by importing Gin, provider SDKs, or HTTP handlers into
-use cases. New complex flows should prefer transport-neutral DTOs and narrow
-ports; a deeper separation of the existing auth facade is an explicit
-architecture refactor and needs focused tests.
+Auth and RBAC use the same canonical split as every other feature:
+`domain/`, `application/`, `ports/`, `adapters/`, and a feature-local
+`composition.go`. Auth owns user use cases and ports; RBAC owns role policy and
+authorization adapters. There is no `compat/`, feature-level `model/`, or
+second implementation tree. If an existing security flow needs a refactor,
+split it at the application boundary and keep provider SDKs, Gin, and GORM
+inside their respective adapters.
 
 ## Authentication and browser OAuth contract
 

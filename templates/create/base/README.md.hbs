@@ -22,27 +22,48 @@ for scripts.
 
 See `docs/architect/` for the conventions every generated module follows, and `AGENTS.md`/`CLAUDE.md` if you're working with an AI coding agent in this repo.
 
+## Installed optional features
+
+This project records its generated capabilities in `go-scaffold.config.json`:
+
+- authentication: {{#if auth}}enabled{{else}}not installed — use `go-scaffold add auth` when needed{{/if}}
+- background jobs: {{#if worker}}enabled{{else}}not installed — use `go-scaffold add worker` when needed{{/if}}
+- RBAC: {{#if rbac}}enabled{{else}}not installed — use `go-scaffold add rbac` after auth when needed{{/if}}
+- metrics and tracing: {{#if observability}}enabled{{else}}not installed — use `go-scaffold add observability` when needed{{/if}}
+
+The `add` commands refresh untouched generated architecture docs and this
+section. If a maintainer has edited a document, the command leaves it alone
+and reports that it needs a manual update.
+
 ## Layout
 
 ```
 cmd/
-└── api/
-    ├── main.go                # process entry point, config, slog, graceful shutdown
-    └── wiring.go              # composition root: infrastructure + domain registration
+├── api/
+│   ├── main.go                # process entry point, config, slog, graceful shutdown
+│   └── wiring.go              # process composition root and route registration
 internal/
-├── platform/                  # talks to real external systems (DB, later: cache, queue, mail, ...)
-│   └── database/              # opens the connection + pool (GORM)
+├── platform/                  # adapters for external systems
+│   └── database/              # opens the PostgreSQL connection + pool
 ├── shared/                    # pure logic/framework glue, no I/O
 │   ├── config/                # loads config from env
-│   ├── apperror/               # central error type (status + payload)
-│   ├── dberr/                 # maps DB errors to constraint kind (IsDuplicate, IsForeignKey) — shared by every domain
-│   ├── httpx/                 # HTTP helpers shared by every domain (ParseID, BindErr)
-│   ├── id/                    # UUID v7 generation (id.New) — app-side, not a DB default
-│   ├── middleware/            # RequestID, Logger (slog), Error, CORS
-│   ├── pagination/             # parses ?limit=&offset=, response envelope
-│   └── tx/                    # carries a transaction on the ctx (tx.Do / tx.From) so two repositories commit together
-└── app/                       # domain packages — empty until you `generate module`
+│   ├── apperror/              # central error type (status + payload)
+│   ├── dberr/                 # maps DB errors to constraint kind — shared by every domain
+│   ├── httpx/                 # HTTP helpers shared by every domain
+│   ├── id/                    # UUID v7 generation (id.New)
+│   ├── middleware/            # RequestID, Logger, Error, CORS{{#if auth}}, auth{{/if}}{{#if rbac}}, RBAC{{/if}}{{#if observability}}, metrics, tracing{{/if}}
+│   ├── pagination/            # parses ?limit=&offset=, response envelope
+│   └── tx/                    # carries a transaction on the context
+└── app/                       # one package per domain, added with `generate module`
 ```
+
+The tree shows the baseline. Installed optional features add the process and
+platform packages listed in the section above without changing these module
+boundaries.
+
+Optional features stay in the same architecture: auth owns user application
+use cases and provider ports, RBAC owns role policy, worker owns queue/mail
+adapters, and observability owns metrics/tracing setup.
 
 ## Run
 
@@ -52,6 +73,9 @@ make docker-up                     # local Postgres (postgres:5432)
 {{/if}}
 make db-create                     # create the {{dbName}} database itself (once — safe to re-run)
 go mod tidy
+{{#if worker}}{{#if (eq queue "river")}}make river-migrate                 # create River's job tables before queued mail
+{{else}}# start Redis and set REDIS_URL before running the worker
+{{/if}}{{/if}}
 make run                           # APP_ENV=development enables the convenience schema bootstrap
 ```
 
@@ -75,17 +99,24 @@ falls back to `docker exec` into whichever container is publishing
 other Postgres container{{else}}any Postgres container{{/if}} you already have running.
 
 Server listens on `:8080` (override with `PORT`). Ctrl+C = graceful shutdown.
+{{#if worker}}`make dev` starts both the HTTP API and the worker; `make run` starts only the API.
+{{/if}}
 
 ## Makefile
 
 ```bash
 make run            # go run ./cmd/api
-make build          # go build -o bin/api ./cmd/api
+{{#if worker}}make dev            # run cmd/api and cmd/worker together
+make worker         # run cmd/worker separately
+make river-migrate  # create/update the selected queue's tables
+{{/if}}{{#if auth}}make seed           # run one-shot cmd/seed
+{{/if}}make build          # go build -o bin/api ./cmd/api
 make test           # go test ./...
 make fmt            # gofmt -w .
 make vet            # go vet ./...
 make lint           # golangci-lint run (see .golangci.yml)
 make tidy           # go mod tidy
+make tools          # install pinned migrate and golangci-lint tools
 make db-create       # create the database itself (safe to re-run)
 make db-drop         # drop the database
 make migrate-up      # apply migrations (reads DB_DSN from ENV_FILE)
@@ -208,32 +239,39 @@ go-scaffold generate module orders
 ```
 
 Scaffolds an `internal/app/order/` module using the project defaults
-(`{{defaultModuleSurface}}` + `{{defaultApplicationStyle}}`), wires its route/
-model into `cmd/api/wiring.go`, and appends a migration file. Add endpoints
+(`{{defaultModuleSurface}}` + `{{defaultApplicationStyle}}`), wires its route
+into `cmd/api/wiring.go`, and appends a migration file. Add endpoints
 with `generate method`; use `--profile crud` for a CRUD skeleton or
 `--profile cqrs` for separate command/query handlers. See
 `docs/architect/patterns.md` for the module shape and foreign-key rules.
 
 ## Deploying
 
+{{#if worker}}
 Two processes, one image, one target each:
 
 ```bash
 docker build --target api    -t {{projectName}}-api .
-docker build --target worker -t {{projectName}}-worker .    # once `add worker` exists
+docker build --target worker -t {{projectName}}-worker .
 ```
 
 `api` is the last stage, so a plain `docker build .` builds it — the worker
-stage has to be asked for by name, and only resolves once `add worker` has
-created `cmd/worker`.
+stage has to be asked for by name.{{#if auth}} `cmd/seed` is a one-shot
+operational binary run through `make seed`, not a long-running target.{{/if}}
+{{else}}
+The base project has one long-running `cmd/api` image. A worker target becomes
+available after `go-scaffold add worker`; do not deploy a worker that has not
+been generated.
+{{/if}}
 
 Both stages are distroless and run as `nonroot`, so there is no shell in either
 image. Debug against the `build` stage instead:
 `docker run --rm -it --entrypoint sh $(docker build -q --target build .)`.
 
-`cmd/api` serves HTTP. `cmd/worker` consumes the queue and is a separate
-deployment with **no port and no health endpoint** — scale it independently,
-and remember that not running it means queued mail is never sent, silently.
+`cmd/api` serves HTTP.{{#if worker}} `cmd/worker` consumes the queue and is a
+separate deployment with **no port and no health endpoint** — scale it
+independently, and remember that not running it means queued mail is never
+sent, silently.{{/if}}
 
 Before the first deploy of a release:
 

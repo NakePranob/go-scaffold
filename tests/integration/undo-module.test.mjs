@@ -131,12 +131,12 @@ test("undo module still refuses when another domain genuinely imports it", () =>
     runCLI(project, "generate", "module", "orders", "--full", "--defaults");
     runCLI(project, "generate", "module", "invoices", "--full", "--defaults");
 
-    const servicePath = path.join(project, "internal", "app", "invoice", "service.go");
+    const servicePath = path.join(project, "internal", "app", "invoice", "composition.go");
     writeFileSync(
       servicePath,
       readFileSync(servicePath, "utf8").replace(
         "import (",
-        'import (\n\tordermodel "sample/internal/app/order/model"'
+        'import (\n\tordermodule "sample/internal/app/order"'
       )
     );
 

@@ -127,7 +127,7 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
 
   const importLine = `"${goModule}/internal/app/user"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
-  const modelImportLine = `usermodel "${goModule}/internal/app/user/model"`;
+  const modelImportLine = `usermodel "${goModule}/internal/app/user/adapters/outbound/postgres"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
   if (w.worker) {
     const queueImportLine = `"${goModule}/internal/platform/queue"`;
@@ -269,27 +269,30 @@ export function upgradeMailerToQueue(
     }
   }
 
-  // Keep the fallback for projects scaffolded before feature-local auth
-  // composition existed. New projects take the branch above.
-  if (!upgradedComposition && !content.includes(syncMailer)) return false;
+  if (upgradedComposition) {
+    const queueImportLine = `"${goModule}/internal/platform/queue"`;
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
 
-  const queueImportLine = `"${goModule}/internal/platform/queue"`;
-  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
+    const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
+    const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\treturn fmt.Errorf("open queue: %w", err)', "}"].join("\n");
+    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
 
-  const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
-  const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\treturn fmt.Errorf("open queue: %w", err)', "}"].join("\n");
-  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
+    const cleanupBlock = [
+      "defer func() {",
+      '\tif err := q.Close(); err != nil {',
+      '\t\tlogger.Error("close queue", "error", err)',
+      "\t}",
+      "}()",
+    ].join("\n");
+    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, cleanupBlock, "defer func() {\n\tif err := q.Close()");
+    fs.writeFileSync(mainGoPath, content);
+    return true;
+  }
 
-  const cleanupBlock = [
-    "defer func() {",
-    '\tif err := q.Close(); err != nil {',
-    '\t\tlogger.Error("close queue", "error", err)',
-    "\t}",
-    "}()",
-  ].join("\n");
-  content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, cleanupBlock, "defer func() {\n\tif err := q.Close()");
-
-  if (!upgradedComposition) content = content.replace(syncMailer, () => "mail.NewAsyncClient(q)");
-  fs.writeFileSync(mainGoPath, content);
-  return true;
+  if (content.includes(syncMailer)) {
+    throw new Error(
+      "auth mailer is not owned by internal/app/user/composition.go; regenerate auth with the canonical split layout before adding a worker"
+    );
+  }
+  return false;
 }

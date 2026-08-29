@@ -1,0 +1,83 @@
+package httpadapter
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/shared/httpx"
+	"{{goModule}}/internal/shared/middleware"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+func (h *Handler) verifyMFA(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in mfaChallengeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	auth, err := h.svc.VerifyMFA(c.Request.Context(), in.Challenge, in.Code)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusOK, toCookieResponse(auth))
+}
+
+func (h *Handler) mfaStatus(c *gin.Context) {
+	setNoStoreHeaders(c)
+	status, err := h.svc.MFAStatus(c.Request.Context(), currentUserID(c))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, mfaStatusResponse(status))
+}
+
+func (h *Handler) setupMFA(c *gin.Context) {
+	setNoStoreHeaders(c)
+	setup, err := h.svc.SetupMFA(c.Request.Context(), currentUserID(c))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, mfaSetupResponse{Secret: setup.Secret, OTPAuthURI: setup.OTPAuthURI})
+}
+
+func (h *Handler) confirmMFA(c *gin.Context) {
+	setNoStoreHeaders(c)
+	var in mfaCodeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	codes, err := h.svc.ConfirmMFA(c.Request.Context(), currentUserID(c), in.Code)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, mfaConfirmResponse{RecoveryCodes: codes})
+}
+
+func (h *Handler) disableMFA(c *gin.Context) {
+	setNoStoreHeaders(c)
+	var in mfaCodeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.DisableMFA(c.Request.Context(), currentUserID(c), in.Code); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func currentUserID(c *gin.Context) uuid.UUID {
+	return c.MustGet(middleware.UserIDKey).(uuid.UUID)
+}

@@ -1,635 +1,686 @@
 # @nakedev/go-scaffold
 
-A CLI that scaffolds a Gin + GORM + PostgreSQL Go backend, then keeps
-generating consistent domain modules into that project as it grows — the Go
-counterpart to nest-scaffold.
+@nakedev/go-scaffold is an npm CLI for creating Gin + GORM + PostgreSQL Go
+backend projects and extending them with consistent domain modules, endpoints,
+migrations, authentication, background jobs, RBAC, and observability.
 
-You don't hand-wire a new domain's repository/service/handler composition into
-`cmd/api/wiring.go`, write the
-handler/service/repository boilerplate, or decide error-handling conventions
-each time — the CLI does that, and every module it generates follows the
-same shape as the last one.
+The normal workflow is simple: install the CLI with npm, run the wizard, then
+run the same CLI from the generated project whenever the backend grows.
 
-## Install
+## Install with npm
 
-```bash
-npm install -g @nakedev/go-scaffold
-```
+Install the CLI globally when you expect to use it repeatedly:
 
-Or run it without installing:
+~~~bash
+npm install --global @nakedev/go-scaffold
 
-```bash
+go-scaffold --version
+go-scaffold --help
+~~~
+
+npx is also supported when you do not want a global installation:
+
+~~~bash
 npx @nakedev/go-scaffold create my-api
-```
+npx @nakedev/go-scaffold --help
+~~~
 
-Working on the CLI itself (not just using it)? Clone the repo, then:
+### Requirements
+
+- Node.js >=22.13 to run the CLI. npm and npx are included with Node.js.
+- Go >=1.25 to build and run the generated project.
+- PostgreSQL to run the application. Docker is optional; create can generate
+  a Docker Compose PostgreSQL service for local development.
+
+The CLI itself only needs Node.js. Go and PostgreSQL are needed after a project
+has been generated.
+
+## Developing the CLI
+
+This repository is the source for the CLI and its generated-project contract.
+Keep command logic in `src/`, emitted files in `templates/`, and behavior
+covered by `tests/`. Generated-project `AGENTS.md`, Claude skill guidance, and
+`docs/architect/` files are template outputs; update the template and a
+regression test when their contract changes.
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build
+pnpm run verify
 node bin/go-scaffold.js create my-api --defaults
 ```
 
-`npm link` / `pnpm link --global` may not put the binary on your `PATH`
-depending on your machine's npm/pnpm global-bin config — running
-`node bin/go-scaffold.js ...` directly sidesteps that.
+`pnpm run verify` is the required local gate: it builds the TypeScript CLI,
+runs unit and integration tests, and runs the generated-project smoke suite.
+The smoke suite needs the Go toolchain, PostgreSQL/migrate, and golangci-lint;
+do not treat an unavailable external check as a passing generated-project
+check. See [`AGENTS.md`](AGENTS.md) for the source/template/test workflow.
 
-## Release: npm is locked to Git
+### Release contract
 
-Git is the release source of truth. The package version, annotated tag, and
-tagged commit must agree before npm can publish:
-
-```text
-package.json 0.4.3
-       │
-       └── annotated tag v0.4.3 ──> the exact release commit
-                                      │
-                                      └── npm @nakedev/go-scaffold@0.4.3
-```
-
-`npm publish` runs `release:check` first, so publishing from an untagged,
-lightweight-tagged, dirty, or mismatched checkout fails before anything is
-sent to npm. The GitHub Actions workflow at
-`.github/workflows/release.yml` repeats that check, runs the full verification
-gate, publishes from the tag, and creates the GitHub Release.
-
-### One-time npm setup
-
-The preferred setup is npm Trusted Publishing with GitHub Actions (OIDC):
-
-1. In npm package settings for `@nakedev/go-scaffold`, add a GitHub Actions
-   trusted publisher for `NakePranob/go-scaffold`.
-2. Set the workflow filename to `release.yml` and environment to
-   `npm-release`.
-3. Allow `npm publish`. The workflow already requests the required OIDC
-   permission and uses Node 24.
-
-If Trusted Publishing is not used, add an npm granular token as the GitHub
-repository/environment secret `NPM_TOKEN`. Never commit a token or put it in
-`.npmrc`.
-
-### Branch policy
-
-`develop` is the integration branch. A PR into `main` must come from
-`develop` or `release/*`, and must bump `package.json` to a semver greater than
-the version on `main`. PRs into `develop` do not need a version bump.
-
-The `main-merge-policy` workflow checks this automatically. In GitHub branch
-rules, protect `main`, require a pull request, require the
-`main-merge-policy`, `verify`, and `packaged-artifact` checks, and disable
-force-pushes. Protect the `v*` tag pattern from updates and deletion as well.
-
-### Release flow
+`package.json` is the version source. Releases are published by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) only from a
+clean, matching annotated `vX.Y.Z` tag. Before pushing a release tag, verify
+the exact commit with:
 
 ```bash
-git switch develop
-git pull --ff-only origin develop
-git switch -c release/v0.4.3
-npm version 0.4.3 --no-git-tag-version
-pnpm run verify
-git add package.json
-git commit -m "chore: release v0.4.3"
-git push -u origin release/v0.4.3
-# open a PR from release/v0.4.3 into main
-
-# after the PR is merged, tag the merge commit on main
-git switch main
-git pull --ff-only origin main
-git tag -a v0.4.3 -m "v0.4.3"
-git push origin v0.4.3
+pnpm run release:check -- v0.5.0
 ```
 
-Pushing the tag starts the release workflow. To retry a failed publish for a
-tag created after this workflow landed, use GitHub Actions' **Run workflow**
-with that tag; do not create a second tag for the same package version. A tag
-created before this guard existed should not be moved after it has been
-pushed — use the next patch version instead.
-
-## Requirements
-
-- Node.js `>=22.13` to run the CLI
-- Go `>=1.25` for the generated project
-- A running PostgreSQL instance; Docker is optional, but either `psql` or a
-  Docker container is needed by `make db-create`
+The release workflow runs the full verification gate before npm publish and
+GitHub Release creation.
 
 ## Quick start
 
-```bash
+~~~bash
+npm install --global @nakedev/go-scaffold
 go-scaffold create my-api
+
 cd my-api
-make docker-up   # if you kept Docker + PostgreSQL
-make db-create   # create the database itself (safe to re-run)
+cp .env.example .env       # optional: edit local settings
+make docker-up             # only when create included Docker + PostgreSQL
+make db-create
 go mod tidy
 make run
-```
+~~~
 
-Then grow the project without leaving the CLI:
+The default create wizard includes Docker and OpenAPI files. If you choose
+--no-docker, start PostgreSQL separately before running make db-create.
 
-```bash
+Add a first domain from the generated project directory:
+
+~~~bash
 go-scaffold generate module orders
 go-scaffold generate method orders approve --type patch
-```
+~~~
 
-## The 30-second flow
+The generated project starts with shared infrastructure and no business
+domains. generate module adds the domain; generate method adds endpoints one
+at a time.
 
-The CLI has two layers of interaction: the command you choose, then only the
-questions that command still needs. Flags are answers, not requests to ask the
-same question again.
+## How the wizard works
 
-```text
+You can use the CLI interactively or provide answers as arguments and flags.
+
+### Start with the top-level wizard
+
+Running the CLI without a command opens a menu:
+
+~~~bash
+go-scaffold
+~~~
+
+From a generated project directory, the menu offers:
+
+1. Create a new project
+2. Generate a module, method, or migration
+3. Configure defaults for future modules
+4. Add auth, worker, RBAC, or observability
+5. Undo a generated module
+
+When run outside a generated project, only create can run, so the CLI goes
+straight to the project-creation flow.
+
+You can also open a more focused wizard:
+
+~~~bash
+go-scaffold generate       # choose module, method, or migration
+go-scaffold add            # choose worker, auth, RBAC, or observability
+go-scaffold undo           # choose a generated module and confirm
+~~~
+
+### Answer only what is missing
+
+The command is the first choice, followed by only the questions that still need
+an answer. A value passed as a flag is not asked again.
+
+For example:
+
+~~~text
 go-scaffold create my-api
   1. Docker + PostgreSQL?
   2. OpenAPI files?
   3. Metrics + tracing?
   4. API route prefix?
   5. Default module profile: Lean / CRUD / CQRS / Advanced?
-  6. Summary confirmation
+  6. Create project with these settings?
 
 cd my-api
-go-scaffold generate module users
+go-scaffold generate module orders
   1. Module profile: Lean / CRUD / CQRS / Advanced?
-  2. Require an access token?              # only when auth is installed
-  3. Permission code?                      # only when auth + RBAC are installed
-  -> writes internal/app/user/, its migration, wiring, and config metadata
-```
+  2. Require an access token?       # only when auth is installed
+  3. Permission code?                # only when auth + RBAC are installed
+~~~
 
-`Advanced` is the only path that asks the two lower-level architecture
-questions separately. `--profile` and `--defaults` are the scripted forms; the
-latter uses the project defaults recorded in `go-scaffold.config.json`.
+Advanced is the wizard option that exposes the two lower-level module choices
+separately: module surface and application boundary.
 
-## Commands
+### Non-interactive usage
 
-Every `add` command shows what it's about to do and asks before writing;
-`-y/--yes` skips that (and `--defaults` implies it) for CI and scripts.
-Running `go-scaffold` with no arguments picks the command from a menu.
+Use flags for scripts and CI. --defaults skips the optional wizard questions
+where the command supports it. A project name is still required for scripted
+create usage.
 
-### Wizard coverage
+~~~bash
+go-scaffold create my-api --defaults
+go-scaffold generate module orders --defaults
+go-scaffold add worker --defaults
+go-scaffold add auth --defaults
+~~~
 
-The interactive path is deliberately available from both the bare command and
-the direct command form:
+Important behavior:
 
-| Command | Wizard coverage |
-|---|---|
-| `create [name]` | asks for the project name and settings that were not passed as flags |
-| `generate` / `generate module [name]` | chooses a target, module name, and module profile; `Advanced` asks the two underlying architecture questions |
-| `generate method [module] [name]` | asks for the existing module, method name, HTTP verb, GET mode, and lookup field when needed |
-| `generate migration [name]` | asks for the migration name when omitted |
-| `config` | edits future module defaults; existing modules are unchanged |
-| `config show` / `config validate` | intentionally no wizard: read-only print/validation commands |
-| `add` / `add worker` / `add auth` | chooses the feature, backend/topology, and confirmation where applicable |
-| `add rbac` / `add observability` | no parameter choice is needed; the direct command confirms, while bare `add` selects the target |
-| `undo` / `undo module [name]` | asks for the generated module and confirmation when omitted |
+- In a terminal, omitted values open the relevant wizard.
+- Without an interactive terminal, omitted values cause an error before files
+  are written. Pass the missing flags or use --defaults.
+- --yes / -y skips an add or undo confirmation. It does not necessarily answer
+  every other wizard question; pass the choice flags too.
+- Every add command shows a summary and asks for confirmation unless --yes or
+  --defaults is used.
+- Run any command with --help to see its current options.
 
-Run any command with `--help` for the non-interactive equivalent. If a value is
-omitted in a non-TTY shell, the CLI exits before writing and tells you which
-flag or `--defaults` is required.
+## Command overview
 
+| Command | Purpose | Alias |
+|---|---|---|
+| create [name] | Create a new Go backend project | c |
+| check | Validate hexagonal layout, layer dependencies, and service/CQRS contract | — |
+| generate | Open the module/method/migration wizard | g |
+| generate module [name] | Add a domain module | g m |
+| generate method [module] [name] | Add one endpoint to an existing module | g me |
+| generate migration [name] | Create a timestamped SQL migration pair | g mig |
+| config | Set defaults for future modules | — |
+| config show | Print the resolved project configuration | — |
+| config validate | Validate configuration without changing files | — |
+| add | Open the infrastructure-feature wizard | — |
+| add worker | Add background jobs, mail, and cmd/worker | — |
+| add auth | Add email/password and provider authentication | — |
+| add rbac | Add roles, permissions, and authorization middleware | — |
+| add observability | Add Prometheus metrics and OpenTelemetry tracing | — |
+| undo module [name] | Remove a generated module and its wiring | undo m |
 
-### `create <name>` — scaffold a new project
+All commands except create are intended to run from the generated project
+directory.
 
-```bash
-go-scaffold create my-api                                   # interactive wizard
-go-scaffold create my-api --defaults                        # no prompts, CI-friendly
-go-scaffold create my-api --defaults --no-docker --api-prefix beta
-```
+## create [name] — create a project
 
-Produces a **bare skeleton only** — `cmd/api`, the shared platform packages
-(config/apperror/dberr/httpx/id/middleware/pagination/tx), Docker+Postgres,
-migrations folder, and the standards docs (`docs/architect/`, `AGENTS.md`,
-`CLAUDE.md`, `.claude/skills/go-scaffold/`). No domain modules — add those
-with `generate module`.
+~~~bash
+go-scaffold create my-api                         # interactive wizard
+go-scaffold create my-api --defaults              # use documented defaults
+go-scaffold create my-api --defaults --no-docker
+go-scaffold create my-api --api-prefix v1
+go-scaffold c my-api
+~~~
+
+If [name] is omitted, the wizard asks for it. With a simple name, it becomes
+both the project directory and the Go module path in the generated go.mod. A
+full Go module path is also accepted; in that case the project directory uses
+the path's final segment.
+
+### Creation options
 
 | Option | Effect |
 |---|---|
-| `--defaults` | Skip settings prompts; use Docker/OpenAPI on, no prefix, and Lean (`minimal + service`) defaults for future modules |
-| `--no-docker` | Do not create `docker-compose.yml` or include a local Postgres service |
-| `--no-openapi-docs` | Do not create `docs/openapi.yaml` or per-module OpenAPI files |
-| `--observability` | Include Prometheus `/metrics` + OpenTelemetry tracing; off unless passed |
-| `--api-prefix <prefix>` | Group every API route under a prefix such as `v1` or `api/v1`; omit for no prefix |
-| `--module-profile <lean\|crud\|cqrs>` | Default profile for future modules; replaces the two architecture questions |
-| `--module-surface <minimal\|crud>` | Legacy axis flag for future modules; use `--module-profile` for a clearer preset |
-| `--application-style <service\|cqrs>` | Legacy axis flag for future modules; use `--module-profile` for a clearer preset |
+| --defaults | Skip settings prompts; use Docker and OpenAPI, no API prefix, and Lean defaults for future modules |
+| --no-docker | Do not create docker-compose.yml or a local PostgreSQL service |
+| --no-openapi-docs | Do not create docs/openapi.yaml or OpenAPI files for generated features/modules |
+| --observability | Include Prometheus /metrics and OpenTelemetry tracing at creation time |
+| --api-prefix <prefix> | Put every API route under a prefix such as v1 or api/v1 |
+| --module-profile <lean\|crud\|cqrs> | Set the default profile for future generate module commands |
+| --module-surface <minimal\|crud> | Legacy way to set the future module surface; prefer --module-profile |
+| --application-style <service\|cqrs> | Legacy way to set the future application boundary; prefer --module-profile |
 
-Without `--defaults`, an interactive wizard asks the project questions —
-skipping any a flag already answered, so `create my-api --no-docker` never asks
-about Docker and never scaffolds it. It also asks for the default module
-profile so future `generate module` commands start with the project's
-conventions. Choose `Advanced` when you intentionally want the less common
-CRUD + CQRS combination.
-The prefix is a single project-wide choice made once at `create` time —
-there's no per-domain versioning (a domain that needs a real breaking change
-gets a new domain package or a new DTO field, not a duplicated model pointed
-at the same table under a different URL — see "Why no per-domain versioning"
-below).
+The route prefix is a project-wide choice. For example, --api-prefix v1 puts a
+module route under /v1/orders.
 
-**Config file** — every `create` writes `go-scaffold.config.json` to the
-project root; `generate` reads it back (or auto-detects from `go.mod` /
-directory layout if missing). It records project defaults and the resolved
-surface/application style of each generated module:
+### What create generates
 
-```json
-{
-  "schemaVersion": 1,
-  "architecture": {
-    "style": "modular-monolith",
-    "defaultModuleSurface": "minimal",
-    "defaultApplicationStyle": "service"
-  },
-  "modules": {
-    "order": { "surface": "crud", "applicationStyle": "cqrs" }
-  }
-}
-```
+create produces a runnable base skeleton, not a business domain. It includes
+the API entrypoint, shared packages, database connection, migrations folder,
+development commands, and architecture documentation. Add domains later with
+generate module.
 
-Run these from the generated project root. Use the wizard again later without
-recreating the project:
+Every project also gets go-scaffold.config.json. It stores the project defaults,
+installed features, API prefix, and the resolved profile of each module so later
+CLI commands can continue from the same choices.
 
-```bash
-go-scaffold config                 # interactive project-default wizard
-go-scaffold config show            # print the resolved config
-go-scaffold config validate        # validate without changing anything
-```
+## Module profiles
 
-### Module profiles
+The module wizard presents a useful profile before exposing lower-level
+architecture choices:
 
-The wizard asks for one useful profile instead of forcing everyone to reason
-about two implementation axes up front:
-
-| Profile | Resolves to | Use it when |
+| Profile | Generated shape | Use it when |
 |---|---|---|
-| `lean` | minimal surface + one service | the domain should start small and grow endpoint by endpoint |
-| `crud` | CRUD surface + one service | the domain genuinely needs the standard list/get/create/update/delete starter |
-| `cqrs` | minimal surface + command/query handlers | reads and writes have different business models, invariants, or scaling pressure |
-| `Advanced` (wizard only) | choose both axes separately | you deliberately want a custom mix, including CRUD + CQRS |
+| lean | Minimal surface + one service | The domain should start small and gain endpoints as requirements become real |
+| crud | CRUD surface + one service | The domain needs list/get/create/update/delete starter endpoints |
+| cqrs | Minimal surface + command/query handlers | Reads and writes have different application concerns |
+| Advanced | Choose surface and application style separately | You need a custom combination, such as CRUD + CQRS |
 
-The scaffold is DDD-shaped rather than a complete tactical DDD implementation:
-it gives each domain a package boundary, repository port, application boundary,
-feature-local composition, and shared error conventions. It does not invent
-aggregates, value objects, domain events, or business invariants for you; those
-belong to the domain team.
+minimal means no default CRUD endpoints are invented. CQRS separates the
+command and query application paths inside the same modular monolith; it does
+not add a second database, broker, or event-sourcing system.
 
-`minimal` means the generator does not invent five endpoints before the domain
-has real requirements. `CQRS` does not mean a second database, broker, or event
-bus here. It only separates command and query application handlers inside the
-same modular monolith.
+The generated code is DDD-shaped: each domain has a package boundary,
+repository port, application boundary, delivery adapter, and shared error
+conventions. The CLI does not invent your aggregates, fields, value objects,
+events, or business invariants.
 
-### `generate module <name>` (alias `m`) — add a domain module
+## generate module [name] — add a domain
 
-```bash
-go-scaffold generate module orders                  # asks for profile (and auth, if installed)
-go-scaffold generate module orders --profile lean   # explicit Lean profile, no architecture prompt
-go-scaffold generate module orders --profile crud   # explicit CRUD profile, no architecture prompt
-go-scaffold generate module orders --profile cqrs   # explicit CQRS profile, no architecture prompt
-go-scaffold generate module orders --full --cqrs    # legacy flags: CRUD + separate command/query handlers
-go-scaffold generate module orders --defaults       # use project defaults, no prompt (CI/scripting)
-```
+~~~bash
+go-scaffold generate module orders                  # profile wizard
+go-scaffold generate module orders --profile lean
+go-scaffold generate module orders --profile crud
+go-scaffold generate module orders --profile cqrs
+go-scaffold generate module orders --defaults        # use project defaults
+go-scaffold g m orders --profile crud
+~~~
 
-Anything you don't pass as a flag is asked for; the prompt starts with the
-project defaults. `--defaults` uses those defaults without asking anything
-(fresh and legacy projects default to Lean, with no auth). `--profile` is the
-non-interactive equivalent of choosing a named profile for this module. The
-older `--full` and `--cqrs` flags remain supported for existing scripts; do not
-combine them with `--profile`.
+When no name is supplied, the wizard asks for a singular module name such as
+order or product. The package name is normalised for Go, while routes and
+tables use plural names such as orders and order_items.
 
-`--full` scaffolds:
+### Module options
 
-```text
+| Option | Effect |
+|---|---|
+| --profile <lean\|crud\|cqrs> | Select a named profile without opening the profile question |
+| --full | Legacy alias for the CRUD surface |
+| --cqrs | Legacy axis flag for command/query handlers; combine with --full for CRUD + CQRS |
+| --auth | Require a valid access token for this module's routes; needs add auth |
+| --permission <code> | Also require an RBAC permission such as orders:manage; needs add rbac and --auth |
+| --defaults | Use the project's recorded module defaults, skip prompts, and keep the module public |
+
+--profile cannot be combined with the legacy --full or --cqrs flags. With
+--defaults, a fresh project generates the Lean shape. If the project has auth
+installed, the module remains public unless --auth is explicitly passed.
+
+### Module output
+
+For orders, the module package is internal/app/order/:
+
+~~~text
 internal/app/order/
-├── model/model.go      # domain model + GORM table (id/created_at/updated_at — add real fields yourself; a folder so multi-table domains can add more files)
-├── dto.go               # request/response structs (empty stubs — add real fields yourself)
-├── errors.go             # ORDER_NOT_FOUND / ORDER_CONFLICT / ORDER_HAS_REFERENCES / ORDER_STALE
-├── repository.go         # GORM data access
-├── service.go            # business logic + repository interface (mockable)
-├── composition.go        # feature-local repository → service → handler wiring
-├── handler.go            # Gin routes, registered under the project's API prefix
-├── service_test.go       # unit test, function-backed repository stub
-├── handler_test.go       # HTTP unit test, service stub, no DB
-└── repository_test.go    # Postgres integration test against migrated schema
-```
+├── domain/
+│   ├── entity.go        # business state and invariants
+│   └── errors.go        # domain error sentinels
+├── ports/
+│   └── repository.go    # consumer-owned persistence ports
+├── application/
+│   ├── dto.go           # use-case inputs and response mapping
+│   ├── service.go       # service-style application boundary
+│   └── service_test.go  # application unit tests
+├── adapters/
+│   ├── inbound/http/
+│   │   ├── handler.go       # Gin delivery adapter
+│   │   └── handler_test.go  # HTTP adapter tests
+│   └── outbound/postgres/
+│       ├── model.go         # persistence model + mapping
+│       ├── repository.go    # GORM adapter
+│       └── repository_test.go # PostgreSQL integration tests
+└── composition.go       # feature-local object graph
+~~~
 
-With `--cqrs`, the module also adds separate command/query application files:
+CRUD modules contain the starter list/get/create/update/delete methods. Lean
+modules keep the endpoint surface small so it can be extended with
+generate method.
 
-```text
+CQRS modules additionally contain:
+
+~~~text
 internal/app/order/
-├── commands.go            # command port + state-changing application handlers
-├── queries.go             # query port + read-only application handlers
-├── service.go             # compatibility facade; new wiring uses both handlers
-├── composition.go         # constructs command/query handlers separately
-└── cqrs_test.go            # command/query boundary tests
-```
+└── application/
+    ├── commands.go      # command port + state-changing handlers
+    ├── queries.go       # query port + read-only handlers
+    └── cqrs_test.go     # command/query boundary tests
+~~~
 
-`--cqrs` works with both minimal and `--full` modules. It keeps one modular
-monolith and one database by default; CQRS here means separate application
-paths, not mandatory separate databases, brokers, or event sourcing. The
-default remains the simpler layered module because an empty command/query
-split adds ceremony without a business reason.
+`application/service.go` OR `application/commands.go` plus
+`application/queries.go` is mutually exclusive inside one module. Service and
+CQRS can coexist across modules in the same modular monolith. The root package
+contains only `composition.go`; inbound and outbound adapters are the
+framework/database edges.
 
-The default minimal mode scaffolds the same `model`/`errors`/`repository` (so `generate
-method` always has a full data-access surface to call), but `dto`/`service`/
-`handler` start empty — no default CRUD, no routes, just the plumbing
-(`Register()`, the `repository` interface, `wrapFindErr`) that `generate
-method` patches into. Use it when a domain doesn't need the full REST
-surface, or you'd rather add endpoints one at a time.
+Both shapes register the module in cmd/api/wiring.go, create a module-owned
+PostgreSQL schema such as order_svc, append a timestamped create migration, and
+record the resolved module profile in go-scaffold.config.json.
 
-Both modes also:
+The CLI creates the structural TODOs, not your domain rules. Add real model and
+DTO fields, implement business behavior, and review the generated migration
+before applying it.
 
-- Register the module through its feature-local composition and the root
-  registration markers in `cmd/api/wiring.go` — full wires an actual route,
-  minimal wires an empty route group
-- Create the module's own Postgres schema (`<module>_svc`, e.g. `order_svc`)
-  and add the model to the development schema bootstrap
-- Append `migrations/<timestamp>_create_<plural>.{up,down}.sql`, which creates that
-  same schema for production
-- Record the resolved `minimal|crud` and `service|cqrs` choices in
-  `go-scaffold.config.json`; changing project defaults does not rewrite existing modules
+## generate method [module] [name] — add one endpoint
 
-What it does **not** do: invent your fields or wire foreign keys between
-domains — see `docs/architect/patterns.md` in the generated project for the
-conventions to follow by hand.
-
-### `generate method <module> <name>` (alias `me`) — add one endpoint
-
-```bash
+~~~bash
 go-scaffold generate method orders approve --type patch
 go-scaffold generate method orders findByStatus --type get --get-mode one --field status
 go-scaffold g me orders findOverdue --type get --get-mode all
-```
+~~~
 
-Patches an *existing* module's `handler.go`/`service.go` in place at the
-`// go-scaffold:*` markers — never a whole new module. Never overwrites a method
-with the same name; pick a different one or the command errors.
-For a module generated with `--cqrs`, it also patches `commands.go` for
-state-changing endpoints and `queries.go` for read endpoints, while keeping
-the compatibility facade in sync.
+If the module, method name, or endpoint details are omitted, the wizard asks
+for them. The module selector lists modules that exist on disk, so the command
+does not require memorising the normalised Go package name.
+
+### Method options
 
 | Option | Effect |
 |---|---|
-| `--type <get\|post\|put\|patch\|delete>` | HTTP verb |
-| `--get-mode <all\|one>` | For `get` only — list-style vs. single-record lookup |
-| `--field <name>` | For `get --get-mode one` — the lookup field (e.g. `email`, `status`); can't be `id` |
+| --type <get\|post\|put\|patch\|delete> | HTTP verb |
+| --get-mode <all\|one> | For GET only: list endpoint or single-record lookup |
+| --field <name> | For get --get-mode one: lookup column such as email, status, or slug; id is reserved |
 
-| `--type` | Route | What's generated |
+The generated route and code depend on the method type:
+
+| Input | Route shape | Result |
 |---|---|---|
-| `get --get-mode all` | `GET /<plural>/<kebab-name>` | reuses `FindAll` — TODO to add real filtering |
-| `get --get-mode one --field <f>` | `GET /<plural>/<f>/:<f>` | a real `FindBy<F>` query added to the repository (+ its interface + function-backed repository test stub) |
-| `post` | `POST /<plural>/<kebab-name>` | adds a body DTO; service is a TODO stub |
-| `put` / `patch` | `<VERB> /<plural>/:id/<kebab-name>` | finds by id, TODO before saving (safe no-op until implemented) |
-| `delete` | `DELETE /<plural>/:id/<kebab-name>` | TODO stub |
+| get --get-mode all | GET /<plural>/<method> | Uses the module's list query; add real filtering yourself |
+| get --get-mode one --field <field> | GET /<plural>/<field>/:<field> | Adds a FindBy<Field> query and a column/index migration |
+| post | POST /<plural>/<method> | Adds a request body DTO and a TODO service method |
+| put / patch | <VERB> /<plural>/:id/<method> | Loads by ID and leaves the update behavior as a TODO |
+| delete | DELETE /<plural>/:id/<method> | Adds a delete endpoint stub |
 
-Business logic is always left as a `TODO`-marked stub that compiles and
-returns a clean `500` rather than inventing behavior — see
-`docs/architect/patterns.md` in the generated project.
+For CQRS modules, GET methods are added to application/queries.go; other
+methods are added to application/commands.go. Service modules use
+application/service.go. Existing method names are never overwritten.
 
-When OpenAPI docs are enabled, `generate method` also creates a valid TODO stub
-under `docs/<plural>/methods/` and wires the route into `docs/openapi.yaml`.
-Replace its placeholder request/response schemas while implementing the TODO.
+The generated business logic is deliberately a compiling TODO and returns a
+clean not-implemented response until you implement it. If OpenAPI files were
+enabled, a method document is also added under docs/<plural>/methods/ and
+linked from docs/openapi.yaml.
 
-**Drift check** — `generate` type-checks the project (`go vet ./...`) before and
-after it writes. If the project was fine beforehand and the generated code
-doesn't compile, it stops with the compiler output instead of leaving you to
-find it later:
+## generate migration [name] — reserve a migration pair
 
-```text
-the generated code doesn't compile, but this project was fine a moment ago.
-
-The most likely cause is drift: this project's internal/shared layer has been edited
-since it was scaffolded, so the templates this CLI emits no longer match it.
-
-  scaffolded with: go-scaffold <project-version>
-  this CLI:        go-scaffold <cli-version>
-```
-
-That happens because `generate`'s templates are written against the `shared/`
-layer `create` emits — editing that layer is normal work, but it moves the
-project away from what this CLI's templates expect. `create` records its own
-version in `go-scaffold.config.json` so the message can name both sides. A
-project that was *already* broken (mid-refactor, or `go mod tidy` not run yet)
-is left alone — only a passed-before/broken-after transition is reported. No Go
-on `PATH` means the check is skipped.
-
-### `generate migration <name>` (alias `mig`) — reserve a SQL migration pair
-
-```bash
+~~~bash
 go-scaffold generate migration add_status_to_orders
-```
+go-scaffold g mig add_status_to_orders
+~~~
 
-Creates timestamped `migrations/<version>_<name>.up.sql` and `.down.sql` TODO
-stubs. The CLI reserves the names; you own the SQL and should apply it with
-`make migrate-up` (or `migrate -path migrations -database "$DB_DSN" up`).
+This creates:
 
-### `add worker` — add background job processing
+~~~text
+migrations/<timestamp>_add_status_to_orders.up.sql
+migrations/<timestamp>_add_status_to_orders.down.sql
+~~~
 
-```bash
-go-scaffold add worker                      # asks where jobs should live
-go-scaffold add worker --queue postgres     # River (default)
-go-scaffold add worker --queue redis        # Asynq
-go-scaffold add worker --defaults           # no prompt, Postgres
-```
+Both files contain TODO comments. The CLI reserves the timestamp and filename;
+you write the SQL and then apply it with:
 
-Adds `internal/platform/queue` (a backend-neutral contract plus one adapter),
-async email delivery, and `cmd/worker`.
+~~~bash
+make migrate-up
+~~~
 
-| | `--queue postgres` (River) | `--queue redis` (Asynq) |
+## config — configure future module defaults
+
+Run this from the generated project directory:
+
+~~~bash
+go-scaffold config                 # profile wizard
+go-scaffold config show            # print JSON; no wizard
+go-scaffold config validate        # validate; no file changes
+~~~
+
+config changes defaults for future modules only. Existing modules keep their
+recorded surface and application style.
+
+## add — add optional project features
+
+Running go-scaffold add opens a feature wizard. It shows features already
+installed as unavailable and explains that RBAC requires auth. Direct feature
+commands are useful for scripts and explicit usage.
+
+After an incremental feature is added, the CLI refreshes the generated
+README and architect docs to reflect the resolved configuration. It only does
+so when each file still matches the version it would have generated; edited
+docs are preserved and reported for manual maintenance.
+
+### add worker — background jobs and mail
+
+~~~bash
+go-scaffold add worker                         # queue wizard + confirmation
+go-scaffold add worker --queue postgres        # River in PostgreSQL
+go-scaffold add worker --queue redis           # Asynq in Redis
+go-scaffold add worker --defaults              # PostgreSQL/River, no prompts
+go-scaffold add worker --queue redis --yes     # skip confirmation
+~~~
+
+The command adds internal/platform/queue, mail delivery, and cmd/worker.
+
+| Queue option | Storage | Operational note |
 |---|---|---|
-| Extra service to run | none | Redis |
-| Needed by `add auth` | no | no — `add auth --store` decides that separately |
-| Enqueue joins your DB transaction | yes | **no** — needs an outbox |
-| Inspect pending jobs | plain SQL | asynqmon |
+| postgres (River) | Project PostgreSQL database | No extra service; enqueueing can join the database transaction |
+| redis (Asynq) | Redis | Run Redis separately; enqueueing cannot join a PostgreSQL transaction |
 
-The default is Postgres because a job enqueued inside `tx.Do` is then only
-delivered if that transaction commits — no more welcome emails for signups
-that rolled back. Run `make river-migrate` once per database to create
-River's tables, then `make worker`.
+For River:
 
-Application code only ever sees `queue.Job`, `queue.Enqueuer` and
-`queue.Handler` — no backend package appears outside its own adapter file, so
-switching later means writing one adapter, not touching every module that
-enqueues something.
+~~~bash
+make river-migrate
+make worker
+~~~
 
-```go
-type WelcomeEmail struct{ To string `json:"to"` }
-func (WelcomeEmail) Kind() string { return "email:welcome" }
+For Redis, start Redis first and then run make worker. make dev runs the API and
+worker together after worker support has been added.
 
-// cmd/api — the job is discarded with the transaction if this fails
-tx.Do(ctx, db, func(ctx context.Context) error {
-    if err := repo.Create(ctx, u); err != nil { return err }
-    return jobs.Enqueue(ctx, WelcomeEmail{To: u.Email}, nil)
-})
-```
+### add auth — email/password and provider auth
 
-### `add auth` — add email/password authentication
+~~~bash
+go-scaffold add auth                                      # store + browser topology wizard
+go-scaffold add auth --store postgres                     # no extra service
+go-scaffold add auth --store redis                        # Redis for shared refresh state
+go-scaffold add auth --browser-topology same-origin
+go-scaffold add auth --browser-topology same-site
+go-scaffold add auth --browser-topology cross-site
+go-scaffold add auth --defaults                            # Postgres + same-site defaults
+~~~
 
-```bash
-go-scaffold add auth                    # asks token store + browser topology, then confirms
-go-scaffold add auth --store postgres   # tokens in Postgres, no extra service
-go-scaffold add auth --store redis      # tokens in Redis, exact across replicas
-go-scaffold add auth --defaults         # Postgres + local same-site topology (CI/scripting)
-go-scaffold add auth --browser-topology cross-site --yes
-```
+Auth adds:
 
-Adds JWT access tokens, refresh-token rotation with reuse detection,
-registration/login/logout, password reset, email verification, failed-login
-lockout, and generic provider OAuth routes (Google is the first adapter). Apply
-the generated migrations. Development may bootstrap tables for convenience;
-production must run `migrate up` first.
+- JWT access tokens and refresh-token rotation with reuse detection
+- registration, login, logout, refresh, password reset, and email verification
+- generic provider OAuth routes, with Google as the first adapter
+- failed-login lockout and user-session management
+- MFA endpoints and configuration hooks
+- internal/app/user, auth middleware, cmd/seed, migrations, and OpenAPI
+  documents when OpenAPI is enabled
 
-The browser frontend owns its single provider callback route. It generates
-`state` and an S256 PKCE verifier/challenge, starts
-`GET /auth/{provider}/login`, handles both success and provider-cancel/error
-responses in that route, then sends `code`, `state`, and `code_verifier` to
-`POST /auth/{provider}/exchange`. The API uses the exact
-`GOOGLE_OAUTH_REDIRECT_URI` registered with the provider, creates the local
-session, sets the HttpOnly refresh cookie, and returns JSON. The backend also
-consumes a one-time transaction binding provider, state, S256 challenge, and
-OIDC nonce before completing the exchange. It never accepts a
-request-supplied `redirect_uri`/`return_to`, redirects to a configured frontend
-URL, or places tokens/code/state in a URI. Native/mobile flow is out of scope
-for this scaffold phase.
+The --store choice controls refresh-token storage and rate-limit counters:
 
-`AUTH_BROWSER_TOPOLOGY` is only the cookie/CORS deployment policy, separate
-from the provider redirect URI. For a genuinely cross-site frontend use
-`--browser-topology cross-site`, deploy over HTTPS, set
-`COOKIE_SAMESITE=none` and `COOKIE_SECURE=true`, and add the exact frontend
-origin to `CORS_ALLOWED_ORIGINS` separately. SameSite=None requests also pass
-an exact Origin guard because CORS alone is not CSRF protection. Token
-responses use `Cache-Control: no-store` and `Pragma: no-cache`; configure
-`JWT_REFRESH_MAX_TTL_MIN` so refresh rotation cannot extend beyond its absolute
-lifetime.
-
-No prerequisites. On a project with no worker, the registration-verification,
-resend-verification, and password-reset mail flows are sent inline, and `add
-worker` later moves them onto the queue for you. Until then, those auth flows
-block on SMTP when a mail server is configured.
-
-| `--store` | Refresh/recovery tokens and rate-limit counters | Extra service |
+| --store | Refresh/recovery token storage | Extra service |
 |---|---|---|
-| `postgres` (default) | `user_svc.auth_tokens`, counters in-process | none |
-| `redis` | refresh + rate-limit counters in Redis; recovery in `user_svc.auth_tokens` | Redis |
+| postgres (default) | PostgreSQL; rate-limit counters are in-process | None |
+| redis | Refresh state and rate-limit counters in Redis; recovery remains in PostgreSQL | Redis |
 
-The rate limiter follows the store rather than being chosen separately, because
-"I want this exact across replicas" is one decision. With `postgres` the per-IP
-budget is per-replica; the failed-login lockout is in Postgres either way, since
-that one can't be approximate.
+--browser-topology describes how a browser frontend and API are deployed:
 
-### `add rbac` — add roles and permissions
-
-```bash
-go-scaffold add rbac
-go-scaffold generate module secrets --auth --permission secret:manage
-```
-
-Requires `add auth`. Adds role/permission administration, cached authorization
-middleware, and role assignment. Its migration seeds the default roles and
-permissions, so apply it with `migrate up`; table creation does not run SQL
-seed statements.
-
-### `add observability` — add metrics + tracing
-
-```bash
-go-scaffold add observability                          # on an existing project
-go-scaffold create my-api --defaults --observability    # or at creation time
-```
-
-Adds Prometheus metrics at `/metrics` and OpenTelemetry tracing for Gin +
-GORM, patched into `cmd/api/wiring.go` and `internal/platform/database` the same
-way `add worker`/`add auth`/`add rbac` patch an existing project. Tracing is
-disabled until `OTEL_EXPORTER_OTLP_ENDPOINT` is configured; `/metrics` works
-either way. `create --observability` is exactly this command run right after
-scaffolding — the two produce the same project.
-
-### `undo module <name>` (alias `undo m`) — take back a `generate module`
-
-```bash
-go-scaffold undo module orders          # confirms first
-go-scaffold undo m orders --yes         # skip the confirm
-```
-
-The inverse of `generate module`, for the case it's actually the inverse of:
-a module you didn't mean to generate — a typo'd name, a domain you decided
-against. It deletes `internal/app/<name>/`, the per-module docs folder, **and
-the module's migration files**, and reverses the import/bootstrap/route in
-`cmd/api/wiring.go` plus the paths/schemas in `docs/openapi.yaml`. Restores the
-`_ = api` placeholder if it was the last module, so the project still builds.
-
-Deleting the migrations is the point. `migrations/embed.go` is a `//go:embed
-*`, so a typo'd `create_oders` left behind once ran on every database created
-from then on. That's only safe while those files exist nowhere but your
-working tree, so `undo` proves it first and refuses loudly otherwise:
-
-- **any of them is tracked by git** — it may already have been pulled or
-  deployed somewhere, so nothing is deleted. Retire that domain the explicit
-  way instead: `go-scaffold generate migration drop_<name>`.
-- **your database is already at or past that version** (read via the `migrate`
-  CLI when it's on `PATH` and a DSN is configured) — deleting the files would
-  strand `schema_migrations` at a version with no migration behind it. Run
-  `migrate ... down` first, then try again.
-
-The table itself is never dropped either way — `undo` only reverses what the
-CLI wrote. Prefer it to hand-deleting the folder: it also un-wires
-`cmd/api/wiring.go`, `.golangci.yml` and the OpenAPI index, and it refuses when
-another domain still imports this one rather than leaving you an un-compilable
-project.
-
-## Why no per-domain versioning
-
-Earlier versions of this CLI let a domain live in a `v1/`/`v2/` folder with
-its own route group and import alias, so the same domain name could exist
-twice with different behavior. It was cut: the migration (and usually the
-DB table) is shared between "versions" of the same domain, but each version
-got its own physically-copied `model.go` — nothing stopped the two structs
-from drifting apart. Verified against a real Postgres instance:
-development schema bootstrapping silently accepted a column typed `int` in
-one version's model and `float64` in the other for the *same* column, converging it to
-`numeric` with no error — the two versions would then read/write the same
-data with different, silently incompatible interpretations.
-
-Instead, every route in a project is grouped under a single project-wide
-`--api-prefix` chosen once at `create` time — opt-in, no prefix unless you ask. A domain that
-needs a real breaking change gets a new domain package, or a new field on
-the existing DTO — not a duplicated model pointed at a table it can drift
-out of sync with.
-
-## Project structure produced by `create`
-
-```text
-cmd/api/
-├── main.go                  # process entry point and exit handling
-└── wiring.go                # composition root: infrastructure + domain registration
-internal/
-├── platform/database/
-├── shared/{config,apperror,dberr,httpx,id,middleware,pagination,tx}/
-└── app/                      # empty until you `generate module`
-docs/
-├── architect/{architecture,patterns,techstack}.md
-└── openapi.yaml + common/ + health/   # if openapi docs enabled
-migrations/
-.github/workflows/ci.yml    # build, vet, gofmt check, golangci-lint, go test (with a Postgres service)
-Makefile
-.env.example
-.gitignore
-.golangci.yml
-redocly.yaml                # if openapi docs enabled
-docker-compose.yml          # if Docker enabled
-.vscode/settings.json
-README.md
-AGENTS.md
-CLAUDE.md
-.claude/skills/go-scaffold/SKILL.md
-go-scaffold.config.json
-```
-
-## Supported stack
-
-Pinned base dependencies in the generated `go.mod` — this table mirrors
-`templates/create/base/go.mod.hbs`, which is the source of truth. `add auth`,
-`add worker`, and `add observability` append their optional dependencies.
-
-| Package | Version |
+| Topology | Typical setup |
 |---|---|
-| Gin | v1.10.1 |
-| GORM + postgres driver | v1.31.2 / v1.6.2 |
-| validator/v10 | v10.30.3 |
-| google/uuid | v1.6.0 |
+| same-origin | Same scheme, host, and port |
+| same-site (default) | Different origin on the same site, such as localhost:3000 and localhost:8080 |
+| cross-site | Different sites; use HTTPS, SameSite=None, secure cookies, and exact CORS origins |
+
+After adding auth:
+
+~~~bash
+go mod tidy
+make migrate-up
+SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='change-me' make seed
+~~~
+
+Without add worker, verification and password-reset mail is sent inline. If a
+worker is already installed, those jobs use the queue instead.
+
+### add rbac — roles and permissions
+
+~~~bash
+go-scaffold add rbac
+go-scaffold add rbac --yes
+go-scaffold generate module secrets --profile lean --auth --permission secret:manage
+~~~
+
+RBAC requires add auth first. It adds:
+
+- role and permission administration
+- cached authorization middleware
+- role assignment endpoints
+- the internal/app/role module and its migration
+
+Apply the migration before using the seeded roles and permissions:
+
+~~~bash
+make migrate-up
+SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='change-me' make seed
+~~~
+
+### add observability — metrics and tracing
+
+~~~bash
+go-scaffold add observability
+go-scaffold add observability --yes
+go-scaffold create my-api --defaults --observability
+~~~
+
+This adds Prometheus GET /metrics and OpenTelemetry tracing for Gin and GORM.
+Run go mod tidy after adding it. Metrics work immediately; set
+OTEL_EXPORTER_OTLP_ENDPOINT when you want to export traces.
+
+create --observability and create followed by add observability produce the same
+feature configuration.
+
+## undo module [name] — remove a generated module
+
+~~~bash
+go-scaffold undo module orders       # asks for confirmation
+go-scaffold undo m orders --yes      # skip confirmation
+go-scaffold undo                    # choose the module in a wizard
+~~~
+
+undo module removes the module package, its generated OpenAPI folder, owned
+migrations, configuration entry, and wiring from cmd/api/wiring.go. It does not
+drop a database table.
+
+The command is intentionally conservative: it refuses when the module's
+migrations may already have been shared or applied, or when another module
+still depends on it. Use an explicit hand-written migration to retire a domain
+that is already in use.
+
+## Generated project structure
+
+After go-scaffold create my-api, the important runtime structure is:
+
+~~~text
+my-api/
+├── cmd/
+│   └── api/
+│       ├── main.go                 # process entrypoint and shutdown
+│       └── wiring.go               # infrastructure and module composition
+├── internal/
+│   ├── platform/
+│   │   └── database/               # GORM connection and pool
+│   ├── shared/
+│   │   ├── config/                 # environment configuration
+│   │   ├── apperror/               # consistent application errors
+│   │   ├── dberr/                  # database error classification
+│   │   ├── httpx/                  # HTTP parsing and binding helpers
+│   │   ├── id/                     # UUID generation
+│   │   ├── middleware/             # request ID, logging, errors, CORS
+│   │   ├── pagination/             # pagination parsing and responses
+│   │   └── tx/                     # transaction context helpers
+│   └── app/                        # empty until generate module is used
+├── migrations/                     # embedded, versioned SQL migrations
+├── docs/
+│   ├── architect/                  # architecture, patterns, tech stack
+│   └── openapi.yaml                # optional API index and referenced files
+├── go-scaffold.config.json         # CLI defaults, features, and module choices
+├── go.mod
+├── Makefile
+├── .env.example
+├── Dockerfile
+└── docker-compose.yml              # optional, when Docker was selected
+~~~
+
+Optional commands add these areas:
+
+~~~text
+add worker          -> internal/platform/{queue,mail}/ and cmd/worker/
+add auth            -> internal/app/user/, auth middleware, and cmd/seed/
+add rbac            -> internal/app/role/ and authorization middleware
+add observability   -> internal/platform/telemetry/ and metrics/tracing middleware
+~~~
+
+After generate module orders, the domain sits behind its own package boundary:
+
+~~~text
+internal/app/order/
+├── domain/              # entities, invariants, and domain errors
+├── ports/               # consumer-owned application dependencies
+├── application/         # service OR commands + queries, plus DTOs/tests
+├── adapters/inbound/http/       # Gin delivery adapter and tests
+├── adapters/outbound/postgres/ # persistence model, adapter, and tests
+└── composition.go       # module-local dependency wiring
+~~~
+
+The generated service and CQRS styles are exclusive within a module: a
+service module has `application/service.go`; a CQRS module has
+`application/commands.go` and `application/queries.go` and no service facade.
+Different modules may choose different styles. `go-scaffold check` enforces the
+physical layout and dependency direction.
+
+The module name orders produces the Go package order, REST collection /orders,
+plural table names such as order_items, and a module-owned schema such as
+order_svc.
+
+## Useful commands after scaffolding
+
+Run these from the generated project directory:
+
+| Command | Purpose |
+|---|---|
+| make docker-up | Start the generated local PostgreSQL service |
+| make docker-down | Stop the generated local services |
+| make db-create | Create the project database; safe to run again |
+| make run | Run cmd/api |
+| make build | Build cmd/api into bin/api |
+| make test | Run Go tests |
+| make fmt | Format Go code |
+| make vet | Run go vet ./... |
+| make tidy | Run go mod tidy |
+| make migrate-up | Apply migrations from migrations/ |
+| make migrate-down | Roll back one migration |
+| make migrate-verify | Check that migrations can roll forward and back |
+| make openapi-bundle | Bundle OpenAPI $ref files when OpenAPI is enabled |
+
+make run, make test, and migration targets load .env when it exists. Copy
+.env.example to .env and adjust DB_DSN, PORT, CORS, mail, auth, or telemetry
+settings as needed.
+
+## What to edit after generation
+
+The CLI gives you a compiling structure and explicit TODOs. Your application
+still owns:
+
+- domain fields and invariants in `domain/entity.go`
+- request/use-case and response fields in `application/dto.go`
+- persistence fields and mapping in `adapters/outbound/postgres/model.go`
+- business rules in `application/service.go` or command/query handlers
+- SQL bodies in generated migration files
+- OpenAPI schemas and method descriptions
+- tests for the behavior you add
+
+Use go-scaffold generate method for the repetitive endpoint shape, then fill in
+the generated TODO before treating the endpoint as production behavior.
+
+## Architecture and migration note
+
+Schema version 2 is the canonical hexagonal split layout. Every generated
+feature, including auth and RBAC, uses `domain/`, `application/`, `ports/`,
+`adapters/`, and a feature-local `composition.go`; one canonical implementation
+tree is generated. Projects with the old schema 1 manifest are
+rejected with a migration hint instead of silently generating a conflicting
+architecture.
+
+The generated tree has no `compat/` directory and no feature-level `model/`
+directory. The word “compatibility” below refers only to CLI command aliases:
+the hidden `remove module` alias remains supported for old scripts, while new
+commands should use `go-scaffold undo module`.
 
 ## License
 

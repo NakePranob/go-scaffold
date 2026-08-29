@@ -9,6 +9,7 @@ import { QueueBackend } from "../types";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
 import { upgradeMailerToQueue } from "../utils/auth-patcher";
+import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // addWorker scaffolds async job processing: the backend-neutral queue
 // contract (platform/queue), one adapter for the chosen backing store, SMTP
@@ -60,6 +61,8 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   // tidy`, so `go vet` can't be the gate here.
   assertStillParses(projectDir, parsedBefore, `added worker (${backend})`);
 
+  const staleDocs = refreshProjectDocs(projectDir, config, { worker: true, queue: backend });
+
   writeConfig(projectDir, { ...config, features: { ...config.features, worker: true, queue: backend } });
 
   console.log(pc.green(`\nadded internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend})`));
@@ -75,6 +78,7 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
     console.log(pc.yellow("note: a Redis enqueue cannot join a database transaction — see the warning on queue.Asynq"));
     console.log(pc.dim("\nnext: make worker (separate terminal, or `make dev` runs both), then go build ./... to confirm"));
   }
+  if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add worker")));
 }
 
 // needsSmtp and needsRedis are checked independently: `add auth` run without

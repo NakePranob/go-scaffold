@@ -1,0 +1,66 @@
+package application
+
+import (
+	"context"
+	"testing"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+
+	"github.com/google/uuid"
+)
+
+// repositoryStub is shared by command and query tests. It intentionally
+// exposes one function per operation so a focused test can assert exactly
+// which side of the CQRS boundary was called.
+type repositoryStub struct {
+	createFn   func(context.Context, *domain.{{pascalName}}) error
+	findAllFn  func(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	findByIDFn func(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	updateFn   func(context.Context, *domain.{{pascalName}}) error
+	deleteFn   func(context.Context, uuid.UUID) error
+	// go-scaffold:repository-stub-fields
+}
+
+func (s *repositoryStub) Create(ctx context.Context, m *domain.{{pascalName}}) error {
+	if s.createFn == nil {
+		panic("unexpected repository.Create call")
+	}
+	return s.createFn(ctx, m)
+}
+func (s *repositoryStub) FindAll(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
+	if s.findAllFn == nil {
+		panic("unexpected repository.FindAll call")
+	}
+	return s.findAllFn(ctx, limit, offset)
+}
+func (s *repositoryStub) FindByID(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {
+	if s.findByIDFn == nil {
+		panic("unexpected repository.FindByID call")
+	}
+	return s.findByIDFn(ctx, id)
+}
+func (s *repositoryStub) Update(ctx context.Context, m *domain.{{pascalName}}) error {
+	if s.updateFn == nil {
+		panic("unexpected repository.Update call")
+	}
+	return s.updateFn(ctx, m)
+}
+func (s *repositoryStub) Delete(ctx context.Context, id uuid.UUID) error {
+	if s.deleteFn == nil {
+		panic("unexpected repository.Delete call")
+	}
+	return s.deleteFn(ctx, id)
+}
+
+var _ ports.CommandRepository = (*repositoryStub)(nil)
+var _ ports.QueryRepository = (*repositoryStub)(nil)
+
+func TestCQRSHandlersCompose(t *testing.T) {
+	repo := &repositoryStub{}
+	if NewCommandHandler(repo) == nil || NewQueryHandler(repo) == nil {
+		t.Fatal("expected command and query handlers")
+	}
+}
+
+// go-scaffold:repository-stub-methods

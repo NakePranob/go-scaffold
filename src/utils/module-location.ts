@@ -13,7 +13,7 @@ export function existingModulePackages(projectDir: string): string[] {
 }
 
 // A Go package name has no word boundaries: "orderitem" cannot tell you it
-// came from "order-items". Everything else a command derives — the model type
+// came from "order-items". Everything else a command derives — the entity type
 // (OrderItem), the route (/order-items), the table (order_items), the
 // migration filename — does depend on those boundaries, so re-deriving them
 // from the package name yields Orderitem/orderitems and code that doesn't
@@ -24,14 +24,30 @@ export function existingModulePackages(projectDir: string): string[] {
 // prints as the next command to run. Following that instruction produced
 // `undefined: model.Orderitem (but have OrderItem)`.
 //
-// model/model.go is where the boundaries survive — the struct name is
-// PascalCase, so kebab-casing it recovers the exact string `generate module`
-// was originally given.
+// The outbound persistence model is where the generated PascalCase type
+// survives, so kebab-casing it recovers the exact string `generate module` was
+// originally given.
 function pascalNameOnDisk(projectDir: string, pkg: string): string | null {
-  const modelPath = path.join(projectDir, "internal", "app", pkg, "model", "model.go");
-  if (!fs.existsSync(modelPath)) return null;
-  const match = fs.readFileSync(modelPath, "utf8").match(/^type\s+([A-Z]\w*)\s+struct\b/m);
-  return match ? match[1] : null;
+  // Split hexagonal modules keep persistence models in the outbound adapter.
+  // The package name still loses word boundaries (`orderitem`), so recover
+  // the original PascalCase entity from the generated `OrderItemModel` type
+  // before commands such as `undo module orderitem` rebuild their wiring.
+  const adapterModelPath = path.join(
+    projectDir,
+    "internal",
+    "app",
+    pkg,
+    "adapters",
+    "outbound",
+    "postgres",
+    "model.go",
+  );
+  if (fs.existsSync(adapterModelPath)) {
+    const match = fs.readFileSync(adapterModelPath, "utf8").match(/^type\s+([A-Z]\w*)Model\s+struct\b/m);
+    if (match) return match[1];
+  }
+
+  return null;
 }
 
 export function resolveProjectModuleNaming(projectDir: string, rawName: string): ModuleNaming {
@@ -47,7 +63,7 @@ export function resolveProjectModuleNaming(projectDir: string, rawName: string):
     return located; // model.go holds something we can't derive a module name from
   }
   // Only trust the correction when it still points at the same package.
-  // A hand-renamed struct, or a legacy module whose type never matched its
-  // folder, would otherwise silently retarget the command at another module.
+  // A hand-renamed struct whose type no longer matches its folder would
+  // otherwise silently retarget the command at another module.
   return fromDisk.pkg === located.pkg ? fromDisk : located;
 }

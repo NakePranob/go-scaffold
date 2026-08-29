@@ -26,10 +26,12 @@ function runGeneratedChecks(project) {
   runCLI(project, "generate", "method", "order", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
   runCLI(project, "generate", "method", "order", "findOverdue", "--type", "get", "--get-mode", "all");
 
-  const commands = read(project, "internal/app/order/commands.go");
-  const queries = read(project, "internal/app/order/queries.go");
-  const service = read(project, "internal/app/order/service.go");
-  const handler = read(project, "internal/app/order/handler.go");
+  const commands = read(project, "internal/app/order/application/commands.go");
+  const queries = read(project, "internal/app/order/application/queries.go");
+  const servicePath = path.join(project, "internal/app/order/application/service.go");
+  const serviceTestPath = path.join(project, "internal/app/order/application/service_test.go");
+  const cqrsTest = read(project, "internal/app/order/application/cqrs_test.go");
+  const handler = read(project, "internal/app/order/adapters/inbound/http/handler.go");
 
   assert.match(commands, /func \(h \*CommandHandler\) Approve\(/);
   assert.match(commands, /func \(h \*CommandHandler\) Create\(/);
@@ -37,14 +39,18 @@ function runGeneratedChecks(project) {
   assert.match(queries, /func \(h \*QueryHandler\) FindByStatus\(/);
   assert.match(queries, /func \(h \*QueryHandler\) FindOverdue\(/);
   assert.match(queries, /func \(h \*QueryHandler\) List\(/);
-  assert.match(service, /return s\.commands\.Approve\(/);
-  assert.match(service, /return s\.queries\.FindByStatus\(/);
+  assert.equal(existsSync(servicePath), false, "CQRS must not emit an application/service.go facade");
+  assert.equal(existsSync(serviceTestPath), false, "CQRS must not emit an application/service_test.go seam");
+  assert.match(cqrsTest, /type repositoryStub struct/);
+  assert.match(cqrsTest, /TestCQRSHandlersCompose/);
   assert.match(handler, /h\.commands\.Approve\(/);
   assert.match(handler, /h\.queries\.FindByStatus\(/);
-  assert.match(handler, /func NewHandlerFromCQRS\(/);
+  assert.match(handler, /func NewHandler\(commands application\.CommandPort, queries application\.QueryPort/);
+  assert.doesNotMatch(handler, /func NewHandler\(svc service/);
+  assert.doesNotMatch(handler, /type service interface/);
   assert.match(read(project, "internal/app/order/composition.go"), /NewCommandHandler\(repo\)/);
   assert.match(read(project, "internal/app/order/composition.go"), /NewQueryHandler\(repo\)/);
-  assert.match(read(project, "internal/app/order/repository.go"), /func \(r \*Repository\) FindByStatus\(/);
+  assert.match(read(project, "internal/app/order/adapters/outbound/postgres/repository.go"), /func \(r \*Repository\) FindByStatus\(/);
 }
 
 test("generate module --cqrs creates separate command/query handlers and patches each side", () => {
@@ -54,8 +60,8 @@ test("generate module --cqrs creates separate command/query handlers and patches
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "orders", "--full", "--cqrs", "--defaults");
 
-    assert.equal(existsSync(path.join(project, "internal/app/order/commands.go")), true);
-    assert.equal(existsSync(path.join(project, "internal/app/order/queries.go")), true);
+    assert.equal(existsSync(path.join(project, "internal/app/order/application/commands.go")), true);
+    assert.equal(existsSync(path.join(project, "internal/app/order/application/queries.go")), true);
     runGeneratedChecks(project);
 
     execFileSync("go", ["mod", "tidy"], { cwd: project, stdio: "ignore" });
@@ -77,10 +83,10 @@ test("generate module --cqrs also works for minimal modules and command/query me
     runCLI(project, "generate", "method", "ticket", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
     runCLI(project, "generate", "method", "ticket", "archive", "--type", "delete");
 
-    assert.match(read(project, "internal/app/ticket/commands.go"), /func \(h \*CommandHandler\) Create\(/);
-    assert.match(read(project, "internal/app/ticket/commands.go"), /func \(h \*CommandHandler\) Archive\(/);
-    assert.match(read(project, "internal/app/ticket/queries.go"), /func \(h \*QueryHandler\) FindByStatus\(/);
-    assert.match(read(project, "internal/app/ticket/service.go"), /import \(/);
+    assert.match(read(project, "internal/app/ticket/application/commands.go"), /func \(h \*CommandHandler\) Create\(/);
+    assert.match(read(project, "internal/app/ticket/application/commands.go"), /func \(h \*CommandHandler\) Archive\(/);
+    assert.match(read(project, "internal/app/ticket/application/queries.go"), /func \(h \*QueryHandler\) FindByStatus\(/);
+    assert.equal(existsSync(path.join(project, "internal/app/ticket/application/service.go")), false);
 
     execFileSync("go", ["mod", "tidy"], { cwd: project, stdio: "ignore" });
     execFileSync("go", ["test", "./..."], { cwd: project, stdio: "ignore" });

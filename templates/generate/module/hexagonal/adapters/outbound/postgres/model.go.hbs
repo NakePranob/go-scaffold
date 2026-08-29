@@ -1,0 +1,37 @@
+// Package postgres is the {{pkg}} outbound adapter. Its GORM model is not
+// exported as a domain type; conversion happens at this boundary.
+package postgres
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+
+	"github.com/google/uuid"
+)
+
+type {{pascalName}}Model struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Version   int `gorm:"not null;default:1"`
+	// TODO: keep persistence-only fields here and map them explicitly.
+}
+
+func ({{pascalName}}Model) TableName() string {
+	return "{{schemaName}}.{{tableName}}"
+}
+
+func toDomain(m *{{pascalName}}Model) *domain.{{pascalName}} {
+	if m == nil {
+		return nil
+	}
+	return &domain.{{pascalName}}{ID: m.ID, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt, Version: m.Version}
+}
+
+func fromDomain(m *domain.{{pascalName}}) *{{pascalName}}Model {
+	if m == nil {
+		return nil
+	}
+	return &{{pascalName}}Model{ID: m.ID, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt, Version: m.Version}
+}

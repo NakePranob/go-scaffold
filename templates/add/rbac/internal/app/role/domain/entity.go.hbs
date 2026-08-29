@@ -1,0 +1,23 @@
+// Package domain contains role and permission state without GORM or HTTP
+// concerns.
+package domain
+
+import "time"
+
+type Role struct {
+	Code      string
+	Name      string
+	IsSystem  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type Permission struct {
+	Code        string
+	Description string
+}
+
+type RolePermission struct {
+	RoleCode       string
+	PermissionCode string
+}

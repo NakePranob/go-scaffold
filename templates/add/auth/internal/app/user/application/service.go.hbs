@@ -1,0 +1,140 @@
+package application
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
+
+	"github.com/google/uuid"
+)
+
+// repository is a package-local name used by focused application tests and
+// generated method extensions. The actual contract is owned by ports.
+type repository = ports.UserRepository
+
+// Service coordinates user authentication use cases. Transport concerns stay
+// in the inbound adapter and persistence concerns stay in outbound adapters.
+type Service struct {
+	repo              ports.UserRepository
+	refreshTokens     ports.RefreshTokenStore
+	oauthTransactions ports.OAuthTransactionStore
+	recoveryTokens    ports.RecoveryTokenStore
+	mfa               ports.MFAStore
+	mailer            ports.AuthMailer
+	providers         ProviderRegistry
+	recovery          *Recovery
+	config            AuthConfig
+	roles             ports.RoleChecker
+	now               func() time.Time
+	// go-scaffold:user-service-fields
+}
+
+// NewService is the application composition constructor. It accepts explicit
+// ports and policy rather than a framework or catch-all infrastructure object.
+func NewService(deps Dependencies, cfg AuthConfig) *Service {
+	if cfg.JWTAccessTTL <= 0 {
+		cfg.JWTAccessTTL = 15 * time.Minute
+	}
+	if cfg.JWTRefreshTTL <= 0 {
+		cfg.JWTRefreshTTL = 12 * time.Hour
+	}
+	cfg.JWTRefreshMaxTTL = defaultDuration(cfg.JWTRefreshMaxTTL, cfg.JWTRefreshTTL)
+	cfg.OAuthStateTTL = defaultDuration(cfg.OAuthStateTTL, 10*time.Minute)
+	if cfg.MFA.RecoveryCodeCount == 0 {
+		cfg.MFA.RecoveryCodeCount = defaultMFACodes
+	}
+	clock := deps.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	return &Service{
+		repo:              deps.Repository,
+		refreshTokens:     deps.RefreshTokens,
+		oauthTransactions: deps.OAuthTransactions,
+		recoveryTokens:    deps.RecoveryTokens,
+		mfa:               deps.MFA,
+		mailer:            deps.Mailer,
+		providers:         deps.Providers,
+		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, bcryptPasswordHasher{}),
+		config:            cfg,
+		roles:             deps.Roles,
+		now:               clock,
+		// go-scaffold:user-service-init
+	}
+}
+
+func defaultDuration(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func (s *Service) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+// normalizeEmail is applied at every boundary an address enters the service
+// through. The database stores the canonical lower-case representation.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// SetRole validates the role against the role catalog before persisting it.
+func (s *Service) SetRole(ctx context.Context, userID uuid.UUID, roleCode string) (*domain.User, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	if s.roles == nil {
+		return nil, fmt.Errorf("role checker is not configured")
+	}
+	exists, err := s.roles.CodeExists(ctx, roleCode)
+	if err != nil {
+		return nil, fmt.Errorf("check role code: %w", err)
+	}
+	if !exists {
+		return nil, errUnknownRole()
+	}
+	u.Role = roleCode
+	if err := s.repo.UpdateUser(ctx, u); err != nil {
+		return nil, fmt.Errorf("update user role: %w", err)
+	}
+	return u, nil
+}
+
+// ServicePort is the inbound application boundary. HTTP, jobs, and future
+// transports depend on this capability set instead of the concrete service.
+type ServicePort interface {
+	// go-scaffold:service-interface
+	Register(context.Context, RegisterInput) (*AuthResult, error)
+	Login(context.Context, LoginInput) (*AuthResult, error)
+	Refresh(context.Context, string) (*AuthResponse, error)
+	Logout(context.Context, string) error
+	LogoutAll(context.Context, uuid.UUID) error
+	ForgotPassword(context.Context, string) error
+	ResetPassword(context.Context, string, string) error
+	VerifyEmail(context.Context, string) error
+	ResendVerificationEmail(context.Context, uuid.UUID) error
+	BeginLogin(context.Context, string, LoginStartInput) (*Authorization, error)
+	ExchangeLogin(context.Context, string, LoginExchangeInput) (*AuthResult, error)
+	VerifyMFA(context.Context, string, string) (*AuthResponse, error)
+	MFAStatus(context.Context, uuid.UUID) (MFAStatus, error)
+	SetupMFA(context.Context, uuid.UUID) (*MFASetup, error)
+	ConfirmMFA(context.Context, uuid.UUID, string) ([]string, error)
+	DisableMFA(context.Context, uuid.UUID, string) error
+	Get(context.Context, uuid.UUID) (*domain.User, error)
+	List(context.Context, int, int) ([]domain.User, error)
+	SetRole(context.Context, uuid.UUID, string) (*domain.User, error)
+}
+
+var _ ServicePort = (*Service)(nil)
+
+// go-scaffold:service-methods

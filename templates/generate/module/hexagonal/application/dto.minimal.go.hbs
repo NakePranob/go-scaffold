@@ -1,0 +1,23 @@
+package application
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+
+	"github.com/google/uuid"
+)
+
+// A lean module starts with no use-case input type. `generate method` adds
+// the exact input beside the endpoint that needs it.
+type Response struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Version   int       `json:"version"`
+}
+
+func ToResponse(m *domain.{{pascalName}}) Response {
+	return Response{ID: m.ID, CreatedAt: m.CreatedAt, Version: m.Version}
+}
+
+// go-scaffold:dto

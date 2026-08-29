@@ -1,0 +1,142 @@
+// Package httpadapter is role's inbound HTTP boundary. It owns route,
+// authentication middleware, request binding, response DTOs, and translation
+// from application errors to the API error envelope.
+package httpadapter
+
+import (
+	"errors"
+	"net/http"
+
+	"{{goModule}}/internal/app/role/application"
+	"{{goModule}}/internal/app/role/domain"
+	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/httpx"
+	"{{goModule}}/internal/shared/middleware"
+	"{{goModule}}/internal/shared/pagination"
+
+	"github.com/gin-gonic/gin"
+)
+
+type Handler struct {
+	svc       application.ServicePort
+	jwtSecret string
+	authz     *middleware.Authz
+}
+
+func NewHandler(svc application.ServicePort, jwtSecret string, authz *middleware.Authz) *Handler {
+	return &Handler{svc: svc, jwtSecret: jwtSecret, authz: authz}
+}
+
+func (h *Handler) Register(rg gin.IRouter) {
+	roles := rg.Group("/roles", middleware.RequireAuth(h.jwtSecret), h.authz.Require(application.PermRoleManage))
+	roles.GET("", h.list)
+	roles.POST("", h.create)
+	roles.PATCH("/:code/permissions", h.setPermissions)
+	roles.DELETE("/:code", h.delete)
+
+	perms := rg.Group("/permissions", middleware.RequireAuth(h.jwtSecret), h.authz.Require(application.PermRoleManage))
+	perms.GET("", h.listPermissions)
+}
+
+func (h *Handler) list(c *gin.Context) {
+	p := pagination.Parse(c)
+	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	out := make([]application.RoleResponse, len(items))
+	for i := range items {
+		out[i] = application.ToRoleResponse(items[i])
+	}
+	c.JSON(http.StatusOK, p.Response(out))
+}
+
+func (h *Handler) create(c *gin.Context) {
+	var in application.CreateInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	item, err := h.svc.Create(c.Request.Context(), in)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusCreated, application.ToRoleResponse(*item))
+}
+
+func (h *Handler) setPermissions(c *gin.Context) {
+	var in application.SetPermissionsInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if in.PermissionCodes == nil {
+		c.Error(apperror.NewValidation("invalid role input", map[string]string{"permission_codes": "is required"}))
+		return
+	}
+	item, err := h.svc.SetPermissions(c.Request.Context(), c.Param("code"), *in.PermissionCodes)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.authz.Invalidate(item.Role.Code)
+	c.JSON(http.StatusOK, application.ToRoleResponse(*item))
+}
+
+func (h *Handler) delete(c *gin.Context) {
+	if err := h.svc.Delete(c.Request.Context(), c.Param("code")); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.authz.Invalidate(c.Param("code"))
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) listPermissions(c *gin.Context) {
+	p := pagination.Parse(c)
+	items, err := h.svc.ListPermissions(c.Request.Context(), p.Limit, p.Offset)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	out := make([]application.PermissionResponse, len(items))
+	for i := range items {
+		out[i] = application.ToPermissionResponse(items[i])
+	}
+	c.JSON(http.StatusOK, p.Response(out))
+}
+
+func toHTTPError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var appErr *apperror.AppError
+	if errors.As(err, &appErr) {
+		return err
+	}
+	var rule *domain.RuleError
+	if errors.As(err, &rule) {
+		status := http.StatusUnprocessableEntity
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrHasReferences), errors.Is(err, domain.ErrSystemRole), errors.Is(err, domain.ErrLastRoleManager):
+			status = http.StatusConflict
+		}
+		return apperror.New(status, rule.Code, rule.Message)
+	}
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return apperror.New(http.StatusNotFound, "ROLE_NOT_FOUND", "role not found")
+	case errors.Is(err, domain.ErrConflict):
+		return apperror.New(http.StatusConflict, "ROLE_CONFLICT", "role conflict")
+	case errors.Is(err, domain.ErrHasReferences):
+		return apperror.New(http.StatusConflict, "ROLE_HAS_REFERENCES", "role still has users assigned to it")
+	case errors.Is(err, domain.ErrUnknownPermission):
+		return apperror.New(http.StatusUnprocessableEntity, "ROLE_UNKNOWN_PERMISSION", "one or more permission codes do not exist")
+	default:
+		return apperror.NewInternal(err)
+	}
+}
