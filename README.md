@@ -40,11 +40,11 @@ Git is the release source of truth. The package version, annotated tag, and
 tagged commit must agree before npm can publish:
 
 ```text
-package.json 0.4.2
+package.json 0.4.3
        │
-       └── annotated tag v0.4.2 ──> the exact release commit
+       └── annotated tag v0.4.3 ──> the exact release commit
                                       │
-                                      └── npm @nakedev/go-scaffold@0.4.2
+                                      └── npm @nakedev/go-scaffold@0.4.3
 ```
 
 `npm publish` runs `release:check` first, so publishing from an untagged,
@@ -84,19 +84,19 @@ force-pushes. Protect the `v*` tag pattern from updates and deletion as well.
 ```bash
 git switch develop
 git pull --ff-only origin develop
-git switch -c release/v0.4.2
-npm version 0.4.2 --no-git-tag-version
+git switch -c release/v0.4.3
+npm version 0.4.3 --no-git-tag-version
 pnpm run verify
 git add package.json
-git commit -m "chore: release v0.4.2"
-git push -u origin release/v0.4.2
-# open a PR from release/v0.4.2 into main
+git commit -m "chore: release v0.4.3"
+git push -u origin release/v0.4.3
+# open a PR from release/v0.4.3 into main
 
 # after the PR is merged, tag the merge commit on main
 git switch main
 git pull --ff-only origin main
-git tag -a v0.4.2 -m "v0.4.2"
-git push origin v0.4.2
+git tag -a v0.4.3 -m "v0.4.3"
+git push origin v0.4.3
 ```
 
 Pushing the tag starts the release workflow. To retry a failed publish for a

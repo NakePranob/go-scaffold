@@ -38,6 +38,9 @@ jobs:
           --health-retries 5
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      # Keep the release verification environment identical to CI. The smoke
+      # suite asserts that non-TTY output has no ANSI escape sequences.
+      NO_COLOR: "1"
 
     steps:
       - uses: actions/checkout@v6
