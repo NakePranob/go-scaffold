@@ -68,6 +68,14 @@ new application code.
    plus `go test ./...`, `go vet ./...`, and `gofmt` output.
 5. Review `git diff --check`, the complete diff, and `git status --short`.
 
+## Commit message format
+
+Use `<type>: <emoji> <description>` for commit messages. For example:
+
+```text
+feat: ✨ add Go API monorepo
+```
+
 ## Documentation and generated-project safety
 
 - Generated docs describe the actual resolved configuration, including
