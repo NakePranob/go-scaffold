@@ -135,6 +135,7 @@ internal/app/<pkg>/
   application/dto.go
   application/service.go
   application/service_test.go
+  adapters/inbound/http/dto.go
   adapters/inbound/http/handler.go
   adapters/inbound/http/handler_test.go
   adapters/outbound/postgres/model.go
@@ -158,10 +159,11 @@ docs/openapi.yaml.
 Feature-local composition.go constructs repository → application handlers →
 handler. A module generated with `--cqrs` constructs separate command/query
 handlers there; a regular module constructs its service there.
-cmd/api/wiring.go is the process composition root: it selects shared
-infrastructure, supplies explicit cross-feature ports/security dependencies,
-and registers routes. Do not move business rules or feature-internal
-constructors into wiring, or hand-edit root route markers for a new endpoint.
+`internal/composition/` owns process-level adapters between feature ports.
+`cmd/api/wiring.go` selects shared infrastructure, invokes those adapters, and
+registers routes. Do not move business rules or feature-internal constructors
+into either process-level location, or hand-edit root route markers for a new
+endpoint.
 
 ## Method shapes and stub safety
 
@@ -188,7 +190,9 @@ This project is modular plus Hexagonal/DDD-friendly, with CQRS available via
 the `cqrs` profile or the backwards-compatible
 `go-scaffold generate module <name> --cqrs` flag:
 
-- `adapters/inbound/http` handlers are inbound adapters and know HTTP/Gin only;
+- `adapters/inbound/http/dto.go` owns JSON names, binding/validation tags, and
+  request/response mapping; handlers are inbound adapters and know HTTP/Gin
+  only;
 - `application/service.go` or `application/commands.go` plus
   `application/queries.go` are application/use-case boundaries and depend on
   narrow ports. The service and CQRS shapes are mutually exclusive inside one
@@ -196,8 +200,9 @@ the `cqrs` profile or the backwards-compatible
 - `domain/` entities and invariants stay independent of Gin, GORM, Redis, and
   HTTP; persistence models belong under `adapters/outbound/postgres`;
 - repositories/token stores/mail/queue clients are outbound adapters;
-- composition.go wires one feature locally, while cmd/api/wiring.go wires
-  the process.
+- composition.go wires one feature locally, internal/composition/ wires
+  cross-feature capabilities, and cmd/api/wiring.go boots the process and
+  registers routes.
 
 DDD does not require every CRUD row to become a large aggregate. CQRS optional:
 use the CQRS profile when command and query models, consistency, or
@@ -207,9 +212,10 @@ service and repository port are clearer. Do not add a broker, a second
 database, or empty command/query layers just for naming.
 
 Never import another feature's private model, repository, or handler. For
-cross-feature behavior, define a narrow public application port, use a
-documented feature API, or publish an explicit event. Keep dependencies
-flowing inward:
+cross-feature behavior, define a narrow public application port, put a
+synchronous adapter in internal/composition/ (importing only the feature's
+public package root), use a documented feature API, or publish an explicit
+event. Keep dependencies flowing inward:
 
 ~~~text
 handler -> application/use case -> domain + ports -> adapters
@@ -352,6 +358,10 @@ REQUIRE_TEST_REDIS=true; a skipped integration test is not proof. MFA state
 still requires PostgreSQL even when refresh tokens use Redis. When routes or
 OpenAPI templates change, inspect the updated `docs/openapi.yaml` and run the
 configured OpenAPI linter.
+
+When the project uses River, run `make river-migrate-test` after
+`make migrate-up-test`. The River integration test must enqueue a real job and
+observe the worker handler; a process that only boots is not enough evidence.
 
 Only in the `go-scaffold` source repository, run `pnpm run verify` for CLI or
 template changes, then generate a fresh sample project and inspect both its

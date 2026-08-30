@@ -61,7 +61,7 @@ program
 
 program
   .command("check")
-  .description("validate the hexagonal split layout, layer dependencies, and service/CQRS contract")
+  .description("validate the hexagonal split layout, process composition boundary, layer dependencies, and service/CQRS contract")
   .action(() => {
     try {
       checkProject();

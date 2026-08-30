@@ -37,8 +37,14 @@
 
 {{#if docker}}- Local Postgres comes from `docker-compose.yml`
 {{else}}- No Docker scaffolding included — bring your own Postgres and point `DB_DSN` at it
-{{/if}}- `APP_ENV=development` enables the convenience table bootstrap;
+{{/if}}{{#if worker}}{{#if (eq queue "river")}}- Run `make river-migrate` before relying on queued jobs in a fresh database;
+  run `make river-migrate-test` as well when `REQUIRE_TEST_DB=true` runs the
+  River worker round-trip test.{{/if}}{{/if}}
+- `APP_ENV=development` enables the convenience table bootstrap;
   `APP_ENV=production` requires `migrate up` as a deploy step instead
+{{#if worker}}{{#if (eq queue "river")}}- River uses the database/sql driver and polls for jobs instead of receiving
+  PostgreSQL LISTEN/NOTIFY wakeups; this is deliberate for a shared GORM pool.
+{{/if}}{{/if}}
 {{#if openapiDocs}}- `docs/openapi.yaml` is hand-written, not generated — update it whenever an
   endpoint or DTO changes
 {{/if}}{{#if observability}}- `OTEL_EXPORTER_OTLP_ENDPOINT` unset (dev default) means tracing exports

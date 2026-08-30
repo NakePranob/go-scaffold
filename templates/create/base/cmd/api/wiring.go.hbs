@@ -22,7 +22,7 @@ import (
 // run is this binary's composition root — the only function that sees every
 // module and wires them to each other. Modules never import one another; a
 // domain that needs another's behaviour declares a narrow interface and gets
-// its concrete implementation or a process-level adapter from here (see
+// its concrete implementation from the process composition package (see
 // docs/architect/patterns.md).
 //
 // It returns an error rather than calling os.Exit, so every defer below runs

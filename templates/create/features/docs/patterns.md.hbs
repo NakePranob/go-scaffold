@@ -16,14 +16,15 @@ internal/app/<domain>/
 ├── ports/
 │   └── repository.go   # consumer-owned persistence/application interfaces
 ├── application/
-│   ├── dto.go          # use-case input/output types and response mapping
+│   ├── dto.go          # transport-neutral use-case input/output types
 │   ├── service.go      # service-style use-case orchestration
 │   ├── commands.go     # CQRS writes, when selected
 │   ├── queries.go      # CQRS reads, when selected
 │   └── *_test.go       # application unit tests, no DB
 ├── adapters/
 │   ├── inbound/http/
-│   │   ├── handler.go       # Gin routing, binding, error/response mapping
+│   │   ├── dto.go           # JSON/binding DTOs and application/HTTP mapping
+│   │   ├── handler.go       # Gin routing, error/response mapping
 │   │   └── handler_test.go  # HTTP adapter tests, no DB
 │   └── outbound/postgres/
 │       ├── model.go         # persistence model + explicit domain mapping
@@ -110,9 +111,12 @@ path for simple CRUD and CQRS only when the feature earns the extra boundary.
   and GORM can misinterpret a bare struct arg
 
 ### DTOs
-- `application/dto.go` owns use-case inputs and output mapping. HTTP binding
-  tags stay at the inbound adapter boundary; adding a DB column later doesn't
-  leak it to clients until the application contract chooses it.
+- `application/dto.go` owns transport-neutral use-case inputs and output read
+  models. `adapters/inbound/http/dto.go` owns JSON names, binding/validation
+  tags, and explicit request/response mapping at the HTTP boundary.
+- When `generate method` adds a POST input, it adds both the application input
+  and an inbound HTTP DTO/mapping seam. Fill both deliberately; do not bind
+  Gin JSON directly into an application type.
 
 ### Error Catalog
 - Domain sentinels live in `domain/errors.go`; they are values used with
@@ -184,8 +188,9 @@ type userLookup interface {
 ```
 
 The feature keeps its own repository/application/handler composition in
-`composition.go`; `cmd/api/wiring.go` supplies the DB and any cross-feature
-security dependencies. For example, auth and RBAC are composed locally and
+`composition.go`; `cmd/api/wiring.go` supplies the DB and registers routes.
+Process-level adapters for cross-feature capabilities live in
+`internal/composition/`. For example, auth and RBAC are composed locally and
 the root passes only the role feature's public capabilities:
 
 ```go
@@ -197,8 +202,9 @@ user.NewHandlerFromDB(
 
 For ordinary cross-domain behaviour, the caller still declares a narrow
 interface next to its application boundary. Its local composition accepts that
-port, while the root supplies an adapter; the root never reaches into the
-callee's repository or handler. A func-to-interface shim is one small option:
+port, while `internal/composition/` supplies an adapter; the process root never
+reaches into the callee's repository or handler. A func-to-interface shim is
+one small option:
 
 ```go
 // order/application/service.go
@@ -235,7 +241,7 @@ repository tests stay inside its package and must not import another feature.
 go-scaffold generate method <domain> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 ```
 
-Patches `adapters/inbound/http/handler.go` and the application boundary (or
+Patches `adapters/inbound/http/handler.go`, its request DTO seam, and the application boundary (or
 `application/commands.go`/`application/queries.go` for a CQRS module; plus
 `ports/repository.go` and the outbound repository adapter/test seam for a
 `get --get-mode one --field` lookup) in place, at the

@@ -1,0 +1,45 @@
+package httpadapter
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/{{modulePath}}/application"
+
+	"github.com/google/uuid"
+)
+
+// response is the HTTP representation of the application output. Keep JSON
+// names and protocol-only fields at this inbound boundary.
+type response struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Version   int       `json:"version"`
+}
+
+func toResponse(out application.Response) response {
+	return response{ID: out.ID, CreatedAt: out.CreatedAt, Version: out.Version}
+}
+
+// Request DTOs belong to the inbound adapter. Keep JSON names, validation
+// tags, and request-to-command mapping here; application inputs stay usable
+// from jobs, tests, and other non-HTTP callers.
+type createInput struct {
+	// TODO: mirror the request fields added to application.CreateInput.
+}
+
+type updateInput struct {
+	Version int `json:"version" binding:"required,min=1"`
+	// TODO: mirror the update fields added to application.UpdateInput.
+}
+
+func toCreateInput(in createInput) application.CreateInput {
+	// TODO: map request fields explicitly as the application contract evolves.
+	_ = in
+	return application.CreateInput{}
+}
+
+func toUpdateInput(in updateInput) application.UpdateInput {
+	return application.UpdateInput{Version: in.Version}
+}
+
+// go-scaffold:dto

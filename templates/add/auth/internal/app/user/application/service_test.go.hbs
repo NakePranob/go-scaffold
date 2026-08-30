@@ -390,6 +390,17 @@ type fakeMailer struct{}
 
 func (fakeMailer) Send(context.Context, string, string, string) error { return nil }
 
+type fakePasswordHasher struct{}
+
+func (fakePasswordHasher) Hash(password string) (string, error) { return "hashed:" + password, nil }
+
+func (fakePasswordHasher) Compare(hash, password string) error {
+	if hash != "hashed:"+password {
+		return errors.New("password does not match")
+	}
+	return nil
+}
+
 // fakeRoles satisfies role's roleChecker interface structurally.
 type fakeRoles struct{}
 
@@ -404,6 +415,7 @@ func (fakeRoles) CodeExists(context.Context, string) (bool, error) { return true
 func newTestService(repo repository, tokens testTokenStore) *Service {
 	return NewService(Dependencies{
 		Repository:        repo,
+		Passwords:         fakePasswordHasher{},
 		RefreshTokens:     tokens,
 		OAuthTransactions: tokens,
 		RecoveryTokens:    tokens,

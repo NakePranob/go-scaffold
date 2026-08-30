@@ -150,6 +150,7 @@ async function generateHexagonalMethod(
   const authModule = naming.pkg === "user" && fs.existsSync(path.join(moduleDir, "application", "contracts.go"));
   const paths: HexagonalMethodPatchPaths = {
     dtoPath: path.join(moduleDir, "application", "dto.go"),
+    requestDTOPath: path.join(moduleDir, "adapters", "inbound", "http", "dto.go"),
     portsPath: path.join(moduleDir, "ports", "repository.go"),
     repositoryAdapterPath: path.join(moduleDir, "adapters", "outbound", "postgres", "repository.go"),
     servicePath: cqrs ? undefined : path.join(moduleDir, "application", "service.go"),
@@ -169,6 +170,7 @@ async function generateHexagonalMethod(
   };
   const required = [
     paths.dtoPath,
+    paths.requestDTOPath,
     paths.portsPath,
     paths.repositoryAdapterPath,
     paths.handlerPath,

@@ -20,6 +20,7 @@ type repository = ports.UserRepository
 // in the inbound adapter and persistence concerns stay in outbound adapters.
 type Service struct {
 	repo              ports.UserRepository
+	passwords         ports.PasswordHasher
 	refreshTokens     ports.RefreshTokenStore
 	oauthTransactions ports.OAuthTransactionStore
 	recoveryTokens    ports.RecoveryTokenStore
@@ -36,6 +37,9 @@ type Service struct {
 // NewService is the application composition constructor. It accepts explicit
 // ports and policy rather than a framework or catch-all infrastructure object.
 func NewService(deps Dependencies, cfg AuthConfig) *Service {
+	if deps.Passwords == nil {
+		panic("user application: password hasher is required")
+	}
 	if cfg.JWTAccessTTL <= 0 {
 		cfg.JWTAccessTTL = 15 * time.Minute
 	}
@@ -53,13 +57,14 @@ func NewService(deps Dependencies, cfg AuthConfig) *Service {
 	}
 	return &Service{
 		repo:              deps.Repository,
+		passwords:         deps.Passwords,
 		refreshTokens:     deps.RefreshTokens,
 		oauthTransactions: deps.OAuthTransactions,
 		recoveryTokens:    deps.RecoveryTokens,
 		mfa:               deps.MFA,
 		mailer:            deps.Mailer,
 		providers:         deps.Providers,
-		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, bcryptPasswordHasher{}),
+		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, deps.Passwords),
 		config:            cfg,
 		roles:             deps.Roles,
 		now:               clock,

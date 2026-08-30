@@ -49,14 +49,14 @@ func ChallengeResult(challenge string) *AuthResult {
 // extensions. Auth's HTTP adapter may expose a richer meResponse, but method
 // generation still has one stable transport-neutral mapping seam.
 type Response struct {
-	ID            uuid.UUID `json:"id"`
-	Email         string    `json:"email"`
-	Name          string    `json:"name"`
-	AvatarURL     string    `json:"avatar_url"`
-	EmailVerified bool      `json:"email_verified"`
-	Role          string    `json:"role"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            uuid.UUID
+	Email         string
+	Name          string
+	AvatarURL     string
+	EmailVerified bool
+	Role          string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 func ToResponse(user *domain.User) Response {

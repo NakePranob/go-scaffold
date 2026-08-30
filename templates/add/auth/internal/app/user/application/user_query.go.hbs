@@ -9,7 +9,6 @@ import (
 	"{{goModule}}/internal/shared/id"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // wrapFindErr is shared by methods added through `generate method`. Keeping
@@ -51,7 +50,7 @@ func (s *Service) EnsureUser(ctx context.Context, email, password, name string) 
 		return nil, fmt.Errorf("find existing user: %w", err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := s.passwords.Hash(password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}

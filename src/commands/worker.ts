@@ -4,7 +4,7 @@ import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { workerFiles } from "../templates/worker-manifest";
-import { patchCiForRedis, patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchCiForRedis, patchCiForRiver, patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
 import { QueueBackend } from "../types";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
@@ -35,6 +35,8 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
     patchMainGoForWorker(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule);
     patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
     patchCiForRedis(path.join(projectDir, ".github", "workflows", "ci.yml"));
+  } else {
+    patchCiForRiver(path.join(projectDir, ".github", "workflows", "ci.yml"));
   }
 
   // pinned to what this scaffold was written against — see gomod-patcher
@@ -127,16 +129,19 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
     return;
   }
 
-  content = content.replace(/^\.PHONY: /m, `.PHONY: dev worker${opts.river ? " river-migrate" : ""} `);
+  content = content.replace(/^\.PHONY: /m, `.PHONY: dev worker${opts.river ? " river-migrate river-migrate-test" : ""} `);
 
   // River keeps its own tables, versioned by River itself rather than by this
-  // project's migrations/ directory — run its CLI once per database. Pinned
-  // by nothing on purpose: it is a one-shot setup command, not a build input.
+  // project's migrations/ directory — run its pinned CLI once per database.
   const riverTarget = opts.river
     ? "\n# create River's job tables (run once per database, and after upgrading River)\n" +
       "river-migrate:\n" +
       "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \\\n" +
-      '\tgo run github.com/riverqueue/river/cmd/river@latest migrate-up --line main --database-url "$$DB_DSN"\n'
+      '\tgo run github.com/riverqueue/river/cmd/river@v0.43.0 migrate-up --line main --database-url "$$DB_DSN"\n' +
+      "\n# apply River's own schema to TEST_DB_DSN for the real worker test\n" +
+      "river-migrate-test:\n" +
+      "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \\\n" +
+      '\tgo run github.com/riverqueue/river/cmd/river@v0.43.0 migrate-up --line main --database-url "$$TEST_DB_DSN"\n'
     : "";
 
   // Both load config exactly the way Makefile.hbs says every target does:

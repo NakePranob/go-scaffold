@@ -2,18 +2,18 @@
 
 ## Composition root
 
-`cmd/api/main.go` decides the exit code and nothing else. Everything else lives
-in `cmd/api/wiring.go`, in a `run() error` — the one function that sees every
-module and hands them what they need.
+`cmd/api/main.go` decides the exit code and nothing else. `cmd/api/wiring.go`
+owns process bootstrap and route registration; `internal/composition/` owns
+reusable process-level adapters that connect feature ports.
 
 Modules never import one another. Each generated domain owns its local
 outbound adapter → service or command/query application handlers → inbound
-adapter composition in `composition.go`; `wiring.go`
-supplies the DB and any cross-feature security dependencies. A domain that
-needs another's behaviour declares a narrow interface for exactly what it
-needs and receives its concrete implementation or a process-level adapter from
-`run()`; `.golangci.yml` has a depguard rule per domain that fails the build if
-anyone shortcuts that.
+adapter composition in `composition.go`; `internal/composition/` owns
+cross-feature adapters and `wiring.go` supplies infrastructure, invokes those
+adapters, and registers routes. A domain that needs another's behaviour
+declares a narrow interface for exactly what it needs and receives its
+concrete implementation from the process composition; `.golangci.yml` has a
+depguard rule per domain that fails the build if anyone shortcuts that.
 
 Two things the split buys. `run()` returns an error instead of calling
 `os.Exit`, so the deferred cleanup below it actually runs — `os.Exit` skips
@@ -41,8 +41,9 @@ handler or feature composition root into a process-wide god object.
 cmd/
 └── api/
     ├── main.go             # process entrypoint and exit code
-    └── wiring.go           # config, infrastructure, graceful shutdown, domains
+    └── wiring.go           # config, infrastructure, graceful shutdown, routes
 internal/
+├── composition/             # process-level cross-feature adapters
 ├── platform/                # talks to real external systems
 │   └── database/             # PostgreSQL connection and pool
 ├── shared/                  # pure logic/framework glue, no I/O
@@ -53,7 +54,7 @@ internal/
         ├── domain/          # business entities and errors
         ├── ports/           # consumer-owned application dependencies
         ├── application/     # service OR commands + queries
-        ├── adapters/inbound/http/
+        ├── adapters/inbound/http/ # request/response DTOs + HTTP adapter
         ├── adapters/outbound/postgres/
         └── composition.go   # feature-local object graph
 ```
@@ -108,8 +109,9 @@ or event-sourcing runtime.
 When enabled, `application/commands.go` owns state-changing application use
 cases, `application/queries.go` owns read use cases, and `composition.go`
 constructs both. The HTTP adapter is still an inbound adapter and
-`cmd/api/wiring.go` still only selects infrastructure and registers the
-feature. A service module instead has one `application/service.go`; these
+`cmd/api/wiring.go` still selects infrastructure, invokes process-level
+adapters from `internal/composition/`, and registers the feature. A service
+module instead has one `application/service.go`; these
 styles are exclusive inside a module but can coexist across the monolith.
 
 The CQRS inbound adapter is wired through `NewHandler` with separate command
@@ -199,8 +201,9 @@ skipped by the `os.Exit` calls already in there.
 
 - `go-scaffold generate module <name>` adds a new domain package and
   wires it into `cmd/api/wiring.go`
-- `go-scaffold check` validates the physical split, layer dependencies, and
-  exclusive service/CQRS choice for every discovered module
+- `go-scaffold check` validates the physical split, process-composition
+  boundary, layer dependencies, and exclusive service/CQRS choice for every
+  discovered module
 - `go-scaffold add auth`, `add worker`, `add rbac`, and `add observability`
   refresh this document while it still matches the generated version. A
   hand-edited document is preserved and must be updated by its owner.

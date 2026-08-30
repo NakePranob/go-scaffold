@@ -43,6 +43,7 @@ cmd/
 │   ├── main.go                # process entry point, config, slog, graceful shutdown
 │   └── wiring.go              # process composition root and route registration
 internal/
+├── composition/               # cross-feature adapters and process-level wiring
 ├── platform/                  # adapters for external systems
 │   └── database/              # opens the PostgreSQL connection + pool
 ├── shared/                    # pure logic/framework glue, no I/O
@@ -60,6 +61,11 @@ internal/
 The tree shows the baseline. Installed optional features add the process and
 platform packages listed in the section above without changing these module
 boundaries.
+
+Cross-feature adapters belong in `internal/composition/`, not in `cmd/api/`.
+The API wiring file selects infrastructure, invokes those adapters, and
+registers routes. Keep one-way dependencies and expose only narrow public
+capabilities from each feature.
 
 Optional features stay in the same architecture: auth owns user application
 use cases and provider ports, RBAC owns role policy, worker owns queue/mail
@@ -108,7 +114,10 @@ Server listens on `:8080` (override with `PORT`). Ctrl+C = graceful shutdown.
 make run            # go run ./cmd/api
 {{#if worker}}make dev            # run cmd/api and cmd/worker together
 make worker         # run cmd/worker separately
-make river-migrate  # create/update the selected queue's tables
+{{#if (eq queue "river")}}make river-migrate  # create/update River's Postgres job tables
+make river-migrate-test # same River tables in TEST_DB_DSN
+{{else}}# start Redis before running make worker
+{{/if}}
 {{/if}}{{#if auth}}make seed           # run one-shot cmd/seed
 {{/if}}make build          # go build -o bin/api ./cmd/api
 make test           # go test ./...
@@ -207,8 +216,16 @@ make docker-up      # local postgres first
 {{/if}}
 make db-create DB_NAME={{dbName}}_test
 make migrate-up-test
+{{#if (eq queue "river")}}make river-migrate-test
+{{/if}}
 TEST_DB_DSN=postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable REQUIRE_TEST_DB=true go test ./...
 ```
+
+{{#if (eq queue "river")}}The River integration test also starts a real worker,
+enqueues a JSON job, and waits for its backend-neutral handler. River's own
+schema history is separate from this project's application migrations, and the
+`river-migrate` targets use the pinned River version from `go.mod`.
+{{/if}}
 
 ## Error payload
 

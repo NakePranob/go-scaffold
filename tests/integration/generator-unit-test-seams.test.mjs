@@ -32,11 +32,17 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.match(read(project, "cmd/api/wiring.go"), /order\.NewHandlerFromDB\(db\)\.Register\(api\)/);
 
     const handler = read(project, "internal/app/order/adapters/inbound/http/handler.go");
+    const requestDTO = read(project, "internal/app/order/adapters/inbound/http/dto.go");
+    assert.match(requestDTO, /binding:\"required,min=1\"/);
+    assert.match(requestDTO, /type response struct/);
+    assert.match(handler, /toCreateInput\(in\)/);
+    assert.match(handler, /toResponse\(application\.ToResponse\(m\)\)/);
     assert.match(handler, /svc application\.ServicePort/);
     assert.doesNotMatch(handler, /type service interface/);
     assert.doesNotMatch(handler, /gorm\.io\/driver\/postgres/);
 
     const service = read(project, "internal/app/order/application/service.go");
+    assert.doesNotMatch(read(project, "internal/app/order/application/dto.go"), /json:/);
     assert.match(service, /Create\(ctx context\.Context, in CreateInput\)/);
     assert.match(service, /Update\(ctx context\.Context, id uuid\.UUID, in UpdateInput\)/);
 
@@ -92,6 +98,11 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.doesNotMatch(submitDocs, /in: path/);
     assert.match(submitDocs, /^post:/m);
     assert.match(submitDocs, /requestBody:/);
+
+    const submitDTO = read(project, "internal/app/order/adapters/inbound/http/dto.go");
+    assert.match(submitDTO, /type SubmitInput struct/);
+    assert.match(submitDTO, /func toSubmitInput\(in SubmitInput\) application\.SubmitInput/);
+    assert.match(read(project, "internal/app/order/adapters/inbound/http/handler.go"), /toSubmitInput\(in\)/);
 
     run("go", ["mod", "tidy"], project);
     run("go", ["test", "./..."], project);

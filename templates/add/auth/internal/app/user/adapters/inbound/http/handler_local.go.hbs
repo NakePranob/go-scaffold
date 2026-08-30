@@ -3,7 +3,6 @@ package httpadapter
 import (
 	"net/http"
 
-	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/app/user/domain"
 	"{{goModule}}/internal/shared/httpx"
 
@@ -20,9 +19,7 @@ func (h *Handler) register(c *gin.Context) {
 		c.Error(httpx.BindErr(err))
 		return
 	}
-	auth, err := h.svc.Register(c.Request.Context(), application.RegisterInput{
-		Email: in.Email, Password: in.Password, Name: in.Name,
-	})
+	auth, err := h.svc.Register(c.Request.Context(), toRegisterInput(in))
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return
@@ -40,9 +37,7 @@ func (h *Handler) login(c *gin.Context) {
 		c.Error(httpx.BindErr(err))
 		return
 	}
-	auth, err := h.svc.Login(c.Request.Context(), application.LoginInput{
-		Email: in.Email, Password: in.Password,
-	})
+	auth, err := h.svc.Login(c.Request.Context(), toLoginInput(in))
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return

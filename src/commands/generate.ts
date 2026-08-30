@@ -215,7 +215,7 @@ export async function generateModule(
   if (docsMessage) console.log(docsMessage);
   console.log(
     pc.dim(
-      `\nnext: add real fields to domain/entity.go, application/dto.go, and the outbound persistence model, then run \`go build ./...\` and apply the migration ` +
+      `\nnext: add real fields to domain/entity.go, application/dto.go, adapters/inbound/http/dto.go, and the outbound persistence model, then run \`go build ./...\` and apply the migration ` +
         `(use the development bootstrap locally, or \`migrate -path migrations -database "$DB_DSN" up\` before production)`
     )
   );

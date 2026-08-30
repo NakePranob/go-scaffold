@@ -12,11 +12,11 @@ import (
 )
 
 func (h *Handler) providerLogin(c *gin.Context) {
-	start, err := h.svc.BeginLogin(c.Request.Context(), c.Param("provider"), userapp.LoginStartInput{
+	start, err := h.svc.BeginLogin(c.Request.Context(), c.Param("provider"), toLoginStartInput(loginStartInput{
 		State:               c.Query("state"),
 		CodeChallenge:       c.Query("code_challenge"),
 		CodeChallengeMethod: c.Query("code_challenge_method"),
-	})
+	}))
 	if err != nil {
 		c.Error(h.oauthAppError(c.Param("provider"), err))
 		return
@@ -34,9 +34,7 @@ func (h *Handler) providerExchange(c *gin.Context) {
 		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthFailed, err)))
 		return
 	}
-	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), userapp.LoginExchangeInput{
-		Code: in.Code, State: in.State, CodeVerifier: in.CodeVerifier,
-	})
+	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), toLoginExchangeInput(in))
 	if err != nil {
 		c.Error(h.oauthAppError(c.Param("provider"), err))
 		return

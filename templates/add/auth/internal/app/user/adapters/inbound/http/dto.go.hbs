@@ -28,6 +28,30 @@ type loginExchangeInput struct {
 	CodeVerifier string `json:"code_verifier"`
 }
 
+type loginStartInput struct {
+	State               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+}
+
+func toRegisterInput(in registerInput) userapp.RegisterInput {
+	return userapp.RegisterInput{Email: in.Email, Password: in.Password, Name: in.Name}
+}
+
+func toLoginInput(in loginInput) userapp.LoginInput {
+	return userapp.LoginInput{Email: in.Email, Password: in.Password}
+}
+
+func toLoginStartInput(in loginStartInput) userapp.LoginStartInput {
+	return userapp.LoginStartInput{
+		State: in.State, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod,
+	}
+}
+
+func toLoginExchangeInput(in loginExchangeInput) userapp.LoginExchangeInput {
+	return userapp.LoginExchangeInput{Code: in.Code, State: in.State, CodeVerifier: in.CodeVerifier}
+}
+
 type forgotPasswordInput struct {
 	Email string `json:"email" binding:"required,email"`
 }
@@ -103,21 +127,33 @@ func toMeResponse(user *userdomain.User) meResponse {
 	}
 }
 
-// response is the small public profile DTO used by generated methods.
+// response is the HTTP representation used by generated methods. It is kept
+// separate from application.Response so JSON naming remains an adapter detail.
 //
 //nolint:unused
 type response struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            uuid.UUID `json:"id"`
+	Email         string    `json:"email"`
+	Name          string    `json:"name"`
+	AvatarURL     string    `json:"avatar_url"`
+	EmailVerified bool      `json:"email_verified"`
+	Role          string    `json:"role"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 //nolint:unused
-func toResponse(user *userdomain.User) response {
-	return response{ID: user.ID, CreatedAt: user.CreatedAt}
+func toResponse(out userapp.Response) response {
+	return response{
+		ID: out.ID, Email: out.Email, Name: out.Name, AvatarURL: out.AvatarURL,
+		EmailVerified: out.EmailVerified, Role: out.Role, CreatedAt: out.CreatedAt,
+		UpdatedAt: out.UpdatedAt,
+	}
 }
 
 type setRoleInput struct {
 	Role string `json:"role" binding:"required"`
 }
 
+// go-scaffold:dto
 // go-scaffold:user-dto

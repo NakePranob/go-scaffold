@@ -10,10 +10,12 @@ import (
 
 // A lean module starts with no use-case input type. `generate method` adds
 // the exact input beside the endpoint that needs it.
+// Response is a transport-neutral application output. The inbound adapter
+// maps it to its protocol response before serialization.
 type Response struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	Version   int       `json:"version"`
+	ID        uuid.UUID
+	CreatedAt time.Time
+	Version   int
 }
 
 func ToResponse(m *domain.{{pascalName}}) Response {

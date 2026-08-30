@@ -20,6 +20,7 @@ const REPOSITORY_STUB_METHODS_MARKER = "// go-scaffold:repository-stub-methods";
 
 export interface HexagonalMethodPatchPaths {
   dtoPath: string;
+  requestDTOPath: string;
   portsPath: string;
   repositoryAdapterPath: string;
   servicePath?: string;
@@ -55,6 +56,12 @@ function write(files: FileSet, file: string, content: string): void {
 
 function addImport(content: string, importPath: string): string {
   return ensureImport(content, importPath);
+}
+
+function requestDTOMarker(content: string): string {
+  if (hasMarker(content, DTO_MARKER)) return DTO_MARKER;
+  if (hasMarker(content, "// go-scaffold:user-dto")) return "// go-scaffold:user-dto";
+  throw new Error("inbound HTTP DTO file is missing a go-scaffold DTO marker");
 }
 
 function insert(content: string, marker: string, block: string): string {
@@ -153,9 +160,9 @@ function handlerMethod(
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tout := make([]application.Response, len(items))`,
+        `\tout := make([]response, len(items))`,
         `\tfor i := range items {`,
-        `\t\tout[i] = application.ToResponse(&items[i])`,
+        `\t\tout[i] = toResponse(application.ToResponse(&items[i]))`,
         `\t}`,
         `\tc.JSON(http.StatusOK, p.Response(out))`,
         `}`,
@@ -177,7 +184,7 @@ function handlerMethod(
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tc.JSON(http.StatusOK, application.ToResponse(m))`,
+        `\tc.JSON(http.StatusOK, toResponse(application.ToResponse(m)))`,
         `}`,
         "",
       ].join("\n"),
@@ -189,17 +196,17 @@ function handlerMethod(
       imports: ["net/http", "httpx"],
       body: [
         `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
-        `\tvar in application.${method.pascalName}Input`,
+        `\tvar in ${method.pascalName}Input`,
         `\tif err := c.ShouldBindJSON(&in); err != nil {`,
         `\t\tc.Error(httpx.BindErr(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tm, err := ${receiver}.${method.pascalName}(c.Request.Context(), in)`,
+        `\tm, err := ${receiver}.${method.pascalName}(c.Request.Context(), to${method.pascalName}Input(in))`,
         `\tif err != nil {`,
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tc.JSON(http.StatusCreated, application.ToResponse(m))`,
+      `\tc.JSON(http.StatusCreated, toResponse(application.ToResponse(m)))`,
         `}`,
         "",
       ].join("\n"),
@@ -236,13 +243,18 @@ function handlerRouteReceiver(content: string): string {
 }
 
 export function hexagonalMarkersPresent(paths: HexagonalMethodPatchPaths): boolean {
-  if (!fs.existsSync(paths.dtoPath) || !fs.existsSync(paths.portsPath) || !fs.existsSync(paths.repositoryAdapterPath) || !fs.existsSync(paths.handlerPath) || !fs.existsSync(paths.serviceTestPath)) return false;
+  if (!fs.existsSync(paths.dtoPath) || !fs.existsSync(paths.requestDTOPath) || !fs.existsSync(paths.portsPath) || !fs.existsSync(paths.repositoryAdapterPath) || !fs.existsSync(paths.handlerPath) || !fs.existsSync(paths.serviceTestPath)) return false;
   const handler = fs.readFileSync(paths.handlerPath, "utf8");
   if (!hasMarker(handler, HANDLER_ROUTES_MARKER) || !hasMarker(handler, HANDLER_FUNCS_MARKER)) return false;
   const dto = fs.readFileSync(paths.dtoPath, "utf8");
+  const requestDTO = fs.readFileSync(paths.requestDTOPath, "utf8");
   const ports = fs.readFileSync(paths.portsPath, "utf8");
   const adapter = fs.readFileSync(paths.repositoryAdapterPath, "utf8");
-  if (!hasMarker(dto, DTO_MARKER) || !hasMarker(adapter, REPOSITORY_METHODS_MARKER)) return false;
+  if (
+    !hasMarker(dto, DTO_MARKER) ||
+    (!hasMarker(requestDTO, DTO_MARKER) && !hasMarker(requestDTO, "// go-scaffold:user-dto")) ||
+    !hasMarker(adapter, REPOSITORY_METHODS_MARKER)
+  ) return false;
   if (isCqrs(paths)) {
     return Boolean(paths.commandPath && paths.queryPath && hasMarker(fs.readFileSync(paths.commandPath, "utf8"), COMMAND_MARKER) && hasMarker(fs.readFileSync(paths.commandPath, "utf8"), COMMAND_INTERFACE_MARKER) && hasMarker(fs.readFileSync(paths.queryPath, "utf8"), QUERY_MARKER) && hasMarker(fs.readFileSync(paths.queryPath, "utf8"), QUERY_INTERFACE_MARKER) && hasMarker(ports, COMMAND_REPOSITORY_INTERFACE_MARKER) && hasMarker(ports, QUERY_REPOSITORY_INTERFACE_MARKER));
   }
@@ -302,6 +314,23 @@ export function patchHexagonalMethod(
     assertNotDuplicate(dto, `type ${inputName} struct`, `DTO "${inputName}"`);
     dto = insert(dto, DTO_MARKER, [`type ${inputName} struct {`, `\t// TODO: add request fields`, `}`, ""].join("\n"));
     write(files, paths.dtoPath, dto);
+
+    let requestDTO = read(files, paths.requestDTOPath);
+    assertNotDuplicate(requestDTO, `type ${inputName} struct`, `HTTP DTO "${inputName}"`);
+    requestDTO = addImport(requestDTO, `${goModule}/internal/app/${naming.pkg}/application`);
+    requestDTO = insert(requestDTO, requestDTOMarker(requestDTO), [
+      `type ${inputName} struct {`,
+      `\t// TODO: mirror request fields from application.${inputName} and add JSON/binding tags`,
+      `}`,
+      "",
+      `func to${inputName}(in ${inputName}) application.${inputName} {`,
+      `\t// TODO: map request fields explicitly into the application input.`,
+      `\t_ = in`,
+      `\treturn application.${inputName}{}`,
+      `}`,
+      "",
+    ].join("\n"));
+    write(files, paths.requestDTOPath, requestDTO);
   }
 
   if (opts.type === "get" && opts.getMode !== "all") {

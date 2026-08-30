@@ -32,6 +32,7 @@ func (p *fakeLoginProvider) Complete(_ context.Context, in LoginCompleteInput) (
 func newTestServiceWithProviders(repo repository, tokens testTokenStore, providers ...LoginProvider) *Service {
 	return NewService(Dependencies{
 		Repository:        repo,
+		Passwords:         fakePasswordHasher{},
 		RefreshTokens:     tokens,
 		OAuthTransactions: tokens,
 		RecoveryTokens:    tokens,

@@ -29,9 +29,9 @@ domain-oriented design, and an optional CQRS style. They are compatible:
 apply them inside each feature instead of creating a second architecture or
 an empty layer for every noun.
 
-- **Inbound adapter:** `adapters/inbound/http/handler.go` parses HTTP, validates/binds transport
-  input, calls the relevant application service or command/query port, and
-  maps the result to HTTP.
+- **Inbound adapter:** `adapters/inbound/http/dto.go` owns JSON/binding request
+  DTOs, response DTOs, and mapping at the HTTP boundary; `handler.go` parses
+  HTTP and calls the relevant application service or command/query port.
 - **Application boundary:** `application/service.go` (or
   `application/commands.go`/`application/queries.go` when
   the module uses `--cqrs`) orchestrates use cases. It owns
@@ -42,10 +42,10 @@ an empty layer for every noun.
   stores, mail/queue clients,
   and other platform integrations translate a port into persistence or I/O.
 - **Composition:** the feature-local `composition.go` constructs its
-  repository, application boundary, and handler. `cmd/api/wiring.go` selects
-  shared infrastructure, supplies explicitly declared cross-feature
-  ports/security dependencies, and registers the feature route; it does not
-  contain business logic or feature-internal constructors.
+  repository, application boundary, and handler. `internal/composition/` owns
+  process-level cross-feature adapters. `cmd/api/wiring.go` selects shared
+  infrastructure, supplies those adapters and security dependencies, and
+  registers feature routes; it does not contain cross-feature adapter logic.
 
 The project defaults new modules to `{{defaultApplicationStyle}}` application
 handling and a `{{defaultModuleSurface}}` surface. The `generate module` wizard
@@ -63,7 +63,9 @@ folder only to satisfy a label.
 Keep feature boundaries real. Do not import another feature's private model,
 repository, or handler. Expose a small public application port, call a
 documented feature API, or use an explicit event when cross-feature behavior
-is required. Keep dependency direction flowing inward:
+is required. Put synchronous adapters in `internal/composition/`, import only
+the other feature's public package root, and keep one-way dependencies. Keep
+dependency direction flowing inward:
 
 ```text
 handler -> application/use case -> domain + ports -> adapters
@@ -243,6 +245,10 @@ migrated disposable PostgreSQL/Redis instance and `REQUIRE_TEST_DB=true` or
 correctness. MFA state still requires PostgreSQL even when refresh tokens use
 Redis. When routes or OpenAPI templates change, inspect the updated
 `docs/openapi.yaml` and run the configured OpenAPI linter.
+
+When a River worker is installed, run `make river-migrate-test` in addition to
+`make migrate-up-test`. The queue integration test must enqueue a real job and
+observe the worker handler; a worker process that merely boots is not enough.
 
 Only in the `go-scaffold` source repository, run the generator project's
 `pnpm run verify` for CLI/template changes, then generate fresh sample projects

@@ -454,6 +454,7 @@ For River:
 
 ~~~bash
 make river-migrate
+make river-migrate-test  # before required real-store tests
 make worker
 ~~~
 
@@ -638,6 +639,8 @@ Run these from the generated project directory:
 | make docker-down | Stop the generated local services |
 | make db-create | Create the project database; safe to run again |
 | make run | Run cmd/api |
+| make river-migrate | Apply River's own schema when the worker uses Postgres/River |
+| make river-migrate-test | Apply River's own schema to TEST_DB_DSN for worker integration tests |
 | make build | Build cmd/api into bin/api |
 | make test | Run Go tests |
 | make fmt | Format Go code |

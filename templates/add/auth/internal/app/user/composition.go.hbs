@@ -5,6 +5,7 @@ import (
 	"time"
 
 	httpadapter "{{goModule}}/internal/app/user/adapters/inbound/http"
+	userpassword "{{goModule}}/internal/app/user/adapters/outbound/password"
 	userpostgres "{{goModule}}/internal/app/user/adapters/outbound/postgres"
 	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/app/user/ports"
@@ -72,6 +73,7 @@ func NewHandlerFromDB(
 
 	service := application.NewService(application.Dependencies{
 		Repository:        userpostgres.NewRepository(db),
+		Passwords:         userpassword.NewBCryptHasher(),
 		RefreshTokens:     tokens,
 		OAuthTransactions: tokens,
 		RecoveryTokens:    tokens,

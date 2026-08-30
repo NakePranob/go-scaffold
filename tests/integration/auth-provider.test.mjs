@@ -38,7 +38,10 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const postgres = ["internal", "app", "user", "adapters", "outbound", "postgres"];
   const handler = read(project, ...inbound, "handler.go");
   const service = read(project, ...application, "service.go");
+  const applicationDTO = read(project, ...application, "dto.go");
   const contracts = read(project, ...application, "contracts.go");
+  const passwordPorts = read(project, "internal", "app", "user", "ports", "password.go");
+  const passwordAdapter = read(project, "internal", "app", "user", "adapters", "outbound", "password", "bcrypt.go");
   const mfaService = read(project, ...application, "mfa_service.go");
   const mfaStore = read(project, ...postgres, "mfa_store.go");
   const externalLogin = read(project, ...application, "external_login.go");
@@ -56,9 +59,15 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.doesNotMatch(service, /oauth2\.Config|GoogleLoginURL|GoogleCallback|findOrCreateGoogleUser|issueOAuthState/);
   assert.match(service, /func NewService\(deps Dependencies, cfg AuthConfig\)/);
   assert.doesNotMatch(service, /config\.Config/);
+  assert.doesNotMatch(applicationDTO, /json:/);
   assert.match(contracts, /type Dependencies struct/);
   assert.match(contracts, /type AuthConfig struct/);
   assert.match(contracts, /MFA\s+ports\.MFAStore/);
+  assert.match(contracts, /Passwords\s+ports\.PasswordHasher/);
+  assert.match(passwordPorts, /type PasswordHasher interface/);
+  assert.match(passwordAdapter, /var _ userports\.PasswordHasher/);
+  assert.doesNotMatch(read(project, ...application, "local_auth.go"), /x\/crypto\/bcrypt/);
+  assert.doesNotMatch(read(project, ...application, "user_query.go"), /x\/crypto\/bcrypt/);
   assert.match(contracts, /type MFASettings/);
   assert.match(read(project, "internal", "app", "user", "application", "oauth.go"), /type ProviderRegistry struct/);
   assert.match(mfaService, /totpCode/);

@@ -28,6 +28,10 @@ const COMMON: { template: string; output: string }[] = [
 
 const SERVICE_MINIMAL: { template: string; output: string }[] = [
   { template: "generate/module/hexagonal/application/dto.minimal.go.hbs", output: "application/dto.go" },
+  {
+    template: "generate/module/hexagonal/adapters/inbound/http/dto.minimal.go.hbs",
+    output: "adapters/inbound/http/dto.go",
+  },
   { template: "generate/module/hexagonal/application/service.go.hbs", output: "application/service.go" },
   { template: "generate/module/hexagonal/application/service_test.go.hbs", output: "application/service_test.go" },
   {
@@ -38,6 +42,10 @@ const SERVICE_MINIMAL: { template: string; output: string }[] = [
 
 const SERVICE_CRUD: { template: string; output: string }[] = [
   { template: "generate/module/hexagonal/application/dto.go.hbs", output: "application/dto.go" },
+  {
+    template: "generate/module/hexagonal/adapters/inbound/http/dto.go.hbs",
+    output: "adapters/inbound/http/dto.go",
+  },
   { template: "generate/module/hexagonal/application/service.crud.go.hbs", output: "application/service.go" },
   { template: "generate/module/hexagonal/application/service_test.go.hbs", output: "application/service_test.go" },
   {
@@ -48,6 +56,10 @@ const SERVICE_CRUD: { template: string; output: string }[] = [
 
 const CQRS_MINIMAL: { template: string; output: string }[] = [
   { template: "generate/module/hexagonal/application/dto.minimal.go.hbs", output: "application/dto.go" },
+  {
+    template: "generate/module/hexagonal/adapters/inbound/http/dto.minimal.go.hbs",
+    output: "adapters/inbound/http/dto.go",
+  },
   { template: "generate/module/hexagonal/application/commands.go.hbs", output: "application/commands.go" },
   { template: "generate/module/hexagonal/application/queries.go.hbs", output: "application/queries.go" },
   {
@@ -59,6 +71,10 @@ const CQRS_MINIMAL: { template: string; output: string }[] = [
 
 const CQRS_CRUD: { template: string; output: string }[] = [
   { template: "generate/module/hexagonal/application/dto.go.hbs", output: "application/dto.go" },
+  {
+    template: "generate/module/hexagonal/adapters/inbound/http/dto.go.hbs",
+    output: "adapters/inbound/http/dto.go",
+  },
   { template: "generate/module/hexagonal/application/commands.crud.go.hbs", output: "application/commands.go" },
   { template: "generate/module/hexagonal/application/queries.crud.go.hbs", output: "application/queries.go" },
   {
