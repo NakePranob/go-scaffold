@@ -86,10 +86,17 @@ func ValidateMFASettings(settings MFASettings) error {
 	return nil
 }
 
-func (s *Service) completeLogin(ctx context.Context, u *domain.User) (*AuthResult, error) {
+func (s *Service) completeLogin(ctx context.Context, u *domain.User, sessions ...SessionContext) (*AuthResult, error) {
+	var session SessionContext
+	if len(sessions) > 0 {
+		session = sessions[0]
+	}
+	if session.ID == uuid.Nil {
+		session.ID = uuid.New()
+	}
 	settings := s.mfaSettings()
 	if !settings.Enabled {
-		auth, err := s.issueTokens(ctx, u)
+		auth, err := s.issueTokens(ctx, u, session)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +110,7 @@ func (s *Service) completeLogin(ctx context.Context, u *domain.User) (*AuthResul
 		return nil, fmt.Errorf("read MFA enrollment: %w", err)
 	}
 	if !found || !enrollment.Enabled {
-		auth, err := s.issueTokens(ctx, u)
+		auth, err := s.issueTokens(ctx, u, session)
 		if err != nil {
 			return nil, err
 		}
@@ -116,6 +123,8 @@ func (s *Service) completeLogin(ctx context.Context, u *domain.User) (*AuthResul
 	}
 	if err := s.mfa.CreateChallenge(ctx, hashToken(rawChallenge), MFAChallenge{
 		UserID:    u.ID,
+		SessionID: session.ID,
+		UserAgent: normalizeUserAgent(session.UserAgent),
 		ExpiresAt: s.clock().Add(settings.ChallengeTTL),
 	}); err != nil {
 		return nil, fmt.Errorf("store MFA challenge: %w", err)
@@ -285,7 +294,7 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string) (*Au
 	if err != nil {
 		return nil, errInvalidCredentials()
 	}
-	return s.issueTokens(ctx, u)
+	return s.issueTokens(ctx, u, SessionContext{ID: challenge.SessionID, UserAgent: challenge.UserAgent})
 }
 
 func (s *Service) requireMFA() (MFASettings, error) {

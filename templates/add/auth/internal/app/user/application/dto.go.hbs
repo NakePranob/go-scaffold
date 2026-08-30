@@ -12,17 +12,35 @@ type RegisterInput struct {
 	Email    string
 	Password string
 	Name     string
+	Session  SessionContext
 }
 
 type LoginInput struct {
 	Email    string
 	Password string
+	Session  SessionContext
 }
 
 type LoginExchangeInput struct {
 	Code         string
 	State        string
 	CodeVerifier string
+	Session      SessionContext
+}
+
+type SessionContext struct {
+	ID        uuid.UUID
+	UserAgent string
+	CreatedAt time.Time
+}
+
+type Session struct {
+	ID         uuid.UUID
+	UserAgent  string
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+	ExpiresAt  time.Time
+	Current    bool
 }
 
 type AuthResponse struct {

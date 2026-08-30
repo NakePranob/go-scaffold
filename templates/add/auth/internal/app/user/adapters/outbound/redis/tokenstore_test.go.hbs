@@ -70,6 +70,42 @@ func TestRefreshTokenRecord_JSONUsesLuaFieldNames(t *testing.T) {
 	}
 }
 
+func TestRedisTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
+	client := redisClientForTest(t)
+	store := NewRedisTokenStore(client, nil)
+	ctx := context.Background()
+	userID := uuid.New()
+	currentID := uuid.New()
+	remoteID := uuid.New()
+	current := testRefreshTokenRecord(userID)
+	current.SessionID = currentID
+	current.UserAgent = "current-device"
+	remote := testRefreshTokenRecord(userID)
+	remote.SessionID = remoteID
+	remote.UserAgent = "remote-device"
+	currentHash := "real-redis-session-current-" + uuid.NewString()
+	remoteHash := "real-redis-session-remote-" + uuid.NewString()
+	if err := store.SetRefreshToken(ctx, currentHash, current); err != nil {
+		t.Fatalf("seed current session: %v", err)
+	}
+	if err := store.SetRefreshToken(ctx, remoteHash, remote); err != nil {
+		t.Fatalf("seed remote session: %v", err)
+	}
+	t.Cleanup(func() { _ = store.RevokeAllRefreshTokens(ctx, userID) })
+
+	sessions, err := store.ListRefreshSessions(ctx, userID)
+	if err != nil || len(sessions) != 2 {
+		t.Fatalf("list sessions = %+v, err=%v", sessions, err)
+	}
+	if err := store.RevokeRefreshSession(ctx, userID, remoteID); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+	sessions, err = store.ListRefreshSessions(ctx, userID)
+	if err != nil || len(sessions) != 1 || sessions[0].ID != currentID {
+		t.Fatalf("sessions after revoke = %+v, err=%v", sessions, err)
+	}
+}
+
 func TestRedisTokenStore_ConsumeRefreshToken_ConcurrentRealRedis(t *testing.T) {
 	client := redisClientForTest(t)
 	store := NewRedisTokenStore(client, nil)

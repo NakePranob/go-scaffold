@@ -55,7 +55,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*AuthResult, 
 	// Best-effort: a mail failure should not block registration. The user can
 	// request another link through ResendVerificationEmail.
 	s.sendVerificationEmail(ctx, u)
-	auth, err := s.issueTokens(ctx, u)
+	auth, err := s.issueTokens(ctx, u, in.Session)
 	if err != nil {
 		return nil, err
 	}
@@ -92,5 +92,5 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error)
 	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
 		slog.Error("clear login failures", "error", err)
 	}
-	return s.completeLogin(ctx, u)
+	return s.completeLogin(ctx, u, in.Session)
 }

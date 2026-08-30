@@ -575,7 +575,7 @@ async function resolveQueueBackend(opts: { queue?: string; defaults?: boolean })
 add
   .command("auth")
   .description(
-    "add email/password auth: JWT access tokens, refresh token rotation, register/login/refresh/logout/me (no prerequisites — without `add worker` the verification/reset mail is sent inline)"
+    "add email/password auth: JWT access tokens, refresh rotation, device-session listing/revocation, register/login/refresh/logout/me (no prerequisites — without `add worker` the verification/reset mail is sent inline)"
   )
   .option(
     "--store <store>",

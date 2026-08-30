@@ -76,6 +76,48 @@ redis.call("DEL", KEYS[1])
 return #hashes
 `)
 
+var listRefreshSessionsScript = redis.NewScript(`
+local sessions = {}
+local hashes = redis.call("SMEMBERS", KEYS[1])
+for _, hash in ipairs(hashes) do
+  local key = KEYS[2] .. hash
+  local raw = redis.call("GET", key)
+  local ttl = redis.call("PTTL", key)
+  if not raw or ttl < 1 then
+    redis.call("SREM", KEYS[1], hash)
+  else
+    local decoded, token_data = pcall(cjson.decode, raw)
+    if decoded and type(token_data) == "table" and token_data.user_id == ARGV[1] and
+       type(token_data.session_id) == "string" and token_data.session_id ~= "" then
+      table.insert(sessions, token_data)
+    elseif not decoded or type(token_data) ~= "table" or token_data.user_id ~= ARGV[1] then
+      redis.call("SREM", KEYS[1], hash)
+    end
+  end
+end
+return cjson.encode(sessions)
+`)
+
+var revokeRefreshSessionScript = redis.NewScript(`
+local hashes = redis.call("SMEMBERS", KEYS[1])
+local revoked = 0
+for _, hash in ipairs(hashes) do
+  local key = KEYS[2] .. hash
+  local raw = redis.call("GET", key)
+  if raw then
+    local decoded, token_data = pcall(cjson.decode, raw)
+    if decoded and type(token_data) == "table" and token_data.user_id == ARGV[1] and token_data.session_id == ARGV[2] then
+      redis.call("DEL", key)
+      redis.call("SREM", KEYS[1], hash)
+      revoked = revoked + 1
+    end
+  else
+    redis.call("SREM", KEYS[1], hash)
+  end
+end
+return revoked
+`)
+
 func (s *RedisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
 	ttl := time.Until(token.ExpiresAt)
 	if token.UserID == uuid.Nil || ttl <= 0 || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
@@ -148,6 +190,39 @@ func (s *RedisTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uui
 		[]string{setKey, refreshKeyPrefix},
 		userID.String(),
 	).Result()
+	return err
+}
+
+func (s *RedisTokenStore) ListRefreshSessions(ctx context.Context, userID uuid.UUID) ([]ports.RefreshSession, error) {
+	result, err := listRefreshSessionsScript.Run(ctx, s.rdb,
+		[]string{refreshUserKeyPrefix + userID.String(), refreshKeyPrefix}, userID.String()).Result()
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := result.(string)
+	if !ok || raw == "" {
+		return []ports.RefreshSession{}, nil
+	}
+	var tokens []ports.RefreshTokenRecord
+	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
+		return nil, fmt.Errorf("decode refresh sessions: %w", err)
+	}
+	out := make([]ports.RefreshSession, 0, len(tokens))
+	for _, token := range tokens {
+		out = append(out, ports.RefreshSession{
+			ID: token.SessionID, UserAgent: token.UserAgent, CreatedAt: token.CreatedAt,
+			LastUsedAt: token.LastUsedAt, ExpiresAt: token.ExpiresAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *RedisTokenStore) RevokeRefreshSession(ctx context.Context, userID, sessionID uuid.UUID) error {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return fmt.Errorf("session identity is invalid")
+	}
+	_, err := revokeRefreshSessionScript.Run(ctx, s.rdb,
+		[]string{refreshUserKeyPrefix + userID.String(), refreshKeyPrefix}, userID.String(), sessionID.String()).Result()
 	return err
 }
 

@@ -180,6 +180,12 @@ approval before changing their contract.
   tombstone. Its inactivity expiry may move on rotation, but its persisted
   absolute expiry never moves. Never replace it with a read-then-delete
   sequence.
+- Authenticated users can inspect active refresh sessions through
+  `GET /users/me/sessions` and revoke one with
+  `DELETE /users/me/sessions/:id`. Session IDs remain stable through refresh
+  rotation; responses expose only User-Agent and lifecycle timestamps, never
+  refresh tokens or token hashes. The current access token carries the session
+  ID as `sid` so the adapter can mark the current device.
 - Password reset and email verification consume a one-time token in the same
   retry-safe transaction as the user/identity update. A failed post-commit
   session revocation must not make a successful reset impossible to retry.

@@ -16,8 +16,9 @@ const (
 // accessClaims — see internal/shared/middleware/auth.go for why this struct
 // is duplicated there instead of imported.
 type accessClaims struct {
-	Typ  string `json:"typ"`
-	Role string `json:"role,omitempty"`
+	Typ       string    `json:"typ"`
+	Role      string    `json:"role,omitempty"`
+	SessionID uuid.UUID `json:"sid,omitempty"`
 	// go-scaffold:jwt-claims
 	jwt.RegisteredClaims
 }
@@ -25,12 +26,14 @@ type accessClaims struct {
 func (s *Service) issueAccessToken(
 	userID uuid.UUID,
 	role string,
+	sessionID uuid.UUID,
 	// go-scaffold:issue-access-token-params
 ) (string, error) {
 	now := s.clock()
 	claims := accessClaims{
 		Typ:  tokenTypeAccess,
 		Role: role,
+		SessionID: sessionID,
 		// go-scaffold:jwt-claims-values
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),

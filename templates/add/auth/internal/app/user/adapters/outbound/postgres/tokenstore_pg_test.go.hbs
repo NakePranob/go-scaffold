@@ -101,3 +101,39 @@ func refreshTokenRecordForTest(userID uuid.UUID) ports.RefreshTokenRecord {
 	now := time.Now()
 	return ports.RefreshTokenRecord{UserID: userID, ExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour)}
 }
+
+func TestPgTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
+	db := tokenStoreDBForTest(t)
+	store := NewPgTokenStore(db)
+	ctx := context.Background()
+	userID := uuid.New()
+	currentID := uuid.New()
+	remoteID := uuid.New()
+	now := time.Now()
+	hashes := []string{"real-pg-session-current-" + uuid.NewString(), "real-pg-session-remote-" + uuid.NewString()}
+	for i, sessionID := range []uuid.UUID{currentID, remoteID} {
+		if err := store.SetRefreshToken(ctx, hashes[i], ports.RefreshTokenRecord{
+			UserID: userID, SessionID: sessionID, UserAgent: "test-device",
+			CreatedAt: now.Add(-time.Hour), LastUsedAt: now.Add(-time.Duration(i) * time.Minute),
+			ExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour),
+		}); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+	t.Cleanup(func() { _ = db.Exec("DELETE FROM user_svc.auth_tokens WHERE token_hash IN ?", hashes).Error })
+
+	sessions, err := store.ListRefreshSessions(ctx, userID)
+	if err != nil || len(sessions) != 2 {
+		t.Fatalf("list sessions = %+v, err=%v", sessions, err)
+	}
+	if sessions[0].ID != currentID || sessions[0].UserAgent != "test-device" {
+		t.Fatalf("sessions were not ordered/decoded correctly: %+v", sessions)
+	}
+	if err := store.RevokeRefreshSession(ctx, userID, remoteID); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+	sessions, err = store.ListRefreshSessions(ctx, userID)
+	if err != nil || len(sessions) != 1 || sessions[0].ID != currentID {
+		t.Fatalf("sessions after revoke = %+v, err=%v", sessions, err)
+	}
+}

@@ -66,16 +66,23 @@ func (s *PgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, to
 		TokenHash:         tokenHash,
 		UserID:            token.UserID,
 		Kind:              kindRefresh,
+		SessionID:         token.SessionID,
+		UserAgent:         token.UserAgent,
 		ExpiresAt:         token.ExpiresAt,
 		AbsoluteExpiresAt: &token.AbsoluteExpiresAt,
+		CreatedAt:         token.CreatedAt,
+		LastUsedAt:        token.LastUsedAt,
 	}
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("token_hash = ?", tokenHash).
 		Assign(map[string]any{
 			"user_id":             token.UserID,
 			"kind":                kindRefresh,
+			"session_id":          token.SessionID,
+			"user_agent":          token.UserAgent,
 			"expires_at":          token.ExpiresAt,
 			"absolute_expires_at": token.AbsoluteExpiresAt,
+			"last_used_at":        token.LastUsedAt,
 			"provider":            "",
 			"code_challenge":      "",
 			"nonce":               "",
@@ -96,12 +103,15 @@ func (s *PgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string
 			DELETE FROM user_svc.auth_tokens
 				 WHERE token_hash = ? AND kind = ? AND expires_at > now()
 				   AND (absolute_expires_at IS NULL OR absolute_expires_at > now())
-				 RETURNING user_id, expires_at, absolute_expires_at
+			RETURNING user_id, session_id, user_agent, created_at, last_used_at, expires_at, absolute_expires_at
 		)
-		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, expires_at, absolute_expires_at)
-		SELECT ?, user_id, ?, expires_at, COALESCE(absolute_expires_at, expires_at) FROM consumed
-		RETURNING user_id, expires_at, absolute_expires_at`,
-		tokenHash, kindRefresh, tokenHash, kindRefreshUsed).Row().Scan(&token.UserID, &token.ExpiresAt, &token.AbsoluteExpiresAt)
+		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, session_id, user_agent, expires_at, absolute_expires_at, created_at, last_used_at)
+		SELECT ?, user_id, ?, session_id, user_agent, expires_at, COALESCE(absolute_expires_at, expires_at), created_at, last_used_at FROM consumed
+		RETURNING user_id, session_id, user_agent, created_at, last_used_at, expires_at, absolute_expires_at`,
+		tokenHash, kindRefresh, tokenHash, kindRefreshUsed).Row().Scan(
+		&token.UserID, &token.SessionID, &token.UserAgent, &token.CreatedAt, &token.LastUsedAt,
+		&token.ExpiresAt, &token.AbsoluteExpiresAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ports.RefreshTokenRecord{}, false, nil
 	}
@@ -126,6 +136,33 @@ func (s *PgTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string,
 func (s *PgTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("user_id = ? AND kind = ?", userID, kindRefresh).
+		Delete(&AuthToken{}).Error
+}
+
+func (s *PgTokenStore) ListRefreshSessions(ctx context.Context, userID uuid.UUID) ([]ports.RefreshSession, error) {
+	var rows []AuthToken
+	err := tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND kind = ? AND expires_at > now() AND (absolute_expires_at IS NULL OR absolute_expires_at > now())", userID, kindRefresh).
+		Order("last_used_at DESC, created_at DESC").Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ports.RefreshSession, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ports.RefreshSession{
+			ID: row.SessionID, UserAgent: row.UserAgent, CreatedAt: row.CreatedAt,
+			LastUsedAt: row.LastUsedAt, ExpiresAt: row.ExpiresAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *PgTokenStore) RevokeRefreshSession(ctx context.Context, userID, sessionID uuid.UUID) error {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return fmt.Errorf("session identity is invalid")
+	}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND kind = ? AND session_id = ?", userID, kindRefresh, sessionID).
 		Delete(&AuthToken{}).Error
 }
 

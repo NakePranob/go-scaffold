@@ -81,3 +81,12 @@ func (h *Handler) disableMFA(c *gin.Context) {
 func currentUserID(c *gin.Context) uuid.UUID {
 	return c.MustGet(middleware.UserIDKey).(uuid.UUID)
 }
+
+func currentSessionID(c *gin.Context) uuid.UUID {
+	if value, ok := c.Get(middleware.SessionIDKey); ok {
+		if sessionID, ok := value.(uuid.UUID); ok {
+			return sessionID
+		}
+	}
+	return uuid.Nil
+}

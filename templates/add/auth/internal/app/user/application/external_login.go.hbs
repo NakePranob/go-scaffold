@@ -86,7 +86,7 @@ func (s *Service) ExchangeLogin(ctx context.Context, providerName string, in Log
 	if err != nil {
 		return nil, NewOAuthError(OAuthFailed, fmt.Errorf("resolve external identity: %w", err))
 	}
-	return s.completeLogin(ctx, u)
+	return s.completeLogin(ctx, u, in.Session)
 }
 
 func validPKCEVerifier(verifier, challenge string) bool {

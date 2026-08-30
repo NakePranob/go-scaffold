@@ -124,6 +124,8 @@ type ServicePort interface {
 	Refresh(context.Context, string) (*AuthResponse, error)
 	Logout(context.Context, string) error
 	LogoutAll(context.Context, uuid.UUID) error
+	ListSessions(context.Context, uuid.UUID, uuid.UUID) ([]Session, error)
+	RevokeSession(context.Context, uuid.UUID, uuid.UUID) error
 	ForgotPassword(context.Context, string) error
 	ResetPassword(context.Context, string, string) error
 	VerifyEmail(context.Context, string) error

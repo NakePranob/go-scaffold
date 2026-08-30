@@ -34,7 +34,9 @@ func (h *Handler) providerExchange(c *gin.Context) {
 		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthFailed, err)))
 		return
 	}
-	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), toLoginExchangeInput(in))
+	input := toLoginExchangeInput(in)
+	input.Session = sessionContext(c.GetHeader("User-Agent"))
+	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), input)
 	if err != nil {
 		c.Error(h.oauthAppError(c.Param("provider"), err))
 		return

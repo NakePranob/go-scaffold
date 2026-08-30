@@ -55,6 +55,8 @@ test("add auth writes generic provider login and exchange routes", (t) => {
 
   assert.match(handler, /GET\("\/:provider\/login", h\.providerLogin\)/);
   assert.match(handler, /POST\("\/:provider\/exchange", h\.providerExchange\)/);
+  assert.match(handler, /GET\("\/me\/sessions", h\.sessions\)/);
+  assert.match(handler, /DELETE\("\/me\/sessions\/:id", h\.revokeSession\)/);
   assert.doesNotMatch(handler, /providerCallback|StatusSeeOther|RedirectTarget/);
   assert.doesNotMatch(service, /oauth2\.Config|GoogleLoginURL|GoogleCallback|findOrCreateGoogleUser|issueOAuthState/);
   assert.match(service, /func NewService\(deps Dependencies, cfg AuthConfig\)/);
@@ -103,6 +105,9 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(browserPolicy, /requireBrowserOrigin/);
   assert.match(read(project, "docs", "auth", "provider-exchange.yaml"), /providerExchange/);
   assert.match(read(project, "docs", "auth", "provider-login.yaml"), /minLength: 43/);
+  assert.match(read(project, "docs", "auth", "users-me-sessions.yaml"), /listMySessions/);
+  assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /SessionResponse:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));
