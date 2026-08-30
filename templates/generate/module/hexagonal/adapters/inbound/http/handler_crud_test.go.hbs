@@ -1,0 +1,18 @@
+package httpadapter
+
+import (
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestHandler_RegisterCRUD(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+{{#if cqrs}}
+	h := NewHandler(nil, nil{{#if auth}}, "test-secret"{{/if}}{{#if permission}}, nil{{/if}})
+{{else}}
+	h := NewHandler(nil{{#if auth}}, "test-secret"{{/if}}{{#if permission}}, nil{{/if}})
+{{/if}}
+	h.Register(r)
+}

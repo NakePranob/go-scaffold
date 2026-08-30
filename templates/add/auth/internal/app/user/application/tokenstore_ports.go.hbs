@@ -1,0 +1,14 @@
+package application
+
+import "{{goModule}}/internal/app/user/ports"
+
+// These aliases keep the use-case files readable while the actual outbound
+// contracts remain owned by the user module's ports package.
+type RefreshTokenStore = ports.RefreshTokenStore
+type OAuthTransactionStore = ports.OAuthTransactionStore
+type RecoveryTokenStore = ports.RecoveryTokenStore
+type RefreshTokenRecord = ports.RefreshTokenRecord
+type LoginTransaction = ports.LoginTransaction
+type MFAEnrollment = ports.MFAEnrollment
+type MFAChallenge = ports.MFAChallenge
+type MFAStore = ports.MFAStore

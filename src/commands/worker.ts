@@ -4,11 +4,12 @@ import pc from "picocolors";
 import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { workerFiles } from "../templates/worker-manifest";
-import { patchCiForRedis, patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
+import { patchCiForRedis, patchCiForRiver, patchComposeForRedis, patchConfigForWorker, patchMainGoForWorker } from "../utils/platform-patcher";
 import { QueueBackend } from "../types";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
 import { upgradeMailerToQueue } from "../utils/auth-patcher";
+import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // addWorker scaffolds async job processing: the backend-neutral queue
 // contract (platform/queue), one adapter for the chosen backing store, SMTP
@@ -34,6 +35,8 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
     patchMainGoForWorker(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule);
     patchComposeForRedis(path.join(projectDir, "docker-compose.yml"));
     patchCiForRedis(path.join(projectDir, ".github", "workflows", "ci.yml"));
+  } else {
+    patchCiForRiver(path.join(projectDir, ".github", "workflows", "ci.yml"));
   }
 
   // pinned to what this scaffold was written against — see gomod-patcher
@@ -60,6 +63,8 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   // tidy`, so `go vet` can't be the gate here.
   assertStillParses(projectDir, parsedBefore, `added worker (${backend})`);
 
+  const staleDocs = refreshProjectDocs(projectDir, config, { worker: true, queue: backend });
+
   writeConfig(projectDir, { ...config, features: { ...config.features, worker: true, queue: backend } });
 
   console.log(pc.green(`\nadded internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend})`));
@@ -75,6 +80,7 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
     console.log(pc.yellow("note: a Redis enqueue cannot join a database transaction — see the warning on queue.Asynq"));
     console.log(pc.dim("\nnext: make worker (separate terminal, or `make dev` runs both), then go build ./... to confirm"));
   }
+  if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add worker")));
 }
 
 // needsSmtp and needsRedis are checked independently: `add auth` run without
@@ -123,16 +129,19 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
     return;
   }
 
-  content = content.replace(/^\.PHONY: /m, `.PHONY: dev worker${opts.river ? " river-migrate" : ""} `);
+  content = content.replace(/^\.PHONY: /m, `.PHONY: dev worker${opts.river ? " river-migrate river-migrate-test" : ""} `);
 
   // River keeps its own tables, versioned by River itself rather than by this
-  // project's migrations/ directory — run its CLI once per database. Pinned
-  // by nothing on purpose: it is a one-shot setup command, not a build input.
+  // project's migrations/ directory — run its pinned CLI once per database.
   const riverTarget = opts.river
     ? "\n# create River's job tables (run once per database, and after upgrading River)\n" +
       "river-migrate:\n" +
       "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \\\n" +
-      '\tgo run github.com/riverqueue/river/cmd/river@latest migrate-up --line main --database-url "$$DB_DSN"\n'
+      '\tgo run github.com/riverqueue/river/cmd/river@v0.43.0 migrate-up --line main --database-url "$$DB_DSN"\n' +
+      "\n# apply River's own schema to TEST_DB_DSN for the real worker test\n" +
+      "river-migrate-test:\n" +
+      "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \\\n" +
+      '\tgo run github.com/riverqueue/river/cmd/river@v0.43.0 migrate-up --line main --database-url "$$TEST_DB_DSN"\n'
     : "";
 
   // Both load config exactly the way Makefile.hbs says every target does:

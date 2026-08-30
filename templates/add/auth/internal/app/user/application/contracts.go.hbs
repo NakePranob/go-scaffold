@@ -1,0 +1,52 @@
+package application
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/user/ports"
+)
+
+// Dependencies is the explicit application composition contract for auth.
+// Each port represents one lifecycle or capability so an adapter does not
+// have to implement unrelated token operations.
+type Dependencies struct {
+	Repository        ports.UserRepository
+	Passwords         ports.PasswordHasher
+	RefreshTokens     ports.RefreshTokenStore
+	OAuthTransactions ports.OAuthTransactionStore
+	RecoveryTokens    ports.RecoveryTokenStore
+	MFA               ports.MFAStore
+	Mailer            ports.AuthMailer
+	Providers         ProviderRegistry
+	Roles             ports.RoleChecker
+	Clock             func() time.Time
+}
+
+type MFASettings struct {
+	Enabled           bool
+	Issuer            string
+	EncryptionKey     string
+	ChallengeTTL      time.Duration
+	TOTPWindow        int
+	RecoveryCodeCount int
+}
+
+type AuthConfig struct {
+	JWTSecret        string
+	JWTAccessTTL     time.Duration
+	JWTRefreshTTL    time.Duration
+	JWTRefreshMaxTTL time.Duration
+	OAuthStateTTL    time.Duration
+	PasswordResetTTL time.Duration
+	PasswordResetURL string
+	EmailVerifyTTL   time.Duration
+	EmailVerifyURL   string
+	MFA              MFASettings
+}
+
+// These aliases keep use-case code concise while the contracts remain owned
+// by the module's ports package. Adapters import ports directly.
+type UserRepository = ports.UserRepository
+type AuthMailer = ports.AuthMailer
+type RoleChecker = ports.RoleChecker
+type PasswordHasher = ports.PasswordHasher

@@ -28,12 +28,14 @@ test("generated AI guidance documents the current architecture and safety contra
     const project = path.join(scratch, "sample");
     const agents = read(project, "AGENTS.md");
     const skill = read(project, ".claude/skills/go-scaffold/SKILL.md");
+    const architecture = read(project, "docs/architect/architecture.md");
 
     assert.match(agents, /modular\s+monolith/);
     assert.match(agents, /Hexagonal Architecture/);
     assert.match(agents, /domain-oriented design/);
     assert.match(agents, /optional CQRS/);
     assert.match(agents, /feature-local [^\n]*composition\.go/);
+    assert.match(agents, /internal\/composition/);
     assert.match(agents, /APP_ENV/);
     assert.match(agents, /AUTO_MIGRATE/);
     assert.match(agents, /Production must never bootstrap or/);
@@ -52,10 +54,12 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.doesNotMatch(agents, /finds the record by id, TODO before saving/);
 
     assert.match(skill, /feature-local composition/);
+    assert.match(skill, /internal\/composition/);
     assert.match(skill, /501 Not Implemented; no repository read\/write/);
     assert.match(skill, /Lean \(`minimal \+ service`\), CRUD \(`crud \+ service`\), CQRS/);
     assert.match(skill, /`go-scaffold generate module <name>` asks for the module profile/);
-    assert.match(skill, /config show` and `config validate` are intentionally\s+read-only/);
+    assert.match(architecture, /internal\/composition/);
+  assert.match(skill, /`check`, `config show`, and `config validate` are\s+intentionally\s+read-only/);
     assert.match(skill, /APP_ENV/);
     assert.match(skill, /CQRS optional/);
     assert.match(skill, /go test -race \.\/\.\.\./);

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"{{goModule}}/internal/app/user"
+	userpassword "{{goModule}}/internal/app/user/adapters/outbound/password"
 	"{{goModule}}/internal/platform/database"
 	"{{goModule}}/internal/shared/config"
 	// go-scaffold:seed-imports
@@ -32,6 +33,7 @@ func main() {
 	// go-scaffold:seed-services
 	svc := user.NewService(user.Dependencies{
 		Repository: user.NewRepository(db),
+		Passwords:  userpassword.NewBCryptHasher(),
 		// go-scaffold:seed-user-service-args
 	}, user.AuthConfig{
 		JWTSecret:        cfg.JWTSecret,

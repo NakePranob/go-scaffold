@@ -77,6 +77,7 @@ export async function generateModule(
     modulePath,
     auth: opts.auth,
     permission: opts.permission,
+    full: opts.full,
     cqrs: opts.cqrs,
     moduleSurface: opts.full ? "crud" : "minimal",
     applicationStyle: opts.cqrs ? "cqrs" : "service",
@@ -174,6 +175,8 @@ export async function generateModule(
       [modulePath]: {
         surface: opts.full ? "crud" : "minimal",
         applicationStyle: opts.cqrs ? "cqrs" : "service",
+        boundary: "hexagonal",
+        packageLayout: "split",
       },
     },
   });
@@ -181,7 +184,7 @@ export async function generateModule(
   const routePath = config.apiPrefix ? `/${config.apiPrefix}/${naming.plural}` : `/${naming.plural}`;
   console.log(pc.green(`\ngenerated internal/app/${modulePath}/`));
   if (opts.cqrs) {
-    console.log("application boundary: CQRS command/query handlers in commands.go and queries.go");
+    console.log("application boundary: CQRS command/query handlers in application/commands.go and application/queries.go");
   }
   console.log(`recorded module defaults: ${opts.full ? "crud" : "minimal"} + ${opts.cqrs ? "cqrs" : "service"}`);
   if (opts.full) {
@@ -212,7 +215,7 @@ export async function generateModule(
   if (docsMessage) console.log(docsMessage);
   console.log(
     pc.dim(
-      `\nnext: add real fields to model.go/dto.go, run \`go build ./...\`, then apply the migration ` +
+      `\nnext: add real fields to domain/entity.go, application/dto.go, adapters/inbound/http/dto.go, and the outbound persistence model, then run \`go build ./...\` and apply the migration ` +
         `(use the development bootstrap locally, or \`migrate -path migrations -database "$DB_DSN" up\` before production)`
     )
   );

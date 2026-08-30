@@ -107,6 +107,38 @@ export function patchCiForRedis(ciPath: string): void {
   fs.writeFileSync(ciPath, patched);
 }
 
+// patchCiForRiver makes the generated worker round-trip test runnable in CI.
+// River's schema is versioned by River itself, separately from this project's
+// migrations/, so applying only the application migrations leaves the test
+// unable to exercise the worker.
+export function patchCiForRiver(ciPath: string): void {
+  if (!fs.existsSync(ciPath)) return;
+  const content = fs.readFileSync(ciPath, "utf8");
+  if (content.includes("river-migrate-test") || content.includes("Apply River migrations")) return;
+
+  const testStep = content.split("\n").find((line) => line.trimStart().startsWith("- name: Test (required PostgreSQL integration tests cannot skip)"));
+  const dsn = content.match(/^\s+DB_DSN:\s+(.+)$/m)?.[1]?.trim();
+  if (!testStep || !dsn) {
+    console.error(
+      pc.yellow(
+        `skipped adding River migrations to ${ciPath} — the generated migration DSN or PostgreSQL test step is missing.\n` +
+          `Add a River migration step before the required PostgreSQL test step by hand.`
+      )
+    );
+    return;
+  }
+
+  const step = [
+    "      - name: Apply River migrations to the test database",
+    "        env:",
+    `          TEST_DB_DSN: ${dsn}`,
+    '        run: go run github.com/riverqueue/river/cmd/river@v0.43.0 migrate-up --line main --database-url "$TEST_DB_DSN"',
+    "",
+  ].join("\n");
+
+  fs.writeFileSync(ciPath, content.replace(testStep, `${step}${testStep}`));
+}
+
 // patchConfigForRedis adds RedisURL to Config and its env() load to Load().
 // Split out from the worker patch because Redis is no longer the worker's
 // concern by default — `add auth` needs it for the refresh-token store even

@@ -1,0 +1,126 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"testing"
+
+	"{{goModule}}/internal/app/role/domain"
+)
+
+// fakeRepo = mock of the repository interface, so the service can be tested
+// without a DB — countWithPermission stands in for "how many roles OTHER
+// than the one being edited currently grant PermRoleManage", exactly what
+// CountRolesWithPermission's excludeCode param means.
+type fakeRepo struct {
+	role                *domain.Role
+	findErr             error
+	allPermissionCodes  []string
+	countWithPermission int64
+	setPermissionsErr   error
+	deleteErr           error
+}
+
+func (f *fakeRepo) PermissionCodes(context.Context, string) ([]string, error) { return nil, nil }
+func (f *fakeRepo) FindAll(context.Context, int, int) ([]domain.Role, error)  { return nil, nil }
+func (f *fakeRepo) FindByCode(context.Context, string) (*domain.Role, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	return f.role, nil
+}
+func (f *fakeRepo) Create(context.Context, *domain.Role) error { return nil }
+func (f *fakeRepo) SetPermissions(context.Context, string, []string) error {
+	return f.setPermissionsErr
+}
+func (f *fakeRepo) Delete(context.Context, string) error { return f.deleteErr }
+func (f *fakeRepo) FindAllPermissions(context.Context, int, int) ([]domain.Permission, error) {
+	return nil, nil
+}
+func (f *fakeRepo) AllPermissionCodes(context.Context) ([]string, error) {
+	return f.allPermissionCodes, nil
+}
+func (f *fakeRepo) CountRolesWithPermission(context.Context, string, string) (int64, error) {
+	return f.countWithPermission, nil
+}
+
+func status(t *testing.T, err error) int {
+	t.Helper()
+	if errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrSystemRole) || errors.Is(err, domain.ErrLastRoleManager) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, domain.ErrInvalidCode) || errors.Is(err, domain.ErrUnknownPermission) {
+		return http.StatusUnprocessableEntity
+	}
+	if errors.Is(err, domain.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	t.Fatalf("unexpected role error %T: %v", err, err)
+	return 0
+}
+
+func TestService_SetPermissions_LastRoleManagerLockout(t *testing.T) {
+	repo := &fakeRepo{
+		role:                &domain.Role{Code: "ops", Name: "Ops"},
+		allPermissionCodes:  []string{PermRoleManage, "user:read"},
+		countWithPermission: 0, // no OTHER role grants PermRoleManage
+	}
+	svc := NewService(repo)
+	// dropping PermRoleManage from the only role that has it would lock every admin out
+	_, err := svc.SetPermissions(context.Background(), "ops", []string{"user:read"})
+	if got := status(t, err); got != http.StatusConflict {
+		t.Fatalf("want 409 last-role-manager lockout, got %d", got)
+	}
+}
+
+func TestService_SetPermissions_AllowedWhenAnotherRoleStillManages(t *testing.T) {
+	repo := &fakeRepo{
+		role:                &domain.Role{Code: "ops", Name: "Ops"},
+		allPermissionCodes:  []string{PermRoleManage, "user:read"},
+		countWithPermission: 1, // another role still grants PermRoleManage
+	}
+	svc := NewService(repo)
+	if _, err := svc.SetPermissions(context.Background(), "ops", []string{"user:read"}); err != nil {
+		t.Fatalf("expected success when another role still manages roles, got %v", err)
+	}
+}
+
+func TestService_SetPermissions_KeepingRoleManageNeverLocksOut(t *testing.T) {
+	repo := &fakeRepo{
+		role:                &domain.Role{Code: "ops", Name: "Ops"},
+		allPermissionCodes:  []string{PermRoleManage},
+		countWithPermission: 0,
+	}
+	svc := NewService(repo)
+	// the guard only fires when PermRoleManage is being dropped — keeping it never trips it
+	if _, err := svc.SetPermissions(context.Background(), "ops", []string{PermRoleManage}); err != nil {
+		t.Fatalf("keeping %s in the new set should never trigger the lockout guard, got %v", PermRoleManage, err)
+	}
+}
+
+func TestService_Delete_LastRoleManagerLockout(t *testing.T) {
+	repo := &fakeRepo{role: &domain.Role{Code: "ops"}, countWithPermission: 0}
+	svc := NewService(repo)
+	err := svc.Delete(context.Background(), "ops")
+	if got := status(t, err); got != http.StatusConflict {
+		t.Fatalf("want 409 last-role-manager lockout on delete, got %d", got)
+	}
+}
+
+func TestService_Delete_AllowedWhenAnotherRoleStillManages(t *testing.T) {
+	repo := &fakeRepo{role: &domain.Role{Code: "ops"}, countWithPermission: 1}
+	svc := NewService(repo)
+	if err := svc.Delete(context.Background(), "ops"); err != nil {
+		t.Fatalf("expected delete to succeed when another role still manages roles, got %v", err)
+	}
+}
+
+func TestService_Delete_SystemRoleRejected(t *testing.T) {
+	repo := &fakeRepo{role: &domain.Role{Code: "admin", IsSystem: true}}
+	svc := NewService(repo)
+	err := svc.Delete(context.Background(), "admin")
+	if got := status(t, err); got != http.StatusConflict {
+		t.Fatalf("want 409 for a system role, got %d", got)
+	}
+}

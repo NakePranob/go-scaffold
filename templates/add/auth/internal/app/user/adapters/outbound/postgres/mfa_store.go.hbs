@@ -1,0 +1,129 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"{{goModule}}/internal/app/user/ports"
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// PostgresMFAStore is intentionally independent of the selected refresh-token
+// adapter. MFA challenges and recovery codes need durable, atomic semantics in
+// every deployment, including Redis-backed auth behind multiple replicas.
+type PostgresMFAStore struct {
+	db *gorm.DB
+}
+
+var _ ports.MFAStore = (*PostgresMFAStore)(nil)
+
+func NewPostgresMFAStore(db *gorm.DB) *PostgresMFAStore { return &PostgresMFAStore{db: db} }
+
+func (s *PostgresMFAStore) GetEnrollment(ctx context.Context, userID uuid.UUID) (ports.MFAEnrollment, bool, error) {
+	var row MFAEnrollment
+	err := tx.From(ctx, s.db).WithContext(ctx).First(&row, "user_id = ?", userID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ports.MFAEnrollment{}, false, nil
+	}
+	if err != nil {
+		return ports.MFAEnrollment{}, false, err
+	}
+	return ports.MFAEnrollment{EncryptedSecret: row.EncryptedSecret, Enabled: row.Enabled}, true, nil
+}
+
+func (s *PostgresMFAStore) PutPendingEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string) error {
+	if userID == uuid.Nil || encryptedSecret == "" {
+		return errors.New("MFA enrollment is incomplete")
+	}
+	row := MFAEnrollment{UserID: userID, EncryptedSecret: encryptedSecret, Enabled: false}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND enabled = ?", userID, false).
+		Assign(map[string]any{"encrypted_secret": encryptedSecret, "enabled": false, "updated_at": time.Now()}).
+		FirstOrCreate(&row).Error
+}
+
+func (s *PostgresMFAStore) ConfirmEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string, recoveryCodeHashes []string) error {
+	if userID == uuid.Nil || encryptedSecret == "" || len(recoveryCodeHashes) == 0 {
+		return errors.New("MFA enrollment confirmation is incomplete")
+	}
+	return tx.From(ctx, s.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var enrollment MFAEnrollment
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&enrollment).Error; err != nil {
+			return err
+		}
+		if enrollment.Enabled {
+			return errors.New("MFA enrollment is already enabled")
+		}
+		if err := db.Model(&enrollment).Updates(map[string]any{
+			"encrypted_secret": encryptedSecret,
+			"enabled":          true,
+			"updated_at":       time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+		if err := db.Where("user_id = ?", userID).Delete(&MFARecoveryCode{}).Error; err != nil {
+			return err
+		}
+		rows := make([]MFARecoveryCode, len(recoveryCodeHashes))
+		for i, hash := range recoveryCodeHashes {
+			rows[i] = MFARecoveryCode{UserID: userID, CodeHash: hash}
+		}
+		return db.Create(&rows).Error
+	})
+}
+
+func (s *PostgresMFAStore) Disable(ctx context.Context, userID uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		if err := db.Where("user_id = ?", userID).Delete(&MFARecoveryCode{}).Error; err != nil {
+			return err
+		}
+		return db.Where("user_id = ?", userID).Delete(&MFAEnrollment{}).Error
+	})
+}
+
+func (s *PostgresMFAStore) CreateChallenge(ctx context.Context, hash string, challenge ports.MFAChallenge) error {
+	if hash == "" || challenge.UserID == uuid.Nil || !challenge.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("MFA challenge is invalid")
+	}
+	row := MFAChallenge{ChallengeHash: hash, UserID: challenge.UserID, ExpiresAt: challenge.ExpiresAt}
+	return tx.From(ctx, s.db).WithContext(ctx).Create(&row).Error
+}
+
+func (s *PostgresMFAStore) ConsumeChallenge(ctx context.Context, hash string) (ports.MFAChallenge, bool, error) {
+	var challenge ports.MFAChallenge
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`DELETE FROM user_svc.mfa_challenges
+		 WHERE challenge_hash = ? AND expires_at > now()
+		 RETURNING user_id, expires_at`, hash,
+	).Row().Scan(&challenge.UserID, &challenge.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.MFAChallenge{}, false, nil
+	}
+	if err != nil {
+		return ports.MFAChallenge{}, false, err
+	}
+	return challenge, true, nil
+}
+
+func (s *PostgresMFAStore) ConsumeRecoveryCode(ctx context.Context, userID uuid.UUID, hash string) (bool, error) {
+	var consumed string
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`DELETE FROM user_svc.mfa_recovery_codes
+		 WHERE user_id = ? AND code_hash = ?
+		 RETURNING code_hash`, userID, hash,
+	).Row().Scan(&consumed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return consumed != "", nil
+}

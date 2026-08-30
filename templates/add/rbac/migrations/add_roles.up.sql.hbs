@@ -33,9 +33,20 @@ INSERT INTO role_svc.permissions (code, description) VALUES
 INSERT INTO role_svc.role_permissions (role_code, permission_code)
 SELECT 'admin', code FROM role_svc.permissions;
 
--- cross-schema FK: role_svc's migration is the one place allowed to alter
--- user_svc's table, because this feature's whole point is "give users a
--- role" — see docs/architect/patterns.md's FK rules for why a plain FK, not
--- an app-level existence check, is the right way to enforce this.
-ALTER TABLE user_svc.users
-    ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff' REFERENCES role_svc.roles(code);
+-- Auth owns the stable users.role column. RBAC owns the role catalog and adds
+-- only the cross-schema constraint after that catalog exists. This keeps each
+-- migration aligned with its module instead of making RBAC recreate auth's
+-- persistence shape.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'users_role_fkey'
+          AND conrelid = 'user_svc.users'::regclass
+    ) THEN
+        ALTER TABLE user_svc.users
+            ADD CONSTRAINT users_role_fkey
+            FOREIGN KEY (role) REFERENCES role_svc.roles(code);
+    END IF;
+END $$;

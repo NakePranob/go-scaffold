@@ -1,0 +1,70 @@
+package httpadapter
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+
+	userapp "{{goModule}}/internal/app/user/application"
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/gin-gonic/gin"
+)
+
+func (h *Handler) providerLogin(c *gin.Context) {
+	start, err := h.svc.BeginLogin(c.Request.Context(), c.Param("provider"), toLoginStartInput(loginStartInput{
+		State:               c.Query("state"),
+		CodeChallenge:       c.Query("code_challenge"),
+		CodeChallengeMethod: c.Query("code_challenge_method"),
+	}))
+	if err != nil {
+		c.Error(h.oauthAppError(c.Param("provider"), err))
+		return
+	}
+	c.Redirect(http.StatusFound, start.URL)
+}
+
+func (h *Handler) providerExchange(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in loginExchangeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthFailed, err)))
+		return
+	}
+	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), toLoginExchangeInput(in))
+	if err != nil {
+		c.Error(h.oauthAppError(c.Param("provider"), err))
+		return
+	}
+	h.writeAuthResult(c, http.StatusOK, auth)
+}
+
+func (h *Handler) oauthAppError(provider string, err error) *apperror.AppError {
+	code := userapp.OAuthFailed
+	status := http.StatusBadRequest
+	message := "external login failed"
+	var oauthErr *userapp.OAuthError
+	if errors.As(err, &oauthErr) {
+		switch oauthErr.Code {
+		case userapp.OAuthDenied:
+			code = userapp.OAuthDenied
+			message = "external login was denied"
+		case userapp.OAuthStateInvalid:
+			code = userapp.OAuthStateInvalid
+			message = "oauth state or PKCE verifier is invalid"
+		case userapp.OAuthProviderUnavailable:
+			code = userapp.OAuthProviderUnavailable
+			status = http.StatusServiceUnavailable
+			message = "external login provider is unavailable"
+		case userapp.OAuthFailed:
+			code = userapp.OAuthFailed
+		default:
+			code = userapp.OAuthFailed
+		}
+	}
+	slog.Warn("oauth request failed", "provider", provider, "code", code, "error", err)
+	return apperror.New(status, string(code), message)
+}

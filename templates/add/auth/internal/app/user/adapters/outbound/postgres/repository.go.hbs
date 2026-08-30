@@ -1,0 +1,211 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
+	"{{goModule}}/internal/shared/dberr"
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+type Repository struct {
+	db *gorm.DB
+}
+
+var _ ports.UserRepository = (*Repository)(nil)
+
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{db: db}
+}
+
+func (r *Repository) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
+	var row User
+	if err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "email = ?", email).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	return toDomainUser(&row), nil
+}
+
+func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
+	var row User
+	if err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	return toDomainUser(&row), nil
+}
+
+func (r *Repository) UpdateUser(ctx context.Context, user *domain.User) error {
+	row := fromDomainUser(user)
+	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Save(&row).Error)
+}
+
+func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.User, error) {
+	var rows []User
+	err := tx.From(ctx, r.db).WithContext(ctx).
+		Order("created_at desc").Limit(limit).Offset(offset).Find(&rows).Error
+	if err != nil {
+		return nil, persistenceError(err)
+	}
+	items := make([]domain.User, len(rows))
+	for i := range rows {
+		items[i] = *toDomainUser(&rows[i])
+	}
+	return items, nil
+}
+
+func (r *Repository) FindIdentity(ctx context.Context, userID uuid.UUID, provider domain.Provider) (*domain.Identity, error) {
+	var row Identity
+	if err := tx.From(ctx, r.db).WithContext(ctx).
+		First(&row, "user_id = ? AND provider = ?", userID, string(provider)).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	return toDomainIdentity(&row), nil
+}
+
+func (r *Repository) FindIdentityByProviderUID(ctx context.Context, provider domain.Provider, providerUID string) (*domain.Identity, error) {
+	var row Identity
+	if err := tx.From(ctx, r.db).WithContext(ctx).
+		First(&row, "provider = ? AND provider_uid = ?", string(provider), providerUID).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	return toDomainIdentity(&row), nil
+}
+
+// CreateIdentity links a new login method onto an existing user.
+func (r *Repository) CreateIdentity(ctx context.Context, identity *domain.Identity) error {
+	row := fromDomainIdentity(identity)
+	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Create(&row).Error)
+}
+
+func (r *Repository) UpdateIdentity(ctx context.Context, identity *domain.Identity) error {
+	row := fromDomainIdentity(identity)
+	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Save(&row).Error)
+}
+
+// CreateUserWithIdentity inserts the profile and its first login method in
+// one transaction. A user without an identity cannot authenticate.
+func (r *Repository) CreateUserWithIdentity(ctx context.Context, user *domain.User, identity *domain.Identity) error {
+	userRow := fromDomainUser(user)
+	identityRow := fromDomainIdentity(identity)
+	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		if err := db.Create(&userRow).Error; err != nil {
+			return persistenceError(err)
+		}
+		identityRow.UserID = userRow.ID
+		return persistenceError(db.Create(&identityRow).Error)
+	}))
+}
+
+func (r *Repository) LoginLockedUntil(ctx context.Context, key string) (time.Time, error) {
+	var row LoginThrottle
+	err := tx.From(ctx, r.db).WithContext(ctx).Where("email_hash = ?", key).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return time.Time{}, nil
+	}
+	if err != nil || row.LockedUntil == nil {
+		return time.Time{}, persistenceError(err)
+	}
+	return *row.LockedUntil, nil
+}
+
+// RecordLoginFailure uses one SQL statement so concurrent attempts cannot
+// both read and write the same backoff value.
+func (r *Repository) RecordLoginFailure(ctx context.Context, key string, freeAttempts int, maxLock time.Duration) error {
+	err := tx.From(ctx, r.db).WithContext(ctx).Exec(`
+		INSERT INTO user_svc.login_throttle AS t (email_hash, failures, locked_until, updated_at)
+		VALUES (?, 1, NULL, now())
+		ON CONFLICT (email_hash) DO UPDATE SET
+			failures = t.failures + 1,
+			locked_until = CASE
+				WHEN t.failures + 1 <= ? THEN NULL
+				ELSE now() + make_interval(secs => least(power(2, t.failures + 1 - ?), ?))
+			END,
+			updated_at = now()`,
+		key, freeAttempts, freeAttempts, maxLock.Seconds()).Error
+	return persistenceError(err)
+}
+
+func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
+	err := tx.From(ctx, r.db).WithContext(ctx).
+		Where("email_hash = ?", key).
+		Delete(&LoginThrottle{}).Error
+	return persistenceError(err)
+}
+
+func persistenceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return domain.ErrNotFound
+	}
+	if dberr.IsDuplicate(err) {
+		return domain.ErrConflict
+	}
+	return err
+}
+
+func toDomainUser(row *User) *domain.User {
+	if row == nil {
+		return nil
+	}
+	return &domain.User{
+		ID:            row.ID,
+		Email:         row.Email,
+		Name:          row.Name,
+		AvatarURL:     row.AvatarURL,
+		EmailVerified: row.EmailVerified,
+		Role:          row.Role,
+		CreatedAt:     row.CreatedAt,
+		UpdatedAt:     row.UpdatedAt,
+	}
+}
+
+func fromDomainUser(user *domain.User) User {
+	return User{
+		ID:            user.ID,
+		Email:         user.Email,
+		Name:          user.Name,
+		AvatarURL:     user.AvatarURL,
+		EmailVerified: user.EmailVerified,
+		Role:          user.Role,
+		CreatedAt:     user.CreatedAt,
+		UpdatedAt:     user.UpdatedAt,
+	}
+}
+
+func toDomainIdentity(row *Identity) *domain.Identity {
+	if row == nil {
+		return nil
+	}
+	return &domain.Identity{
+		ID:           row.ID,
+		UserID:       row.UserID,
+		Provider:     domain.Provider(row.Provider),
+		PasswordHash: row.PasswordHash,
+		ProviderUID:  row.ProviderUID,
+		CreatedAt:    row.CreatedAt,
+		UpdatedAt:    row.UpdatedAt,
+	}
+}
+
+func fromDomainIdentity(identity *domain.Identity) Identity {
+	return Identity{
+		ID:           identity.ID,
+		UserID:       identity.UserID,
+		Provider:     string(identity.Provider),
+		PasswordHash: identity.PasswordHash,
+		ProviderUID:  identity.ProviderUID,
+		CreatedAt:    identity.CreatedAt,
+		UpdatedAt:    identity.UpdatedAt,
+	}
+}
+
+// go-scaffold:repository-methods
+// go-scaffold:user-repository-methods

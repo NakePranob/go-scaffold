@@ -15,8 +15,8 @@ linters:
     depguard:
       # What keeps this a modular monolith rather than a pile of folders: a
       # domain may not reach into another domain's package. It declares a
-      # narrow interface for what it needs and cmd/api/wiring.go supplies the
-      # concrete service — see docs/architect/patterns.md "Calling Another
+      # narrow interface for what it needs and internal/composition plus
+      # cmd/api/wiring.go supply the concrete service — see docs/architect/patterns.md "Calling Another
       # Domain's Logic". Without this, the first shortcut someone takes stays
       # invisible until the coupling is everywhere.
       #

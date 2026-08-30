@@ -1,0 +1,35 @@
+package application
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+
+	"github.com/google/uuid"
+)
+
+// CreateInput and UpdateInput are transport-neutral application inputs. JSON
+// names and binding/validation tags stay in adapters/inbound/http/dto.go.
+type CreateInput struct {
+	// TODO: add command fields and validate them in the application/domain.
+}
+
+type UpdateInput struct {
+	// Version is the optimistic-concurrency version the client last observed.
+	Version int
+	// TODO: add update fields.
+}
+
+// Response is a transport-neutral application output. The inbound adapter
+// maps it to its protocol response before serialization.
+type Response struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	Version   int
+}
+
+func ToResponse(m *domain.{{pascalName}}) Response {
+	return Response{ID: m.ID, CreatedAt: m.CreatedAt, Version: m.Version}
+}
+
+// go-scaffold:dto

@@ -47,9 +47,11 @@ test("create records module defaults and --defaults resolves them for new module
     const project = path.join(scratch, "sample");
     const initial = readConfig(project);
 
-    assert.equal(initial.schemaVersion, 1);
+    assert.equal(initial.schemaVersion, 2);
     assert.deepEqual(initial.architecture, {
       style: "modular-monolith",
+      boundary: "hexagonal",
+      packageLayout: "split",
       defaultModuleSurface: "crud",
       defaultApplicationStyle: "cqrs",
     });
@@ -59,9 +61,14 @@ test("create records module defaults and --defaults resolves them for new module
     const config = readConfig(project);
 
     assert.match(output, /recorded module defaults: crud \+ cqrs/);
-    assert.match(readFileSync(path.join(project, "internal/app/order/handler.go"), "utf8"), /g\.POST\(/);
-    assert.match(readFileSync(path.join(project, "internal/app/order/commands.go"), "utf8"), /CommandHandler/);
-    assert.deepEqual(config.modules.order, { surface: "crud", applicationStyle: "cqrs" });
+    assert.match(readFileSync(path.join(project, "internal/app/order/adapters/inbound/http/handler.go"), "utf8"), /g\.POST\(/);
+    assert.match(readFileSync(path.join(project, "internal/app/order/application/commands.go"), "utf8"), /CommandHandler/);
+    assert.deepEqual(config.modules.order, {
+      surface: "crud",
+      applicationStyle: "cqrs",
+      boundary: "hexagonal",
+      packageLayout: "split",
+    });
 
     runCLI(project, "config", "validate");
     assert.match(runCLI(project, "config", "show"), /"defaultApplicationStyle": "cqrs"/);
@@ -85,10 +92,12 @@ test("legacy config without architecture metadata resolves safe defaults", () =>
     delete config.modules;
     writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    assert.match(runCLI(project, "config", "validate"), /valid go-scaffold\.config\.json \(schema 1\)/);
+    assert.match(runCLI(project, "config", "validate"), /valid go-scaffold\.config\.json \(schema 2\)/);
     const resolved = JSON.parse(runCLI(project, "config", "show"));
     assert.deepEqual(resolved.architecture, {
       style: "modular-monolith",
+      boundary: "hexagonal",
+      packageLayout: "split",
       defaultModuleSurface: "minimal",
       defaultApplicationStyle: "service",
     });
@@ -124,14 +133,21 @@ test("named module profiles resolve to supported architecture combinations", () 
     const project = path.join(scratch, "sample");
     assert.deepEqual(readConfig(project).architecture, {
       style: "modular-monolith",
+      boundary: "hexagonal",
+      packageLayout: "split",
       defaultModuleSurface: "crud",
       defaultApplicationStyle: "service",
     });
 
     const output = runCLI(project, "generate", "module", "tickets", "--profile", "cqrs", "--defaults");
     assert.match(output, /recorded module defaults: minimal \+ cqrs/);
-    assert.match(readFileSync(path.join(project, "internal/app/ticket/commands.go"), "utf8"), /CommandHandler/);
-    assert.deepEqual(readConfig(project).modules.ticket, { surface: "minimal", applicationStyle: "cqrs" });
+    assert.match(readFileSync(path.join(project, "internal/app/ticket/application/commands.go"), "utf8"), /CommandHandler/);
+    assert.deepEqual(readConfig(project).modules.ticket, {
+      surface: "minimal",
+      applicationStyle: "cqrs",
+      boundary: "hexagonal",
+      packageLayout: "split",
+    });
 
     assert.match(
       fails(project, "generate", "module", "orders", "--profile", "lean", "--full", "--defaults"),

@@ -1,0 +1,19 @@
+package httpadapter
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"{{goModule}}/internal/shared/middleware"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestHandler_Register(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	authz := middleware.NewAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		return map[string]struct{}{}, nil
+	}, time.Minute)
+	NewHandler(nil, "", authz).Register(gin.New())
+}

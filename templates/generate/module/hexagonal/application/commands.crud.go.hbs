@@ -1,0 +1,54 @@
+package application
+
+import (
+	"context"
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+	"{{goModule}}/internal/shared/id"
+
+	"github.com/google/uuid"
+)
+
+type CommandPort interface {
+	Create(context.Context, CreateInput) (*domain.{{pascalName}}, error)
+	Update(context.Context, uuid.UUID, UpdateInput) (*domain.{{pascalName}}, error)
+	Delete(context.Context, uuid.UUID) error
+	// go-scaffold:command-interface
+}
+
+type CommandHandler struct {
+	repo ports.CommandRepository
+}
+
+func NewCommandHandler(repo ports.CommandRepository) *CommandHandler {
+	return &CommandHandler{repo: repo}
+}
+
+func (h *CommandHandler) Create(ctx context.Context, in CreateInput) (*domain.{{pascalName}}, error) {
+	// TODO: map in to real domain fields and enforce invariants.
+	_ = in
+	m := &domain.{{pascalName}}{ID: id.New(), Version: 1}
+	if err := h.repo.Create(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (h *CommandHandler) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*domain.{{pascalName}}, error) {
+	m, err := h.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: map in to real domain fields before saving.
+	m.Version = in.Version
+	if err := h.repo.Update(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (h *CommandHandler) Delete(ctx context.Context, id uuid.UUID) error {
+	return h.repo.Delete(ctx, id)
+}
+
+// go-scaffold:command-methods

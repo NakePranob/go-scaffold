@@ -1,0 +1,35 @@
+package password
+
+import (
+	userports "{{goModule}}/internal/app/user/ports"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+// BCryptHasher is the production password adapter. Keeping bcrypt here means
+// register, login, reset, and seed all share one algorithm boundary.
+type BCryptHasher struct {
+	cost int
+}
+
+func NewBCryptHasher() *BCryptHasher {
+	return &BCryptHasher{cost: bcrypt.DefaultCost}
+}
+
+func (h *BCryptHasher) Hash(password string) (string, error) {
+	cost := h.cost
+	if cost <= 0 {
+		cost = bcrypt.DefaultCost
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), cost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func (*BCryptHasher) Compare(hash, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+}
+
+var _ userports.PasswordHasher = (*BCryptHasher)(nil)

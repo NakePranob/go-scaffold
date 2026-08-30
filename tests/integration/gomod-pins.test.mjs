@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +58,16 @@ test("add worker --queue postgres pins River", (t) => {
   cli(app, "add", "worker", "--queue", "postgres", "--yes");
   assertPinned(app, PINS.river);
   assert.ok(!pinnedModules(app).has("github.com/hibiken/asynq"), "the Redis backend's deps must not come along");
+  assert.ok(existsSync(path.join(app, "internal/platform/queue/river_test.go")), "River worker must include a real round-trip integration test");
+  const makefile = readFileSync(path.join(app, "Makefile"), "utf8");
+  assert.match(makefile, /river-migrate-test:/, "River worker must expose a test-database migration target");
+  assert.match(makefile, /river@v0\.43\.0 migrate-up/, "River migration commands must match the pinned module version");
+  const ci = readFileSync(path.join(app, ".github/workflows/ci.yml"), "utf8");
+  assert.match(ci, /Apply River migrations to the test database/, "River CI must prepare River's own schema");
+  assert.match(ci, /river@v0\.43\.0 migrate-up/, "River CI must use the pinned migration version");
+  execFileSync("go", ["mod", "tidy"], { cwd: app, stdio: "ignore" });
+  execFileSync("go", ["test", "./..."], { cwd: app, stdio: "ignore" });
+  execFileSync("go", ["vet", "./..."], { cwd: app, stdio: "ignore" });
 });
 
 test("add worker --queue redis pins Asynq and go-redis", (t) => {

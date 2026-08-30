@@ -9,7 +9,6 @@ import {
   toDbName,
 } from "../utils/naming";
 import { existingModulePackages, resolveProjectModuleNaming } from "../utils/module-location";
-import { MethodPatchPaths, assertMethodAbsent, markersPresentForPaths, patchMethod } from "../utils/method-patcher";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { newMigrationVersion } from "../utils/migrations";
@@ -22,8 +21,14 @@ import {
   promptExistingModule,
 } from "../prompts/generate-wizard";
 import { GetMethodMode, MethodType, ModuleNaming, MethodNaming } from "../types";
+import {
+  HexagonalMethodPatchPaths,
+  assertHexagonalMethodAbsent,
+  hexagonalMarkersPresent,
+  patchHexagonalMethod,
+} from "../utils/hexagonal-method-patcher";
 
-// URL path registered in method-patcher.ts, excluding the project-wide API
+// URL path registered in the inbound adapter, excluding the project-wide API
 // prefix so it can be passed directly to patchOpenapiIndexRaw.
 function methodRoutePath(
   naming: ModuleNaming,
@@ -129,100 +134,83 @@ export interface GenerateMethodOptions {
   field?: string;
 }
 
-export async function generateMethod(
-  moduleNameArg: string | undefined,
+async function generateHexagonalMethod(
+  config: ReturnType<typeof readConfig>,
+  naming: ModuleNaming,
   methodNameArg: string | undefined,
   opts: GenerateMethodOptions,
-  projectDir: string = process.cwd()
+  projectDir: string,
 ): Promise<void> {
-  const config = readConfig(projectDir);
-  const naming = resolveProjectModuleNaming(projectDir, moduleNameArg ?? (await promptExistingModule(existingModulePackages(projectDir), "add a method to")));
-  const modulePath = naming.pkg;
-
-  const moduleDir = path.join(projectDir, "internal", "app", modulePath);
-  const paths: MethodPatchPaths = {
-    dtoPath: path.join(moduleDir, "dto.go"),
-    repositoryPath: path.join(moduleDir, "repository.go"),
-    commandPath: path.join(moduleDir, "commands.go"),
-    queryPath: path.join(moduleDir, "queries.go"),
-    servicePath: path.join(moduleDir, "service.go"),
-    handlerPath: path.join(moduleDir, "handler.go"),
-    serviceTestPath: path.join(moduleDir, "service_test.go"),
+  const moduleDir = path.join(projectDir, "internal", "app", naming.pkg);
+  const moduleConfig = config.modules[naming.pkg];
+  if (!moduleConfig) {
+    throw new Error("module " + naming.pkg + " has no split-layout metadata in go-scaffold.config.json; run go-scaffold check first");
+  }
+  const cqrs = moduleConfig.applicationStyle === "cqrs";
+  const authModule = naming.pkg === "user" && fs.existsSync(path.join(moduleDir, "application", "contracts.go"));
+  const paths: HexagonalMethodPatchPaths = {
+    dtoPath: path.join(moduleDir, "application", "dto.go"),
+    requestDTOPath: path.join(moduleDir, "adapters", "inbound", "http", "dto.go"),
+    portsPath: path.join(moduleDir, "ports", "repository.go"),
+    repositoryAdapterPath: path.join(moduleDir, "adapters", "outbound", "postgres", "repository.go"),
+    servicePath: cqrs ? undefined : path.join(moduleDir, "application", "service.go"),
+    commandPath: cqrs ? path.join(moduleDir, "application", "commands.go") : undefined,
+    queryPath: cqrs ? path.join(moduleDir, "application", "queries.go") : undefined,
+    handlerPath: path.join(moduleDir, "adapters", "inbound", "http", "handler.go"),
+    serviceTestPath: path.join(moduleDir, "application", moduleConfig.applicationStyle === "cqrs" ? "cqrs_test.go" : "service_test.go"),
+    ...(authModule
+      ? {
+          repositoryModelType: "User",
+          repositoryToDomain: "toDomainUser",
+          repositoryErrorMapper: "persistenceError",
+          repositoryStubReceiver: "f *fakeRepo",
+          handlerErrorMapper: "toHTTPError",
+        }
+      : {}),
   };
-
-  const requiredPaths = [
+  const required = [
     paths.dtoPath,
-    paths.repositoryPath,
-    paths.servicePath,
+    paths.requestDTOPath,
+    paths.portsPath,
+    paths.repositoryAdapterPath,
     paths.handlerPath,
     paths.serviceTestPath,
+    ...(cqrs ? [paths.commandPath!, paths.queryPath!] : [paths.servicePath!]),
   ];
-  for (const p of requiredPaths) {
-    if (!fs.existsSync(p)) {
-      throw new Error(
-        `module "${naming.pkg}" not found at ${moduleDir} (missing ${path.basename(p)}) — ` +
-          `run \`go-scaffold generate module ${naming.pkg}\` first`
-      );
-    }
-  }
-  const cqrsPaths = [paths.commandPath, paths.queryPath].filter(
-    (candidate): candidate is string => candidate !== undefined && fs.existsSync(candidate)
-  );
-  if (cqrsPaths.length === 1) {
+  const missing = required.filter((file) => !fs.existsSync(file));
+  if (missing.length) {
     throw new Error(
-      `module "${naming.pkg}" has an incomplete CQRS boundary at ${moduleDir} — ` +
-        `commands.go and queries.go must be present together`
+      "module " +
+        naming.pkg +
+        " is not a complete hexagonal split module (missing " +
+        missing.map((file) => path.relative(projectDir, file)).join(", ") +
+        "); run go-scaffold check",
     );
   }
 
   const type = opts.type ?? (await promptMethodType());
-  if (opts.getMode && type !== "get") {
-    throw new Error("--get-mode can only be used with --type get");
-  }
-  if (opts.field && !(type === "get" && opts.getMode === "one")) {
-    throw new Error("--field can only be used with --type get --get-mode one");
-  }
+  if (opts.getMode && type !== "get") throw new Error("--get-mode can only be used with --type get");
+  if (opts.field && !(type === "get" && opts.getMode === "one")) throw new Error("--field can only be used with --type get --get-mode one");
   const getMode = type === "get" ? opts.getMode ?? (await promptGetMode()) : undefined;
   const field = type === "get" && getMode === "one" ? opts.field ?? (await promptLookupField()) : undefined;
-  // field becomes a Go param name (`func (...)(ctx, <field> string)`) and a
-  // column name in the generated `WHERE <field> = ?`
   if (field) assertGoIdentifier(toCamelCase(field), "lookup field");
-
   const method = resolveMethodNaming(methodNameArg ?? (await promptMethodName()));
 
-  // Every marker this command patches has to exist before the first write:
-  // patchMethod writes dto.go, then handler.go, then reads service.go, so a
-  // missing service marker used to leave two files patched and the method
-  // permanently un-retryable (assertNotDuplicate then sees it as existing).
-  if (!markersPresentForPaths(paths)) {
-    throw new Error(
-      `internal/app/${naming.pkg} is missing the marker comments \`generate method\` patches at.\n` +
-        `handler.go and service.go must both still carry their \`// go-scaffold:*\` markers —\n` +
-        `restore them, or add this method by hand.`
-    );
+  if (!hexagonalMarkersPresent(paths)) {
+    throw new Error("internal/app/" + naming.pkg + " is missing a split-layout generate-method marker; restore the go-scaffold markers or edit this endpoint by hand");
   }
-  // Before the docs check below, so a name that's already taken is reported as
-  // exactly that on every project — otherwise the leftover OpenAPI document
-  // gets the blame on a docs-enabled project and the real cause (pick another
-  // method name) is the one thing the message doesn't say.
-  assertMethodAbsent(paths, method);
+  assertHexagonalMethodAbsent(paths, method);
 
-  const docsRelativePath = config.features.openapiDocs
-    ? `${naming.plural}/methods/${method.pathSegment}.yaml`
-    : undefined;
+  const docsRelativePath = config.features.openapiDocs ? naming.plural + "/methods/" + method.pathSegment + ".yaml" : undefined;
   if (docsRelativePath && fs.existsSync(path.join(projectDir, "docs", docsRelativePath))) {
-    throw new Error(`OpenAPI method document already exists: docs/${docsRelativePath}`);
+    throw new Error("OpenAPI method document already exists: docs/" + docsRelativePath);
   }
 
   const checkBefore = typeChecks(projectDir);
-  patchMethod(paths, naming, method, { type, getMode, field }, config.goModule);
+  patchHexagonalMethod(paths, naming, method, { type, getMode, field }, config.goModule);
   gofmtTree(projectDir);
   assertNoDrift(projectDir, checkBefore, config);
 
-  // A --field lookup queries a column the table doesn't have yet. GORM builds
-  // that SQL at runtime, so nothing before the first real request notices:
-  // the build passes, vet passes, the generated tests pass. Ship the column
-  // and its index with the code that needs them.
   let fieldMigration = "";
   if (field) {
     const migrationsDir = path.join(projectDir, "migrations");
@@ -231,36 +219,42 @@ export async function generateMethod(
     await applyTemplateEntries(
       projectDir,
       [
-        { template: "generate/module/field-column.up.sql.hbs", output: path.join("migrations", `${fieldMigration}_add_${naming.tableName}_${fieldColumn}.up.sql`) },
-        { template: "generate/module/field-column.down.sql.hbs", output: path.join("migrations", `${fieldMigration}_add_${naming.tableName}_${fieldColumn}.down.sql`) },
+        { template: "generate/module/field-column.up.sql.hbs", output: path.join("migrations", fieldMigration + "_add_" + naming.tableName + "_" + fieldColumn + ".up.sql") },
+        { template: "generate/module/field-column.down.sql.hbs", output: path.join("migrations", fieldMigration + "_add_" + naming.tableName + "_" + fieldColumn + ".down.sql") },
       ],
-      { ...naming, pkg: naming.pkg, methodName: method.name, fieldColumn }
+      { ...naming, methodName: method.name, fieldColumn },
     );
   }
-
   if (fieldMigration) {
-    console.log(
-      `migration: migrations/${fieldMigration}_add_${naming.tableName}_${toDbName(field!)}.{up,down}.sql ` +
-        `(adds the column the lookup queries, plus an index on it — check the type before applying)`
-    );
+    console.log("migration: migrations/" + fieldMigration + "_add_" + naming.tableName + "_" + toDbName(field!) + ".{up,down}.sql (adds the column the lookup queries, plus an index on it; check the type before applying)");
   }
-
   if (docsRelativePath) {
     const docsPath = path.join(projectDir, "docs", docsRelativePath);
     fs.outputFileSync(docsPath, methodOpenapiDocument(naming, method, type, getMode, field));
     patchOpenapiIndexRaw(path.join(projectDir, "docs", "openapi.yaml"), config.apiPrefix, [
-      {
-        urlPath: methodRoutePath(naming, method, type, getMode, field),
-        file: `./${docsRelativePath}`,
-      },
+      { urlPath: methodRoutePath(naming, method, type, getMode, field), file: "./" + docsRelativePath },
     ]);
   }
+  console.log(pc.green("\nadded \"" + method.name + "\" to internal/app/" + naming.pkg + "/"));
+  console.log("route: " + routeHint(naming, method, type, config.apiPrefix, getMode, field));
+  if (docsRelativePath) console.log(pc.green("docs: docs/" + docsRelativePath + " (wired into docs/openapi.yaml)"));
+  const implementationFile = cqrs ? "application/" + (type === "get" ? "queries.go" : "commands.go") : "application/service.go";
+  console.log(pc.dim("\nnext: fill in the TODO in " + implementationFile + ", then go build ./... / go test ./..."));
+}
 
-  console.log(pc.green(`\nadded "${method.name}" to internal/app/${modulePath}/`));
-  console.log(`route: ${routeHint(naming, method, type, config.apiPrefix, getMode, field)}`);
-  if (docsRelativePath) {
-    console.log(pc.green(`docs: docs/${docsRelativePath} (wired into docs/openapi.yaml)`));
+export async function generateMethod(
+  moduleNameArg: string | undefined,
+  methodNameArg: string | undefined,
+  opts: GenerateMethodOptions,
+  projectDir: string = process.cwd()
+): Promise<void> {
+  const config = readConfig(projectDir);
+  const naming = resolveProjectModuleNaming(
+    projectDir,
+    moduleNameArg ?? (await promptExistingModule(existingModulePackages(projectDir), "add a method to"))
+  );
+  if (config.architecture.packageLayout !== "split") {
+    throw new Error("this scaffold only supports the canonical hexagonal split layout");
   }
-  const implementationFile = cqrsPaths.length === 2 ? (type === "get" ? "queries.go" : "commands.go") : "service.go";
-  console.log(pc.dim(`\nnext: fill in the TODO in ${implementationFile}, then \`go build ./...\` / \`go test ./...\``));
+  await generateHexagonalMethod(config, naming, methodNameArg, opts, projectDir);
 }

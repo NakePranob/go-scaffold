@@ -42,14 +42,14 @@ test("plural module input produces a singular entity with one explicit table nam
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "orders", "--defaults");
 
-    const model = read(project, "internal/app/order/model/model.go");
-    assert.match(model, /type Order struct/);
+    const model = read(project, "internal/app/order/adapters/outbound/postgres/model.go");
+    assert.match(model, /type OrderModel struct/);
     assert.match(
       model,
-      /func \(Order\) TableName\(\) string \{\s*return "order_svc\.orders"\s*\}/
+      /func \(OrderModel\) TableName\(\) string \{\s*return "order_svc\.orders"\s*\}/
     );
     assert.match(migration(project, "_create_orders.up.sql"), /CREATE TABLE order_svc\.orders/);
-    assert.match(read(project, "internal/app/order/handler.go"), /Group\("\/orders"/);
+    assert.match(read(project, "internal/app/order/adapters/inbound/http/handler.go"), /Group\("\/orders"/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -62,11 +62,11 @@ test("multi-word module keeps URL words and uses snake_case SQL identifiers", ()
     const project = path.join(scratch, "sample");
     runCLI(project, "generate", "module", "order-items", "--defaults");
 
-    const model = read(project, "internal/app/orderitem/model/model.go");
-    assert.match(model, /type OrderItem struct/);
+    const model = read(project, "internal/app/orderitem/adapters/outbound/postgres/model.go");
+    assert.match(model, /type OrderItemModel struct/);
     assert.match(
       model,
-      /func \(OrderItem\) TableName\(\) string \{\s*return "orderitem_svc\.order_items"\s*\}/
+      /func \(OrderItemModel\) TableName\(\) string \{\s*return "orderitem_svc\.order_items"\s*\}/
     );
     // snake_case, like the table it creates — the filename used to be the
     // kebab-case route slug while everything else in the file was snake
@@ -75,7 +75,7 @@ test("multi-word module keeps URL words and uses snake_case SQL identifiers", ()
       /CREATE TABLE orderitem_svc\.order_items/
     );
     assert.match(
-      read(project, "internal/app/orderitem/handler.go"),
+      read(project, "internal/app/orderitem/adapters/inbound/http/handler.go"),
       /Group\("\/order-items"/
     );
   } finally {
@@ -100,10 +100,10 @@ test("a multi-word module answers to its own package name", () => {
     // exactly what `generate module` tells you to run next
     runCLI(project, "generate", "method", "orderitem", "approve", "--type", "patch");
 
-    const handler = read(project, "internal/app/orderitem/handler.go");
-    assert.match(handler, /Approve\(context\.Context, uuid\.UUID\) error/);
+    const handler = read(project, "internal/app/orderitem/adapters/inbound/http/handler.go");
+    assert.match(handler, /h\.svc\.Approve\(c\.Request\.Context\(\), id\)/);
     assert.doesNotMatch(handler, /model\.Orderitem\b/);
-    assert.match(read(project, "internal/app/orderitem/service.go"), /model\.OrderItem/);
+    assert.match(read(project, "internal/app/orderitem/application/service.go"), /domain\.OrderItem/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -204,7 +204,7 @@ test("a generated field lookup joins the caller's transaction like every other q
     runCLI(project, "generate", "module", "orders", "--full", "--defaults");
     runCLI(project, "generate", "method", "order", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
 
-    const repo = readFileSync(path.join(project, "internal", "app", "order", "repository.go"), "utf8");
+    const repo = readFileSync(path.join(project, "internal", "app", "order", "adapters", "outbound", "postgres", "repository.go"), "utf8");
     assert.match(repo, /func \(r \*Repository\) FindByStatus\(/);
     assert.doesNotMatch(repo, /r\.db\.WithContext/, "a repository method must not bypass tx.From");
   } finally {

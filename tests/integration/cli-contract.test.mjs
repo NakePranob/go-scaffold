@@ -14,6 +14,7 @@ function help(...args) {
 test("every public command exposes a useful description", () => {
   const cases = [
     { args: [], expected: "Scaffold Gin + GORM + Postgres Go backend projects" },
+    { args: ["check"], expected: "validate the hexagonal split layout" },
     { args: ["create"], expected: "scaffold a new project" },
     { args: ["generate"], expected: "add a module, endpoint, or migration" },
     { args: ["generate", "module"], expected: "Lean, CRUD, CQRS, or Advanced" },

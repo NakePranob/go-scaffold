@@ -63,7 +63,7 @@ function step(name, fn) {
     // verify`, a log file), so the write can still be buffered when exit() tears
     // the process down, silently dropping the one line that explains the failure.
     // writeSync is synchronous, so it's flushed before exit() runs.
-    const detail = err.stdout?.toString() || err.stderr?.toString() || err.message;
+    const detail = `${err.stdout?.toString() ?? ""}${err.stderr?.toString() ?? ""}` || err.message;
     writeSync(2, `${detail}\n`);
     cleanup();
     process.exit(1);
@@ -1827,8 +1827,8 @@ step(
     const noteOut = goScaffold(["generate", "module", "note", "--full", "--defaults"], fullApp);
     if (!noteOut.includes("PUBLIC")) throw new Error(`expected a PUBLIC-route reminder since fullApp already has auth installed, got:\n${noteOut}`);
 
-    assertFileContains(path.join(fullApp, "internal", "app", "cart", "handler.go"), "middleware.RequireAuth(h.jwtSecret)");
-    assertFileContains(path.join(fullApp, "internal", "app", "secret", "handler.go"), 'h.authz.Require("secret:manage")');
+    assertFileContains(path.join(fullApp, "internal", "app", "cart", "adapters", "inbound", "http", "handler.go"), "middleware.RequireAuth(h.jwtSecret)");
+    assertFileContains(path.join(fullApp, "internal", "app", "secret", "adapters", "inbound", "http", "handler.go"), 'h.authz.Require("secret:manage")');
 
     const permMigration = readdirSync(path.join(fullApp, "migrations")).find((f) => f.endsWith("_add_secrets_permission.up.sql"));
     if (!permMigration) throw new Error("expected a *_add_secrets_permission.up.sql migration to be generated");
@@ -2506,25 +2506,26 @@ import (
 	"os"
 	"testing"
 
-	"river-app/internal/app/order/model"
+	orderpostgres "river-app/internal/app/order/adapters/outbound/postgres"
+	"river-app/internal/app/order/domain"
 	"river-app/internal/platform/mail"
 	"river-app/internal/platform/queue"
 	"river-app/internal/shared/tx"
 
 	"github.com/google/uuid"
-	"gorm.io/driver/postgres"
+	gormpostgres "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
-	db, err := gorm.Open(postgres.Open(os.Getenv("TEST_DB_DSN")), &gorm.Config{TranslateError: true})
+	db, err := gorm.Open(gormpostgres.Open(os.Getenv("TEST_DB_DSN")), &gorm.Config{TranslateError: true})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS order_svc").Error; err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Order{}); err != nil {
+	if err := db.AutoMigrate(&orderpostgres.OrderModel{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q, err := queue.NewRiverEnqueuer(db)
@@ -2542,7 +2543,7 @@ func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
 	}
 	orders := func(id uuid.UUID) int64 {
 		var n int64
-		if err := db.WithContext(ctx).Model(&model.Order{}).Where("id = ?", id).Count(&n).Error; err != nil {
+		if err := db.WithContext(ctx).Model(&orderpostgres.OrderModel{}).Where("id = ?", id).Count(&n).Error; err != nil {
 			t.Fatalf("count orders: %v", err)
 		}
 		return n
@@ -2552,7 +2553,7 @@ func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
 	boom := errors.New("boom")
 	rolledBack := uuid.New()
 	err = tx.Do(ctx, db, func(ctx context.Context) error {
-		if err := NewRepository(db).Create(ctx, &model.Order{ID: rolledBack}); err != nil {
+		if err := orderpostgres.NewRepository(db).Create(ctx, &domain.Order{ID: rolledBack, Version: 1}); err != nil {
 			return err
 		}
 		if err := q.Enqueue(ctx, mail.SendEmail{To: "nobody@example.test"}, nil); err != nil {
@@ -2572,7 +2573,7 @@ func TestSmokeEnqueueJoinsTheTransaction(t *testing.T) {
 
 	committed := uuid.New()
 	if err := tx.Do(ctx, db, func(ctx context.Context) error {
-		if err := NewRepository(db).Create(ctx, &model.Order{ID: committed}); err != nil {
+		if err := orderpostgres.NewRepository(db).Create(ctx, &domain.Order{ID: committed, Version: 1}); err != nil {
 			return err
 		}
 		return q.Enqueue(ctx, mail.SendEmail{To: "someone@example.test"}, nil)
@@ -2653,32 +2654,20 @@ step("generate fails loudly when the project's shared/ layer has drifted", () =>
   run("go", ["mod", "tidy"], app);
 
   // Simulates a project whose shared/ layer moved on after scaffolding —
-  // middleware.Error grows a parameter and its one caller is updated, but the
-  // CLI's own frozen template (what `generate module` renders) doesn't know
-  // that happened. Prepends a new first parameter via a plain anchored string
-  // replace rather than trying to capture-and-reinsert whatever's already
-  // inside the parens: existing call sites can contain their own nested
-  // parens (e.g. `middleware.Error(!cfg.IsProd())`), which a `[^)]*` regex
-  // can't balance — it matches up to the *inner* `)` and mangles the
-  // rewrite. A left-anchored prepend never needs to look past `Error(`, so it
-  // stays correct regardless of what's already inside.
-  const errPath = path.join(app, "internal", "shared", "middleware", "error.go");
-  const errSrc = readFileSync(errPath, "utf8");
-  const mutatedErr = errSrc.replace("func Error(", "func Error(_extraDrift bool, ");
-  if (mutatedErr === errSrc) throw new Error("middleware.Error signature not found — update this test's mutation");
-  writeFileSync(errPath, mutatedErr);
-
-  const mainPath = path.join(app, "cmd", "api", "wiring.go");
-  const mainSrc = readFileSync(mainPath, "utf8");
-  const mutatedMain = mainSrc.replace("middleware.Error(", "middleware.Error(true, ");
-  if (mutatedMain === mainSrc) throw new Error("middleware.Error call site not found — update this test's mutation");
-  writeFileSync(mainPath, mutatedMain);
+  // httpx.ParseID grows a parameter, but the CLI's own frozen templates
+  // (what `generate module` renders) don't know that happened. The bare
+  // project has no ParseID call yet, so it remains healthy before generation;
+  // the generated HTTP adapter calls the old signature and exposes the drift.
+  const httpxPath = path.join(app, "internal", "shared", "httpx", "httpx.go");
+  const httpxSrc = readFileSync(httpxPath, "utf8");
+  const mutatedHttpx = httpxSrc.replace("func ParseID(", "func ParseID(_extraDrift bool, ");
+  if (mutatedHttpx === httpxSrc) throw new Error("httpx.ParseID signature not found — update this test's mutation");
+  writeFileSync(httpxPath, mutatedHttpx);
 
   run("go", ["vet", "./..."], app); // the project itself is still perfectly fine
 
-  // the generated handler_test.go builds the middleware chain by hand using
-  // generate module's frozen template, which doesn't know about the mutation
-  // above — `go build` wouldn't see it (test file), `go vet` does.
+  // The generated handler.go is built against generate module's frozen
+  // signature, so `go vet` sees the mismatch before the command returns.
   expectThrows(
     () => goScaffold(["generate", "module", "order", "--full", "--defaults"], app),
     "drift"
@@ -2692,7 +2681,7 @@ step("generate doesn't blame itself for a project that was already broken", () =
   // a type error the user introduced, nothing to do with the generator
   writeFileSync(path.join(app, "internal", "shared", "id", "wip.go"), 'package id\n\nfunc wip() int { return "nope" }\n');
   goScaffold(["generate", "module", "order", "--defaults"], app); // must still succeed
-  if (!existsSync(path.join(app, "internal", "app", "order", "handler.go"))) {
+  if (!existsSync(path.join(app, "internal", "app", "order", "adapters", "inbound", "http", "handler.go"))) {
     throw new Error("module wasn't generated");
   }
 });

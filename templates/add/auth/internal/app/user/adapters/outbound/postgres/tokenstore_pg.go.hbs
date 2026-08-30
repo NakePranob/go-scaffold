@@ -1,0 +1,213 @@
+// Postgres-backed tokenStore — installed by `add auth --store postgres` (the
+// default). The Redis-backed alternative lives in tokenstore_redis.go; only
+// one of the two is ever written into a project.
+//
+// Everything Redis needed two keys for collapses into one table here: the
+// per-user session set is just a WHERE clause, and expiry is a column every
+// read filters on rather than a TTL the store enforces. What that costs is a
+// sweep to keep the table from growing — see DeleteExpired.
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"{{goModule}}/internal/app/user/ports"
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+const (
+	kindRefresh     = "refresh"
+	kindRefreshUsed = "refresh_used"
+	kindOAuthState  = "oauth_state"
+)
+
+type PgTokenStore struct {
+	db       *gorm.DB
+	recovery *recoveryTokenStore
+}
+
+func NewPgTokenStore(db *gorm.DB) *PgTokenStore {
+	return &PgTokenStore{db: db, recovery: newRecoveryTokenStore(db)}
+}
+
+var _ ports.RefreshTokenStore = (*PgTokenStore)(nil)
+var _ ports.OAuthTransactionStore = (*PgTokenStore)(nil)
+var _ ports.RecoveryTokenStore = (*PgTokenStore)(nil)
+
+// lookup finds a live token of the given kind. Expiry is enforced here rather
+// than by a sweep, so a row that outlived its TTL is already invisible.
+func (s *PgTokenStore) lookup(ctx context.Context, hash, kind string) (uuid.UUID, bool, error) {
+	var row AuthToken
+	err := tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ? AND kind = ? AND expires_at > now()", hash, kind).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return row.UserID, true, nil
+}
+
+func (s *PgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
+	if token.UserID == uuid.Nil || token.ExpiresAt.IsZero() || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
+		return fmt.Errorf("refresh token record expiry is invalid")
+	}
+	row := AuthToken{
+		TokenHash:         tokenHash,
+		UserID:            token.UserID,
+		Kind:              kindRefresh,
+		ExpiresAt:         token.ExpiresAt,
+		AbsoluteExpiresAt: &token.AbsoluteExpiresAt,
+	}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ?", tokenHash).
+		Assign(map[string]any{
+			"user_id":             token.UserID,
+			"kind":                kindRefresh,
+			"expires_at":          token.ExpiresAt,
+			"absolute_expires_at": token.AbsoluteExpiresAt,
+			"provider":            "",
+			"code_challenge":      "",
+			"nonce":               "",
+		}).FirstOrCreate(&row).Error
+}
+
+func (s *PgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.lookup(ctx, tokenHash, kindRefresh)
+}
+
+// ConsumeRefreshToken removes the active row and writes the reuse-detection
+// tombstone in one statement. A concurrent caller can observe either the
+// active row or the tombstone, never the gap between separate operations.
+func (s *PgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string) (ports.RefreshTokenRecord, bool, error) {
+	var token ports.RefreshTokenRecord
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`WITH consumed AS (
+			DELETE FROM user_svc.auth_tokens
+				 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+				   AND (absolute_expires_at IS NULL OR absolute_expires_at > now())
+				 RETURNING user_id, expires_at, absolute_expires_at
+		)
+		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, expires_at, absolute_expires_at)
+		SELECT ?, user_id, ?, expires_at, COALESCE(absolute_expires_at, expires_at) FROM consumed
+		RETURNING user_id, expires_at, absolute_expires_at`,
+		tokenHash, kindRefresh, tokenHash, kindRefreshUsed).Row().Scan(&token.UserID, &token.ExpiresAt, &token.AbsoluteExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.RefreshTokenRecord{}, false, nil
+	}
+	if err != nil {
+		return ports.RefreshTokenRecord{}, false, err
+	}
+	return token, true, nil
+}
+
+// DeleteRefreshToken removes the row outright and leaves nothing behind — see
+// the AuthToken doc comment for why logout must not leave a tombstone.
+func (s *PgTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string, _ uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ? AND kind = ?", tokenHash, kindRefresh).
+		Delete(&AuthToken{}).Error
+}
+
+// RevokeAllRefreshTokens is one statement here because Postgres can query by
+// value — the Redis store has to keep a separate per-user set to answer this,
+// and that set accumulates stale members its own comment calls out.
+// Tombstones are left in place so reuse detection still works afterwards.
+func (s *PgTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND kind = ?", userID, kindRefresh).
+		Delete(&AuthToken{}).Error
+}
+
+func (s *PgTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.lookup(ctx, tokenHash, kindRefreshUsed)
+}
+
+func (s *PgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string, transaction ports.LoginTransaction) error {
+	if strings.TrimSpace(stateHash) == "" || strings.TrimSpace(transaction.Provider) == "" || strings.TrimSpace(transaction.CodeChallenge) == "" || strings.TrimSpace(transaction.Nonce) == "" || !transaction.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("oauth login transaction is invalid")
+	}
+	row := AuthToken{
+		TokenHash:     stateHash,
+		Kind:          kindOAuthState,
+		ExpiresAt:     transaction.ExpiresAt,
+		Provider:      transaction.Provider,
+		CodeChallenge: transaction.CodeChallenge,
+		Nonce:         transaction.Nonce,
+	}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ?", stateHash).
+		Assign(map[string]any{
+			"user_id":        uuid.Nil,
+			"kind":           kindOAuthState,
+			"expires_at":     transaction.ExpiresAt,
+			"provider":       transaction.Provider,
+			"code_challenge": transaction.CodeChallenge,
+			"nonce":          transaction.Nonce,
+		}).FirstOrCreate(&row).Error
+}
+
+func (s *PgTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash string) (ports.LoginTransaction, bool, error) {
+	var transaction ports.LoginTransaction
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`DELETE FROM user_svc.auth_tokens
+		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+		 RETURNING provider, code_challenge, nonce, expires_at`,
+		stateHash, kindOAuthState).Row().Scan(
+		&transaction.Provider,
+		&transaction.CodeChallenge,
+		&transaction.Nonce,
+		&transaction.ExpiresAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.LoginTransaction{}, false, nil
+	}
+	if err != nil {
+		return ports.LoginTransaction{}, false, err
+	}
+	return transaction, true, nil
+}
+
+func (s *PgTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
+}
+
+func (s *PgTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.recovery.consume(ctx, tokenHash, kindPasswordSet)
+}
+
+func (s *PgTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.put(ctx, tokenHash, kindEmailVerify, userID, ttl)
+}
+
+func (s *PgTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.recovery.consume(ctx, tokenHash, kindEmailVerify)
+}
+
+func (s *PgTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return s.recovery.withTransaction(ctx, fn)
+}
+
+// DeleteExpired drops rows nothing can use any more. Correctness never depends
+// on it — every read already filters on expires_at — so it is purely about
+// table size, and calling it on a timer from cmd/worker (or a cron) is enough.
+//
+// ponytail: not scheduled for you. Wire it up the day the table is big enough
+// to notice; a scaffold that silently runs background sweeps nobody asked for
+// is harder to reason about than one line you add when it matters.
+func (s *PgTokenStore) DeleteExpired(ctx context.Context) (int64, error) {
+	res := tx.From(ctx, s.db).WithContext(ctx).
+		Where("expires_at <= now()").
+		Delete(&AuthToken{})
+	return res.RowsAffected, res.Error
+}

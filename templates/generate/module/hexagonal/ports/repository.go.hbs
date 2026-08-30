@@ -1,0 +1,38 @@
+// Package ports declares the dependencies owned by the {{pkg}} application.
+// Adapters implement these interfaces; application code never imports a
+// database driver.
+package ports
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+
+	"github.com/google/uuid"
+)
+
+// Repository is the complete persistence port for service-style modules.
+type Repository interface {
+	Create(context.Context, *domain.{{pascalName}}) error
+	FindAll(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	FindByID(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	Update(context.Context, *domain.{{pascalName}}) error
+	Delete(context.Context, uuid.UUID) error
+	// go-scaffold:repository-interface
+}
+
+// CommandRepository and QueryRepository keep CQRS handlers honest: a write
+// use case cannot grow a read dependency by accident, and vice versa.
+type CommandRepository interface {
+	Create(context.Context, *domain.{{pascalName}}) error
+	FindByID(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	Update(context.Context, *domain.{{pascalName}}) error
+	Delete(context.Context, uuid.UUID) error
+	// go-scaffold:command-repository-interface
+}
+
+type QueryRepository interface {
+	FindAll(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	FindByID(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	// go-scaffold:query-repository-interface
+}

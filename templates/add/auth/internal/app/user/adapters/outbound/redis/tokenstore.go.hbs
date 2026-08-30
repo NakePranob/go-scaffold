@@ -1,0 +1,228 @@
+// Redis-backed tokenStore — installed by `add auth --store redis`.
+// The Postgres-backed alternative lives in tokenstore_pg.go; only one of the
+// two is ever written into a project, and Service never learns which.
+package redisadapter
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"{{goModule}}/internal/app/user/adapters/outbound/postgres"
+	"{{goModule}}/internal/app/user/ports"
+
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+)
+
+const (
+	// The shared {refresh} hash tag keeps all keys touched by the Lua rotation
+	// script on one Redis Cluster slot as well as making the operation atomic.
+	refreshKeyPrefix     = "user:{refresh}:"      // +hash -> ports.RefreshTokenRecord, TTL = ExpiresAt
+	refreshUserKeyPrefix = "user:{refresh}:user:" // +userID -> SET of active token hashes
+	refreshUsedKeyPrefix = "user:{refresh}:used:" // +hash -> ports.RefreshTokenRecord, TTL = source token expiry
+	oauthStateKeyPrefix  = "user:{oauth}:state:"
+)
+
+type RedisTokenStore struct {
+	rdb      *redis.Client
+	recovery ports.RecoveryTokenStore
+}
+
+func NewRedisTokenStore(rdb *redis.Client, db *gorm.DB) *RedisTokenStore {
+	return &RedisTokenStore{rdb: rdb, recovery: postgres.NewRecoveryTokenStore(db)}
+}
+
+var _ ports.RefreshTokenStore = (*RedisTokenStore)(nil)
+var _ ports.OAuthTransactionStore = (*RedisTokenStore)(nil)
+var _ ports.RecoveryTokenStore = (*RedisTokenStore)(nil)
+
+var consumeRefreshScript = redis.NewScript(`
+local token = redis.call("GET", KEYS[1])
+local ttl = redis.call("PTTL", KEYS[1])
+if not token or ttl < 1 then
+	-- An empty bulk string maps to a normal "not found" result in go-redis;
+	-- Lua false would be surfaced as redis.Nil and look like an infrastructure
+	-- failure to Service.Refresh.
+	return ""
+end
+
+-- Decode and validate the fields used by this script before mutating anything.
+-- Redis Lua does not roll back earlier writes when a later command errors; the
+-- old order could therefore delete a corrupt active token and then fail while
+-- decoding it, losing the only evidence needed to investigate or retry safely.
+local decoded, token_data = pcall(cjson.decode, token)
+if not decoded or type(token_data) ~= "table" or
+   type(token_data.user_id) ~= "string" or token_data.user_id == "" or
+   type(token_data.expires_at) ~= "string" or token_data.expires_at == "" or
+   type(token_data.absolute_expires_at) ~= "string" or token_data.absolute_expires_at == "" then
+	return redis.error_reply("invalid refresh token record")
+end
+
+redis.call("DEL", KEYS[1])
+redis.call("SREM", KEYS[3] .. token_data.user_id, ARGV[1])
+redis.call("SET", KEYS[2], token, "PX", ttl)
+return token
+`)
+
+var revokeAllRefreshScript = redis.NewScript(`
+local hashes = redis.call("SMEMBERS", KEYS[1])
+for _, hash in ipairs(hashes) do
+  redis.call("DEL", KEYS[2] .. hash)
+end
+redis.call("DEL", KEYS[1])
+return #hashes
+`)
+
+func (s *RedisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
+	ttl := time.Until(token.ExpiresAt)
+	if token.UserID == uuid.Nil || ttl <= 0 || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
+		return fmt.Errorf("refresh token expiry is invalid")
+	}
+	payload, err := json.Marshal(token)
+	if err != nil {
+		return fmt.Errorf("encode refresh token record: %w", err)
+	}
+	pipe := s.rdb.TxPipeline()
+	pipe.Set(ctx, refreshKeyPrefix+tokenHash, payload, ttl)
+	pipe.SAdd(ctx, refreshUserKeyPrefix+token.UserID.String(), tokenHash)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (s *RedisTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.Get(ctx, refreshKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	token, err := decodeRefreshTokenRecord(raw)
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("decode refresh token record: %w", err)
+	}
+	return token.UserID, true, nil
+}
+
+// ConsumeRefreshToken uses one Lua script for active-token deletion,
+// per-user-session cleanup, and the reuse tombstone. A concurrent caller
+// cannot observe the active value after another caller has won the rotation.
+func (s *RedisTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string) (ports.RefreshTokenRecord, bool, error) {
+	result, err := consumeRefreshScript.Run(ctx, s.rdb,
+		[]string{refreshKeyPrefix + tokenHash, refreshUsedKeyPrefix + tokenHash, refreshUserKeyPrefix},
+		tokenHash,
+	).Result()
+	if err != nil {
+		return ports.RefreshTokenRecord{}, false, err
+	}
+	raw, ok := result.(string)
+	if !ok || raw == "" {
+		return ports.RefreshTokenRecord{}, false, nil
+	}
+	token, err := decodeRefreshTokenRecord(raw)
+	if err != nil {
+		return ports.RefreshTokenRecord{}, false, fmt.Errorf("decode consumed refresh token record: %w", err)
+	}
+	return token, true, nil
+}
+
+func (s *RedisTokenStore) DeleteRefreshToken(ctx context.Context, tokenHash string, userID uuid.UUID) error {
+	pipe := s.rdb.TxPipeline()
+	pipe.Del(ctx, refreshKeyPrefix+tokenHash)
+	pipe.SRem(ctx, refreshUserKeyPrefix+userID.String(), tokenHash)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// RevokeAllRefreshTokens snapshots the per-user session set, deletes every
+// active refresh token, and removes the set in one Lua invocation. This is
+// important because SetRefreshToken updates two keys: a SMEMBERS followed by
+// a separate pipeline could miss a token added between those operations and
+// leave an active token with no session-set member.
+func (s *RedisTokenStore) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
+	setKey := refreshUserKeyPrefix + userID.String()
+	_, err := revokeAllRefreshScript.Run(ctx, s.rdb,
+		[]string{setKey, refreshKeyPrefix},
+		userID.String(),
+	).Result()
+	return err
+}
+
+func (s *RedisTokenStore) IsRefreshTokenUsed(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	raw, err := s.rdb.Get(ctx, refreshUsedKeyPrefix+tokenHash).Result()
+	if err == redis.Nil {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	token, err := decodeRefreshTokenRecord(raw)
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("decode used refresh token record: %w", err)
+	}
+	return token.UserID, true, nil
+}
+
+func (s *RedisTokenStore) SetLoginTransaction(ctx context.Context, stateHash string, transaction ports.LoginTransaction) error {
+	if !transaction.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("oauth login transaction expiry is invalid")
+	}
+	payload, err := json.Marshal(transaction)
+	if err != nil {
+		return fmt.Errorf("encode oauth login transaction: %w", err)
+	}
+	return s.rdb.Set(ctx, oauthStateKeyPrefix+stateHash, payload, time.Until(transaction.ExpiresAt)).Err()
+}
+
+func (s *RedisTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash string) (ports.LoginTransaction, bool, error) {
+	raw, err := s.rdb.GetDel(ctx, oauthStateKeyPrefix+stateHash).Result()
+	if err == redis.Nil {
+		return ports.LoginTransaction{}, false, nil
+	}
+	if err != nil {
+		return ports.LoginTransaction{}, false, err
+	}
+	var transaction ports.LoginTransaction
+	if err := json.Unmarshal([]byte(raw), &transaction); err != nil {
+		return ports.LoginTransaction{}, false, fmt.Errorf("decode oauth login transaction: %w", err)
+	}
+	return transaction, true, nil
+}
+
+func decodeRefreshTokenRecord(raw string) (ports.RefreshTokenRecord, error) {
+	var token ports.RefreshTokenRecord
+	if err := json.Unmarshal([]byte(raw), &token); err != nil {
+		return ports.RefreshTokenRecord{}, err
+	}
+	if token.UserID == uuid.Nil || token.ExpiresAt.IsZero() || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
+		return ports.RefreshTokenRecord{}, fmt.Errorf("refresh token record is incomplete")
+	}
+	return token, nil
+}
+
+func (s *RedisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.SetPasswordResetToken(ctx, tokenHash, userID, ttl)
+}
+
+// ConsumePasswordResetToken is one-time-use by construction: the SQL DELETE
+// runs inside the same transaction as the user update.
+func (s *RedisTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.recovery.ConsumePasswordResetToken(ctx, tokenHash)
+}
+
+func (s *RedisTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.SetEmailVerifyToken(ctx, tokenHash, userID, ttl)
+}
+
+// ConsumeEmailVerifyToken is one-time-use by construction, same as
+// ConsumePasswordResetToken — the SQL delete participates in the transaction.
+func (s *RedisTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.recovery.ConsumeEmailVerifyToken(ctx, tokenHash)
+}
+
+func (s *RedisTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return s.recovery.WithTransaction(ctx, fn)
+}

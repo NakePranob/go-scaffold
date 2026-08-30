@@ -1,0 +1,285 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+)
+
+type fakeLoginProvider struct {
+	name        string
+	beginFn     func(LoginStartInput) (Authorization, error)
+	completeFn  func(LoginCompleteInput) (ExternalIdentity, error)
+	beginCnt    int
+	completeCnt int
+}
+
+func (p *fakeLoginProvider) Name() string { return p.name }
+
+func (p *fakeLoginProvider) Begin(_ context.Context, in LoginStartInput) (Authorization, error) {
+	p.beginCnt++
+	return p.beginFn(in)
+}
+
+func (p *fakeLoginProvider) Complete(_ context.Context, in LoginCompleteInput) (ExternalIdentity, error) {
+	p.completeCnt++
+	return p.completeFn(in)
+}
+
+func newTestServiceWithProviders(repo repository, tokens testTokenStore, providers ...LoginProvider) *Service {
+	return NewService(Dependencies{
+		Repository:        repo,
+		Passwords:         fakePasswordHasher{},
+		RefreshTokens:     tokens,
+		OAuthTransactions: tokens,
+		RecoveryTokens:    tokens,
+		MFA:               newFakeMFAStore(),
+		Mailer:            fakeMailer{},
+		Providers:         NewProviderRegistry(providers...),
+	}, AuthConfig{
+		JWTSecret:     "test-secret",
+		JWTAccessTTL:  time.Minute,
+		JWTRefreshTTL: time.Hour,
+	})
+}
+
+func oauthErrorCode(t *testing.T, err error) OAuthErrorCode {
+	t.Helper()
+	var oauthErr *OAuthError
+	if !errors.As(err, &oauthErr) {
+		t.Fatalf("expected *OAuthError, got %T: %v", err, err)
+	}
+	return oauthErr.Code
+}
+
+const testOAuthVerifier = "client-code-verifier-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func validLoginStart() LoginStartInput {
+	return LoginStartInput{
+		State:               "client state",
+		CodeChallenge:       pkceChallenge(testOAuthVerifier),
+		CodeChallengeMethod: "S256",
+	}
+}
+
+func validLoginExchange() LoginExchangeInput {
+	return LoginExchangeInput{Code: "code", State: "client state", CodeVerifier: testOAuthVerifier}
+}
+
+func validFakeProvider(t *testing.T) (*fakeLoginProvider, *Service) {
+	t.Helper()
+	provider := &fakeLoginProvider{name: "fake"}
+	provider.beginFn = func(in LoginStartInput) (Authorization, error) {
+		expected := validLoginStart()
+		if in.State != expected.State || in.CodeChallenge != expected.CodeChallenge || in.CodeChallengeMethod != expected.CodeChallengeMethod || strings.TrimSpace(in.Nonce) == "" {
+			t.Fatalf("unexpected begin input: %+v", in)
+		}
+		return Authorization{URL: "https://provider.example.test/authorize?" + url.Values{
+			"state":                 {in.State},
+			"code_challenge":        {in.CodeChallenge},
+			"code_challenge_method": {in.CodeChallengeMethod},
+			"nonce":                 {in.Nonce},
+		}.Encode()}, nil
+	}
+	provider.completeFn = func(in LoginCompleteInput) (ExternalIdentity, error) {
+		if in.Code != "code" || in.CodeVerifier != testOAuthVerifier || strings.TrimSpace(in.Nonce) == "" {
+			t.Fatalf("unexpected complete input: %+v", in)
+		}
+		return ExternalIdentity{
+			Provider:      "fake",
+			Subject:       "subject-1",
+			Email:         "user@example.com",
+			EmailVerified: true,
+			Name:          "User",
+		}, nil
+	}
+	return provider, newTestServiceWithProviders(&fakeRepo{}, newFakeTokenStore(), provider)
+}
+
+func TestService_BeginLoginUsesRegistryAndPreservesClientStateAndS256PKCE(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	start, err := svc.BeginLogin(context.Background(), "fake", validLoginStart())
+	if err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	if provider.beginCnt != 1 || start == nil || start.URL == "" {
+		t.Fatalf("unexpected begin result: provider=%+v start=%+v", provider, start)
+	}
+	parsed, err := url.Parse(start.URL)
+	if err != nil {
+		t.Fatalf("parse authorization URL: %v", err)
+	}
+	if parsed.Query().Get("state") != "client state" || parsed.Query().Get("code_challenge") != pkceChallenge(testOAuthVerifier) || parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("nonce") == "" {
+		t.Fatalf("authorization URL did not preserve client state/PKCE: %s", start.URL)
+	}
+}
+
+func TestService_BeginLoginRejectsMissingStateOrNonS256PKCE(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	tests := []struct {
+		name string
+		in   LoginStartInput
+	}{
+		{name: "missing state", in: LoginStartInput{CodeChallenge: "challenge", CodeChallengeMethod: "S256"}},
+		{name: "missing challenge", in: LoginStartInput{State: "state", CodeChallengeMethod: "S256"}},
+		{name: "plain challenge method", in: LoginStartInput{State: "state", CodeChallenge: "challenge", CodeChallengeMethod: "plain"}},
+		{name: "short challenge", in: LoginStartInput{State: "state", CodeChallenge: "short", CodeChallengeMethod: "S256"}},
+		{name: "invalid challenge character", in: LoginStartInput{State: "state", CodeChallenge: strings.Repeat("!", 43), CodeChallengeMethod: "S256"}},
+		{name: "lowercase challenge method", in: LoginStartInput{State: "state", CodeChallenge: strings.Repeat("A", 43), CodeChallengeMethod: "s256"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.BeginLogin(context.Background(), "fake", tt.in)
+			if got := oauthErrorCode(t, err); got != OAuthStateInvalid {
+				t.Fatalf("oauth code = %q, want %q", got, OAuthStateInvalid)
+			}
+			if provider.beginCnt != 0 {
+				t.Fatal("provider must not receive an invalid state/PKCE request")
+			}
+		})
+	}
+}
+
+func TestService_ExchangeLoginReturnsSessionForNormalizedProviderIdentity(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	if _, err := svc.BeginLogin(context.Background(), "fake", validLoginStart()); err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	auth, err := svc.ExchangeLogin(context.Background(), "fake", validLoginExchange())
+	if err != nil {
+		t.Fatalf("exchange login: %v", err)
+	}
+	if auth.AccessToken == "" || auth.RefreshToken == "" || provider.completeCnt != 1 {
+		t.Fatalf("expected local session after provider completion: auth=%+v complete calls=%d", auth, provider.completeCnt)
+	}
+}
+
+func TestService_ExchangeLoginRejectsIdentityFromAnotherProvider(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	if _, err := svc.BeginLogin(context.Background(), "fake", validLoginStart()); err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	provider.completeFn = func(LoginCompleteInput) (ExternalIdentity, error) {
+		return ExternalIdentity{
+			Provider:      "another-provider",
+			Subject:       "subject-1",
+			Email:         "user@example.com",
+			EmailVerified: true,
+		}, nil
+	}
+	_, err := svc.ExchangeLogin(context.Background(), "fake", validLoginExchange())
+	if got := oauthErrorCode(t, err); got != OAuthFailed {
+		t.Fatalf("oauth code = %q, want %q", got, OAuthFailed)
+	}
+}
+
+func TestService_ExchangeLoginMapsProviderErrorsToControlledCodes(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerError error
+		wantCode      OAuthErrorCode
+	}{
+		{name: "provider exchange failure", providerError: NewProviderFailure(errors.New("exchange failed")), wantCode: OAuthFailed},
+		{name: "provider unavailable", providerError: NewProviderUnavailable(errors.New("upstream timeout")), wantCode: OAuthProviderUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, svc := validFakeProvider(t)
+			if _, err := svc.BeginLogin(context.Background(), "fake", validLoginStart()); err != nil {
+				t.Fatalf("begin login: %v", err)
+			}
+			provider.completeFn = func(LoginCompleteInput) (ExternalIdentity, error) {
+				return ExternalIdentity{}, tt.providerError
+			}
+			_, err := svc.ExchangeLogin(context.Background(), "fake", validLoginExchange())
+			if got := oauthErrorCode(t, err); got != tt.wantCode {
+				t.Fatalf("oauth code = %q, want %q", got, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestService_ExchangeLoginRejectsMissingStatePKCEAndCode(t *testing.T) {
+	_, svc := validFakeProvider(t)
+	tests := []struct {
+		name string
+		in   LoginExchangeInput
+		want OAuthErrorCode
+	}{
+		{name: "missing state", in: LoginExchangeInput{Code: "code", CodeVerifier: testOAuthVerifier}, want: OAuthStateInvalid},
+		{name: "missing verifier", in: LoginExchangeInput{Code: "code", State: "state"}, want: OAuthStateInvalid},
+		{name: "missing code", in: LoginExchangeInput{State: "state", CodeVerifier: testOAuthVerifier}, want: OAuthFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.ExchangeLogin(context.Background(), "fake", tt.in)
+			if got := oauthErrorCode(t, err); got != tt.want {
+				t.Fatalf("oauth code = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestService_ExchangeLoginConsumesStateAndBindsThePKCEVerifier(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	if _, err := svc.BeginLogin(context.Background(), "fake", validLoginStart()); err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	wrong := validLoginExchange()
+	wrong.CodeVerifier = testOAuthVerifier + "x"
+	if _, err := svc.ExchangeLogin(context.Background(), "fake", wrong); oauthErrorCode(t, err) != OAuthStateInvalid {
+		t.Fatalf("wrong verifier should be rejected as state invalid: %v", err)
+	}
+	if _, err := svc.ExchangeLogin(context.Background(), "fake", validLoginExchange()); oauthErrorCode(t, err) != OAuthStateInvalid {
+		t.Fatalf("a rejected exchange must consume the one-time transaction: %v", err)
+	}
+	if provider.completeCnt != 0 {
+		t.Fatal("provider must not receive a wrong PKCE verifier")
+	}
+}
+
+func TestService_UnconfiguredProviderDoesNotBuildAURL(t *testing.T) {
+	svc := newTestServiceWithProviders(&fakeRepo{}, newFakeTokenStore())
+	start, err := svc.BeginLogin(context.Background(), "google", validLoginStart())
+	if start != nil {
+		t.Fatalf("unconfigured provider returned a login start: %+v", start)
+	}
+	if got := oauthErrorCode(t, err); got != OAuthProviderUnavailable {
+		t.Fatalf("oauth code = %q, want %q", got, OAuthProviderUnavailable)
+	}
+	_, err = svc.ExchangeLogin(context.Background(), "google", validLoginExchange())
+	if got := oauthErrorCode(t, err); got != OAuthProviderUnavailable {
+		t.Fatalf("exchange oauth code = %q, want %q", got, OAuthProviderUnavailable)
+	}
+}
+
+func TestProviderRegistry_UsesProviderNameAsTheOnlyLookupKey(t *testing.T) {
+	provider := &fakeLoginProvider{name: "fake"}
+	registry := NewProviderRegistry(provider)
+	if got, ok := registry.Lookup("fake"); !ok || got != provider {
+		t.Fatalf("registry lookup = (%v, %v), want fake provider", got, ok)
+	}
+	if _, ok := registry.Lookup("google"); ok {
+		t.Fatal("registry must not synthesize an unconfigured provider")
+	}
+}
+
+func TestService_BeginLoginRejectsEmptyProviderAuthorizationURL(t *testing.T) {
+	provider := &fakeLoginProvider{name: "fake", beginFn: func(LoginStartInput) (Authorization, error) {
+		return Authorization{}, nil
+	}}
+	svc := newTestServiceWithProviders(&fakeRepo{}, newFakeTokenStore(), provider)
+	_, err := svc.BeginLogin(context.Background(), "fake", validLoginStart())
+	if got := oauthErrorCode(t, err); got != OAuthProviderUnavailable {
+		t.Fatalf("oauth code = %q, want %q", got, OAuthProviderUnavailable)
+	}
+	if strings.Contains(err.Error(), "Location") {
+		t.Fatalf("empty authorization must not become a redirect: %v", err)
+	}
+}
+
+var _ LoginProvider = (*fakeLoginProvider)(nil)

@@ -1,14 +1,6 @@
--- if an admin created a custom role after this migration and it's still
--- assigned to any user, dropping the roles table would orphan that value —
--- raise a clear, actionable error instead of a raw FK-violation.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM user_svc.users WHERE role NOT IN ('staff', 'admin')) THEN
-        RAISE EXCEPTION 'cannot roll back add_roles: users still have a role other than staff/admin — reassign them to staff/admin first';
-    END IF;
-END $$;
-
-ALTER TABLE user_svc.users DROP COLUMN role;
+-- Auth owns users.role, so RBAC removes only the constraint it added. The
+-- column and existing assignments remain valid for auth-only operation.
+ALTER TABLE user_svc.users DROP CONSTRAINT IF EXISTS users_role_fkey;
 
 DROP TABLE role_svc.role_permissions;
 DROP TABLE role_svc.permissions;

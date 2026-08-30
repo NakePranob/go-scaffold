@@ -25,7 +25,7 @@ test("generate module defaults to a safe minimal module", () => {
 
     const output = runCLI(project, "generate", "module", "orders", "--defaults");
     const handler = readFileSync(
-      path.join(project, "internal", "app", "order", "handler.go"),
+      path.join(project, "internal", "app", "order", "adapters", "inbound", "http", "handler.go"),
       "utf8"
     );
 
@@ -35,7 +35,7 @@ test("generate module defaults to a safe minimal module", () => {
 
     const legacyOutput = runCLI(project, "generate", "module", "widgets", "--no-full", "--defaults");
     const legacyHandler = readFileSync(
-      path.join(project, "internal", "app", "widget", "handler.go"),
+      path.join(project, "internal", "app", "widget", "adapters", "inbound", "http", "handler.go"),
       "utf8"
     );
     assert.match(legacyOutput, /registered empty route group/);

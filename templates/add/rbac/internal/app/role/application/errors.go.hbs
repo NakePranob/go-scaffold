@@ -1,0 +1,19 @@
+package application
+
+import "{{goModule}}/internal/app/role/domain"
+
+func errInvalidCode() error {
+	return domain.Rule("ROLE_INVALID_CODE", "code must start with a lowercase letter and contain only lowercase letters, digits, or underscores", domain.ErrInvalidCode)
+}
+
+func errSystemRole() error {
+	return domain.Rule("ROLE_IS_SYSTEM", "staff/admin are system roles and cannot be deleted", domain.ErrSystemRole)
+}
+
+func errUnknownPermission() error {
+	return domain.Rule("ROLE_UNKNOWN_PERMISSION", "one or more permission codes do not exist", domain.ErrUnknownPermission)
+}
+
+func errLastRoleManager() error {
+	return domain.Rule("ROLE_LAST_MANAGER", "this is the only role that can manage roles/permissions — grant "+PermRoleManage+" to another role first", domain.ErrLastRoleManager)
+}

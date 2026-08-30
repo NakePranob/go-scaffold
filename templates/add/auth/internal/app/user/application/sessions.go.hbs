@@ -1,0 +1,99 @@
+package application
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+// Refresh rotates a refresh token. A replayed, already-used token revokes
+// every session for that user; an intentionally logged-out token is rejected
+// without triggering reuse detection.
+func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*AuthResponse, error) {
+	hash := hashToken(rawRefreshToken)
+	token, ok, err := s.refreshTokens.ConsumeRefreshToken(ctx, hash)
+	if err != nil {
+		return nil, fmt.Errorf("consume refresh token: %w", err)
+	}
+	if !ok {
+		reusedBy, used, reuseErr := s.refreshTokens.IsRefreshTokenUsed(ctx, hash)
+		if reuseErr != nil {
+			return nil, fmt.Errorf("check refresh token reuse: %w", reuseErr)
+		}
+		if used {
+			if revokeErr := s.refreshTokens.RevokeAllRefreshTokens(ctx, reusedBy); revokeErr != nil {
+				return nil, fmt.Errorf("revoke sessions after refresh token reuse: %w", revokeErr)
+			}
+		}
+		return nil, errInvalidToken()
+	}
+
+	u, err := s.repo.FindByID(ctx, token.UserID)
+	if err != nil {
+		return nil, errInvalidToken()
+	}
+	return s.issueTokens(ctx, u, token.AbsoluteExpiresAt)
+}
+
+// Logout is intentional, not reuse: a missing or already-gone token still
+// succeeds and leaves no tombstone.
+func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
+	if rawRefreshToken == "" {
+		return nil
+	}
+	hash := hashToken(rawRefreshToken)
+	userID, ok, err := s.refreshTokens.GetRefreshToken(ctx, hash)
+	if err != nil || !ok {
+		return nil
+	}
+	return s.refreshTokens.DeleteRefreshToken(ctx, hash, userID)
+}
+
+// LogoutAll ends every refresh session for the authenticated user.
+func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) error {
+	return s.refreshTokens.RevokeAllRefreshTokens(ctx, userID)
+}
+
+func (s *Service) issueTokens(ctx context.Context, u *domain.User, absoluteExpiresAt ...time.Time) (*AuthResponse, error) {
+	access, err := s.issueAccessToken(
+		u.ID,
+		u.Role,
+		// go-scaffold:issue-access-token-args
+	)
+	if err != nil {
+		return nil, fmt.Errorf("issue access token: %w", err)
+	}
+	refresh, err := randomToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate refresh token: %w", err)
+	}
+	clock := s.now
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock()
+	abs := now.Add(s.config.JWTRefreshMaxTTL)
+	if len(absoluteExpiresAt) > 0 && !absoluteExpiresAt[0].IsZero() {
+		abs = absoluteExpiresAt[0]
+	}
+	expiresAt := now.Add(s.config.JWTRefreshTTL)
+	if abs.Before(expiresAt) {
+		expiresAt = abs
+	}
+	if !expiresAt.After(now) || !abs.After(now) {
+		return nil, fmt.Errorf("refresh token lifetime is exhausted")
+	}
+	if err := s.refreshTokens.SetRefreshToken(ctx, hashToken(refresh), RefreshTokenRecord{UserID: u.ID, ExpiresAt: expiresAt, AbsoluteExpiresAt: abs}); err != nil {
+		return nil, fmt.Errorf("store refresh token: %w", err)
+	}
+	return &AuthResponse{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		TokenType:    "Bearer",
+		ExpiresIn:    int(s.config.JWTAccessTTL.Seconds()),
+	}, nil
+}

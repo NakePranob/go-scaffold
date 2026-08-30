@@ -1,0 +1,98 @@
+package httpadapter
+
+import (
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"{{goModule}}/internal/shared/apperror"
+
+	"github.com/gin-gonic/gin"
+)
+
+// requireBrowserOrigin is the CSRF guard for the cross-site cookie mode. CORS
+// controls whether a caller can read the response; this exact origin check
+// independently controls whether a state-changing request may use an ambient
+// refresh cookie.
+func (h *Handler) requireBrowserOrigin(c *gin.Context) bool {
+	if !strings.EqualFold(strings.TrimSpace(h.cookieSameSite), "none") {
+		return true
+	}
+
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		if referer := strings.TrimSpace(c.GetHeader("Referer")); referer != "" {
+			if parsed, err := url.Parse(referer); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil {
+				origin = parsed.Scheme + "://" + parsed.Host
+			}
+		}
+	}
+	if !browserOriginAllowed(origin, h.allowedOrigins) {
+		c.Error(apperror.New(http.StatusForbidden, "CSRF_ORIGIN_INVALID", "request origin is not allowed"))
+		c.Abort()
+		return false
+	}
+	return true
+}
+
+func browserOriginAllowed(origin string, allowed []string) bool {
+	origin = strings.TrimSpace(origin)
+	if _, ok := canonicalBrowserOrigin(origin); !ok {
+		return false
+	}
+	for _, candidate := range allowed {
+		candidate = strings.TrimSpace(candidate)
+		if _, candidateOK := canonicalBrowserOrigin(candidate); candidateOK && candidate == origin {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalBrowserOrigin(value string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.User != nil || parsed.Opaque != "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false
+	}
+	return parsed.Scheme + "://" + parsed.Host, true
+}
+
+// ValidateBrowserCookiePolicy ties deployment topology to the attributes used
+// by /auth/refresh. Same-site is the safe local default; cross-site must opt
+// into None + Secure, and production always requires Secure.
+func ValidateBrowserCookiePolicy(topology, sameSite string, secure, production bool) error {
+	if production && !secure {
+		return fmt.Errorf("production browser cookies require COOKIE_SECURE=true")
+	}
+	switch strings.ToLower(strings.TrimSpace(topology)) {
+	case "same-origin", "same-site":
+		if strings.EqualFold(strings.TrimSpace(sameSite), "none") && !secure {
+			return fmt.Errorf("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
+		}
+		return nil
+	case "cross-site":
+		if !strings.EqualFold(strings.TrimSpace(sameSite), "none") || !secure {
+			return fmt.Errorf("cross-site browser topology requires COOKIE_SAMESITE=none and COOKIE_SECURE=true")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported browser topology %q", topology)
+	}
+}
+
+// sameSiteFrom maps COOKIE_SAMESITE to the net/http constant and defaults to
+// the strictest option for anything unrecognised.
+func sameSiteFrom(mode string) http.SameSite {
+	switch strings.ToLower(mode) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "lax":
+		return http.SameSiteLaxMode
+	default:
+		return http.SameSiteStrictMode
+	}
+}
