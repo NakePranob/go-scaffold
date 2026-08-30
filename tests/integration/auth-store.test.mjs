@@ -74,6 +74,8 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
   const composition = read(app, "internal/app/user/composition.go");
   assert.match(composition, /NewRedisTokenStore\(rdb, db\)/);
   assert.match(composition, /middleware\.NewRedisLimiter\(rdb\)/);
+  assert.doesNotMatch(composition, /type PgTokenStore = userpostgres\.PgTokenStore/);
+  assert.doesNotMatch(composition, /func NewPgTokenStore\(db \*gorm\.DB\)/);
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.match(main, /&usermodel\.AuthToken\{\},/, "recovery tokens need the auth_tokens table");
@@ -82,6 +84,8 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
     execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),
     "the auth_tokens migration must also be generated for Redis refresh storage"
   );
+  execFileSync("go", ["mod", "tidy"], { cwd: app, stdio: "ignore" });
+  execFileSync("go", ["test", "./..."], { cwd: app, stdio: "ignore" });
 });
 
 // add rbac composes role locally and passes only its public capabilities into

@@ -128,7 +128,9 @@ type RoleChecker = ports.RoleChecker
 type Service = application.Service
 type ServicePort = application.ServicePort
 type Repository = userpostgres.Repository
+{{#unless redis}}
 type PgTokenStore = userpostgres.PgTokenStore
+{{/unless}}
 type PostgresMFAStore = userpostgres.PostgresMFAStore
 {{#if redis}}
 type RedisTokenStore = userredis.RedisTokenStore
@@ -150,9 +152,11 @@ func NewRepository(db *gorm.DB) *Repository {
 	return userpostgres.NewRepository(db)
 }
 
+{{#unless redis}}
 func NewPgTokenStore(db *gorm.DB) *PgTokenStore {
 	return userpostgres.NewPgTokenStore(db)
 }
+{{/unless}}
 
 func NewPostgresMFAStore(db *gorm.DB) *PostgresMFAStore {
 	return userpostgres.NewPostgresMFAStore(db)
