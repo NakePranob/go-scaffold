@@ -1,0 +1,27 @@
+package {{pkg}}
+
+import (
+	httpadapter "{{goModule}}/internal/app/{{modulePath}}/adapters/inbound/http"
+	"{{goModule}}/internal/app/{{modulePath}}/adapters/outbound/postgres"
+	"{{goModule}}/internal/app/{{modulePath}}/application"
+{{#unless cqrs}}
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+{{/unless}}
+	"gorm.io/gorm"
+{{#if permission}}	"{{goModule}}/internal/shared/middleware"
+{{/if}}
+)
+
+// NewHandlerFromDB is this module's composition root. The process root owns
+// the database handle; this package owns the feature's adapter graph.
+func NewHandlerFromDB(db *gorm.DB{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *httpadapter.Handler {
+	repo := postgres.NewRepository(db)
+{{#if cqrs}}
+	commands := application.NewCommandHandler(repo)
+	queries := application.NewQueryHandler(repo)
+	return httpadapter.NewHandler(commands, queries{{#if auth}}, jwtSecret{{/if}}{{#if permission}}, authz{{/if}})
+{{else}}
+	var service ports.Repository = repo
+	return httpadapter.NewHandler(application.NewService(service){{#if auth}}, jwtSecret{{/if}}{{#if permission}}, authz{{/if}})
+{{/if}}
+}

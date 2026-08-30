@@ -1,0 +1,159 @@
+package httpadapter
+
+import (
+	"time"
+
+	userapp "{{goModule}}/internal/app/user/application"
+	userdomain "{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+// Request DTOs belong to the HTTP adapter. The application receives the
+// transport-neutral inputs from handler mapping code.
+type registerInput struct {
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=8"`
+	Name     string `json:"name" binding:"required"`
+}
+
+type loginInput struct {
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required"`
+}
+
+type loginExchangeInput struct {
+	Code         string `json:"code"`
+	State        string `json:"state"`
+	CodeVerifier string `json:"code_verifier"`
+}
+
+type loginStartInput struct {
+	State               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+}
+
+func toRegisterInput(in registerInput) userapp.RegisterInput {
+	return userapp.RegisterInput{Email: in.Email, Password: in.Password, Name: in.Name}
+}
+
+func toLoginInput(in loginInput) userapp.LoginInput {
+	return userapp.LoginInput{Email: in.Email, Password: in.Password}
+}
+
+func toLoginStartInput(in loginStartInput) userapp.LoginStartInput {
+	return userapp.LoginStartInput{
+		State: in.State, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod,
+	}
+}
+
+func toLoginExchangeInput(in loginExchangeInput) userapp.LoginExchangeInput {
+	return userapp.LoginExchangeInput{Code: in.Code, State: in.State, CodeVerifier: in.CodeVerifier}
+}
+
+type forgotPasswordInput struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+type resetPasswordInput struct {
+	Token       string `json:"token" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required,min=8"`
+}
+
+type verifyEmailInput struct {
+	Token string `json:"token" binding:"required"`
+}
+
+type mfaCodeInput struct {
+	Code string `json:"code" binding:"required"`
+}
+
+type mfaChallengeInput struct {
+	Challenge string `json:"challenge" binding:"required"`
+	Code      string `json:"code" binding:"required"`
+}
+
+type authCookieResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
+}
+
+type mfaChallengeResponse struct {
+	MFARequired bool   `json:"mfa_required"`
+	Challenge   string `json:"challenge"`
+}
+
+type mfaStatusResponse struct {
+	Available bool `json:"available"`
+	Enabled   bool `json:"enabled"`
+}
+
+type mfaSetupResponse struct {
+	Secret     string `json:"secret"`
+	OTPAuthURI string `json:"otpauth_uri"`
+}
+
+type mfaConfirmResponse struct {
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
+func toCookieResponse(auth *userapp.AuthResponse) authCookieResponse {
+	return authCookieResponse{AccessToken: auth.AccessToken, TokenType: auth.TokenType, ExpiresIn: auth.ExpiresIn}
+}
+
+type meResponse struct {
+	ID            uuid.UUID `json:"id"`
+	Email         string    `json:"email"`
+	Name          string    `json:"name"`
+	AvatarURL     string    `json:"avatar_url"`
+	EmailVerified bool      `json:"email_verified"`
+	Role          string    `json:"role"`
+	// go-scaffold:user-me-fields
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func toMeResponse(user *userdomain.User) meResponse {
+	return meResponse{
+		ID:            user.ID,
+		Email:         user.Email,
+		Name:          user.Name,
+		AvatarURL:     user.AvatarURL,
+		EmailVerified: user.EmailVerified,
+		CreatedAt:     user.CreatedAt,
+		Role:          user.Role,
+		// go-scaffold:user-me-values
+	}
+}
+
+// response is the HTTP representation used by generated methods. It is kept
+// separate from application.Response so JSON naming remains an adapter detail.
+//
+//nolint:unused
+type response struct {
+	ID            uuid.UUID `json:"id"`
+	Email         string    `json:"email"`
+	Name          string    `json:"name"`
+	AvatarURL     string    `json:"avatar_url"`
+	EmailVerified bool      `json:"email_verified"`
+	Role          string    `json:"role"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+//nolint:unused
+func toResponse(out userapp.Response) response {
+	return response{
+		ID: out.ID, Email: out.Email, Name: out.Name, AvatarURL: out.AvatarURL,
+		EmailVerified: out.EmailVerified, Role: out.Role, CreatedAt: out.CreatedAt,
+		UpdatedAt: out.UpdatedAt,
+	}
+}
+
+type setRoleInput struct {
+	Role string `json:"role" binding:"required"`
+}
+
+// go-scaffold:dto
+// go-scaffold:user-dto

@@ -1,0 +1,41 @@
+// Package domain contains transport- and persistence-neutral user values.
+package domain
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type User struct {
+	ID            uuid.UUID
+	Email         string
+	Name          string
+	AvatarURL     string
+	EmailVerified bool
+	Role          string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// DefaultRole is part of auth's persisted user contract. RBAC may add the
+// role catalog later, but every newly issued access token must carry the same
+// default that the users migration applies at the database boundary.
+const DefaultRole = "staff"
+
+type Provider string
+
+const (
+	ProviderLocal  Provider = "local"
+	ProviderGoogle Provider = "google"
+)
+
+type Identity struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	Provider     Provider
+	PasswordHash *string
+	ProviderUID  *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}

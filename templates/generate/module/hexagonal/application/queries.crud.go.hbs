@@ -1,0 +1,33 @@
+package application
+
+import (
+	"context"
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+
+	"github.com/google/uuid"
+)
+
+type QueryPort interface {
+	List(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	Get(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	// go-scaffold:query-interface
+}
+
+type QueryHandler struct {
+	repo ports.QueryRepository
+}
+
+func NewQueryHandler(repo ports.QueryRepository) *QueryHandler {
+	return &QueryHandler{repo: repo}
+}
+
+func (h *QueryHandler) List(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
+	return h.repo.FindAll(ctx, limit, offset)
+}
+
+func (h *QueryHandler) Get(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {
+	return h.repo.FindByID(ctx, id)
+}
+
+// go-scaffold:query-methods

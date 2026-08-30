@@ -1,0 +1,25 @@
+// Package ports contains role's application-owned repository contracts.
+package ports
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/role/domain"
+)
+
+type Repository interface {
+	PermissionCodes(context.Context, string) ([]string, error)
+	FindAll(context.Context, int, int) ([]domain.Role, error)
+	FindByCode(context.Context, string) (*domain.Role, error)
+	Create(context.Context, *domain.Role) error
+	SetPermissions(context.Context, string, []string) error
+	Delete(context.Context, string) error
+	FindAllPermissions(context.Context, int, int) ([]domain.Permission, error)
+	AllPermissionCodes(context.Context) ([]string, error)
+	CountRolesWithPermission(context.Context, string, string) (int64, error)
+}
+
+type AuthorizationPort interface {
+	PermissionsOf(context.Context, string) (map[string]struct{}, error)
+	CodeExists(context.Context, string) (bool, error)
+}

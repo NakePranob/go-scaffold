@@ -25,6 +25,10 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "internal/platform/database/database.go",
   },
   {
+    template: "create/base/internal/composition/doc.go.hbs",
+    output: "internal/composition/doc.go",
+  },
+  {
     template: "create/base/internal/shared/config/config.go.hbs",
     output: "internal/shared/config/config.go",
   },

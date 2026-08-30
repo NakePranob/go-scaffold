@@ -2,10 +2,12 @@ import path from "path";
 import fs from "fs-extra";
 import {
   ApplicationStyle,
+  ArchitectureBoundary,
   ArchitectureConfig,
   ArchitectureStyle,
   DEFAULT_ARCHITECTURE_CONFIG,
   ModuleConfig,
+  PackageLayout,
   ModuleProfile,
   ModuleSurface,
   ProjectConfig,
@@ -13,7 +15,7 @@ import {
 } from "../types";
 
 const CONFIG_FILE = "go-scaffold.config.json";
-export const CONFIG_SCHEMA_VERSION = 1;
+export const CONFIG_SCHEMA_VERSION = 2;
 
 export function configPath(projectDir: string): string {
   return path.join(projectDir, CONFIG_FILE);
@@ -75,9 +77,10 @@ export function readConfig(projectDir: string): ProjectConfig {
 }
 
 /**
- * Validate and fill defaults for the project manifest. Older projects have
- * no architecture/modules keys yet; normalising them here lets every command
- * consume one stable shape while keeping the old config file compatible.
+ * Validate and fill defaults for the project manifest. Projects that omit the
+ * architecture/modules keys can still be resolved safely; an explicit schema
+ * from before the split-layout contract is rejected so commands never write a
+ * mixed old/new tree.
  */
 function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string): ProjectConfig {
   const projectName = requiredString(raw.projectName, "projectName");
@@ -87,6 +90,12 @@ function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string)
 
   if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
     throw new Error(`${CONFIG_FILE} has invalid schemaVersion "${String(schemaVersion)}" — expected a positive integer`);
+  }
+  if (schemaVersion < CONFIG_SCHEMA_VERSION) {
+    throw new Error(
+      `${CONFIG_FILE} uses legacy schemaVersion ${schemaVersion}; go-scaffold ${CONFIG_SCHEMA_VERSION} requires the hexagonal split layout. ` +
+        `Keep using go-scaffold 0.4.x for that project, or migrate its modules to internal/app/<module>/{domain,application,ports,adapters} before upgrading.`
+    );
   }
   if (schemaVersion > CONFIG_SCHEMA_VERSION) {
     throw new Error(
@@ -128,11 +137,15 @@ function normalizeArchitecture(raw: unknown): ArchitectureConfig {
   } as Record<string, unknown>;
 
   assertOneOf(architecture.style, "architecture.style", ["modular-monolith"]);
+  assertOneOf(architecture.boundary, "architecture.boundary", ["hexagonal"]);
+  assertOneOf(architecture.packageLayout, "architecture.packageLayout", ["split"]);
   assertOneOf(architecture.defaultModuleSurface, "architecture.defaultModuleSurface", ["minimal", "crud"]);
   assertOneOf(architecture.defaultApplicationStyle, "architecture.defaultApplicationStyle", ["service", "cqrs"]);
 
   return {
     style: architecture.style as ArchitectureStyle,
+    boundary: architecture.boundary as ArchitectureBoundary,
+    packageLayout: architecture.packageLayout as PackageLayout,
     defaultModuleSurface: architecture.defaultModuleSurface as ModuleSurface,
     defaultApplicationStyle: architecture.defaultApplicationStyle as ApplicationStyle,
   };
@@ -149,11 +162,17 @@ function normalizeModules(raw: unknown): Record<string, ModuleConfig> {
     }
     if (!isRecord(entry)) throw new Error(`${CONFIG_FILE}.modules.${name} must be a JSON object`);
 
+    const boundary = entry.boundary ?? DEFAULT_ARCHITECTURE_CONFIG.boundary;
+    const packageLayout = entry.packageLayout ?? DEFAULT_ARCHITECTURE_CONFIG.packageLayout;
     assertOneOf(entry.surface, `modules.${name}.surface`, ["minimal", "crud"]);
     assertOneOf(entry.applicationStyle, `modules.${name}.applicationStyle`, ["service", "cqrs"]);
+    assertOneOf(boundary, `modules.${name}.boundary`, ["hexagonal"]);
+    assertOneOf(packageLayout, `modules.${name}.packageLayout`, ["split"]);
     modules[name] = {
       surface: entry.surface as ModuleSurface,
       applicationStyle: entry.applicationStyle as ApplicationStyle,
+      boundary: boundary as ArchitectureBoundary,
+      packageLayout: packageLayout as PackageLayout,
     };
   }
   return modules;
@@ -218,7 +237,11 @@ function detectFeatures(projectDir: string): ProjectFeatures {
     // file it wrote — same trick as the queue adapter above. Projects from
     // before the option existed have neither name and read as "redis",
     // which is what they in fact are.
-    authStore: !auth ? undefined : has("internal", "app", "user", "tokenstore_pg.go") ? "postgres" : "redis",
+    authStore: !auth
+      ? undefined
+      : has("internal", "app", "user", "adapters", "outbound", "postgres", "tokenstore_pg.go")
+        ? "postgres"
+        : "redis",
     rbac: has("internal", "app", "role") && has("internal", "shared", "middleware", "authz.go"),
     observability: has("internal", "platform", "telemetry"),
   };

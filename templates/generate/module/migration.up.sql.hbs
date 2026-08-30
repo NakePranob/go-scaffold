@@ -1,4 +1,4 @@
--- one schema per domain — see model.go's TableName for why
+-- one schema per domain — see adapters/outbound/postgres/model.go's TableName for why
 CREATE SCHEMA IF NOT EXISTS {{schemaName}};
 
 CREATE TABLE {{schemaName}}.{{tableName}} (

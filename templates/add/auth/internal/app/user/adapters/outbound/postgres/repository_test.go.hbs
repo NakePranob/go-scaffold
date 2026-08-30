@@ -1,0 +1,191 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+// repositoryDBForTest expects the test database schema to come from the same
+// versioned SQL migrations used in production. Unit tests stay database-free;
+// CI sets REQUIRE_TEST_DB=true so an unavailable/unmigrated database fails
+// instead of becoming a false-green skip. Same pattern as every generated
+// module's repository_test.go.
+func repositoryDBForTest(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatal("TEST_DB_DSN is required when REQUIRE_TEST_DB=true")
+		}
+		t.Skip("repository integration test skipped: set TEST_DB_DSN to a migrated PostgreSQL database")
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true})
+	if err != nil {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatalf("open required test database: %v", err)
+		}
+		t.Skipf("repository integration test skipped: %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get SQL database handle: %v", err)
+	}
+	if err := sqlDB.Ping(); err != nil {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatalf("ping required test database: %v", err)
+		}
+		t.Skipf("repository integration test skipped: %v", err)
+	}
+
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatalf("begin test transaction: %v", tx.Error)
+	}
+	t.Cleanup(func() {
+		if err := tx.Rollback().Error; err != nil {
+			t.Errorf("rollback test transaction: %v", err)
+		}
+	})
+	return tx
+}
+
+// CreateUserWithIdentity's whole reason to be a transaction: a user that
+// exists with no way to log in is unreachable. If the identity insert fails,
+// the user it was meant to arrive with must vanish too — a function-backed
+// stub can't prove this, since it never runs a real insert against a real
+// constraint. This forces exactly that: the user insert succeeds (it's a
+// brand new row), but the identity insert collides with an existing Google
+// identity's provider_uid.
+func TestRepository_CreateUserWithIdentity_RollsBackBothOnIdentityConflict(t *testing.T) {
+	repo := NewRepository(repositoryDBForTest(t))
+	ctx := context.Background()
+
+	providerUID := "conflicting-provider-uid"
+	existing := &domain.User{ID: uuid.New(), Email: "first@example.com"}
+	if err := repo.CreateUserWithIdentity(ctx, existing, &domain.Identity{
+		ID: uuid.New(), Provider: domain.ProviderGoogle, ProviderUID: &providerUID,
+	}); err != nil {
+		t.Fatalf("seed existing user+identity: %v", err)
+	}
+
+	blocked := &domain.User{ID: uuid.New(), Email: "second@example.com"}
+	err := repo.CreateUserWithIdentity(ctx, blocked, &domain.Identity{
+		ID: uuid.New(), Provider: domain.ProviderGoogle, ProviderUID: &providerUID,
+	})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("want a mapped user conflict from the conflicting provider_uid, got %v", err)
+	}
+
+	if _, findErr := repo.FindByID(ctx, blocked.ID); !errors.Is(findErr, domain.ErrNotFound) {
+		t.Fatalf("the new user must not survive a transaction whose identity insert failed, got %v", findErr)
+	}
+}
+
+// The unique index on email is what actually stops two accounts sharing a
+// login — Register's "email already registered" response depends on the
+// database enforcing it, not on an application-level check (which would
+// race). Confirms the constraint is really there and that dberr recognizes
+// the violation shape Postgres returns.
+func TestRepository_CreateUserWithIdentity_DuplicateEmailIsDetectable(t *testing.T) {
+	repo := NewRepository(repositoryDBForTest(t))
+	ctx := context.Background()
+
+	email := "dup@example.com"
+	if err := repo.CreateUserWithIdentity(ctx, &domain.User{ID: uuid.New(), Email: email}, &domain.Identity{
+		ID: uuid.New(), Provider: domain.ProviderLocal,
+	}); err != nil {
+		t.Fatalf("seed first user: %v", err)
+	}
+
+	err := repo.CreateUserWithIdentity(ctx, &domain.User{ID: uuid.New(), Email: email}, &domain.Identity{
+		ID: uuid.New(), Provider: domain.ProviderLocal,
+	})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("want a mapped user conflict for the reused email, got %v", err)
+	}
+}
+
+// The backoff is computed by Postgres inside one UPSERT, so this is the only
+// place it can be checked — a fake can agree with itself about arithmetic the
+// database would reject.
+func TestRepository_LoginThrottle_BacksOffThenClears(t *testing.T) {
+	db := repositoryDBForTest(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	key := "throttle-test-" + uuid.NewString()
+
+	// the free attempts leave no lock behind
+	for i := 0; i < 3; i++ {
+		if err := repo.RecordLoginFailure(ctx, key, 3, 15*time.Minute); err != nil {
+			t.Fatalf("record failure %d: %v", i+1, err)
+		}
+		until, err := repo.LoginLockedUntil(ctx, key)
+		if err != nil {
+			t.Fatalf("read lock: %v", err)
+		}
+		if !until.IsZero() {
+			t.Fatalf("attempt %d is within the free allowance but set a lock (%s)", i+1, until)
+		}
+	}
+
+	// the next one locks, and the one after that locks for longer
+	if err := repo.RecordLoginFailure(ctx, key, 3, 15*time.Minute); err != nil {
+		t.Fatalf("record failure 4: %v", err)
+	}
+	first, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil || first.IsZero() {
+		t.Fatalf("expected a lock after exceeding the free allowance, got %s (err %v)", first, err)
+	}
+	if err := repo.RecordLoginFailure(ctx, key, 3, 15*time.Minute); err != nil {
+		t.Fatalf("record failure 5: %v", err)
+	}
+	second, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if !second.After(first) {
+		t.Fatalf("the backoff did not grow: %s then %s", first, second)
+	}
+
+	// a successful login wipes the slate
+	if err := repo.ClearLoginFailures(ctx, key); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	cleared, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil || !cleared.IsZero() {
+		t.Fatalf("expected no lock after clearing, got %s (err %v)", cleared, err)
+	}
+}
+
+// maxLock is a ceiling, not a suggestion: without it the doubling reaches
+// "locked for a week" in about twenty attempts.
+func TestRepository_LoginThrottle_RespectsTheCeiling(t *testing.T) {
+	db := repositoryDBForTest(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	key := "throttle-cap-" + uuid.NewString()
+
+	for i := 0; i < 12; i++ {
+		if err := repo.RecordLoginFailure(ctx, key, 0, 5*time.Second); err != nil {
+			t.Fatalf("record failure %d: %v", i+1, err)
+		}
+	}
+	until, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if remaining := time.Until(until); remaining > 30*time.Second {
+		t.Fatalf("lock ran past its 5s ceiling: %s remaining", remaining)
+	}
+}

@@ -1,0 +1,48 @@
+// Package postgres contains role persistence records. They are deliberately
+// separate from role/domain so schema tags cannot leak into use cases.
+package postgres
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/role/domain"
+)
+
+type Role struct {
+	Code      string `gorm:"type:varchar(20);primaryKey"`
+	Name      string `gorm:"not null"`
+	IsSystem  bool   `gorm:"not null;default:false"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (Role) TableName() string { return "role_svc.roles" }
+
+type Permission struct {
+	Code        string `gorm:"type:varchar(50);primaryKey"`
+	Description string `gorm:"not null"`
+}
+
+func (Permission) TableName() string { return "role_svc.permissions" }
+
+type RolePermission struct {
+	RoleCode       string `gorm:"primaryKey;type:varchar(20)"`
+	PermissionCode string `gorm:"primaryKey;type:varchar(50)"`
+}
+
+func (RolePermission) TableName() string { return "role_svc.role_permissions" }
+
+func toDomainRole(row *Role) domain.Role {
+	return domain.Role{Code: row.Code, Name: row.Name, IsSystem: row.IsSystem, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+}
+
+func fromDomainRole(value *domain.Role) *Role {
+	if value == nil {
+		return nil
+	}
+	return &Role{Code: value.Code, Name: value.Name, IsSystem: value.IsSystem, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+}
+
+func toDomainPermission(row *Permission) domain.Permission {
+	return domain.Permission{Code: row.Code, Description: row.Description}
+}

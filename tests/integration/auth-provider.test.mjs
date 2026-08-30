@@ -33,14 +33,20 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const project = createProject(t);
   cli(project, "add", "auth", "--store", "postgres", "--browser-topology", "same-site", "--yes");
 
-  const handler = read(project, "internal", "app", "user", "handler.go");
-  const service = read(project, "internal", "app", "user", "service.go");
-  const contracts = read(project, "internal", "app", "user", "contracts.go");
-  const mfaService = read(project, "internal", "app", "user", "mfa_service.go");
-  const mfaStore = read(project, "internal", "app", "user", "mfa_store.go");
-  const externalLogin = read(project, "internal", "app", "user", "external_login.go");
-  const sessionCookie = read(project, "internal", "app", "user", "session_cookie.go");
-  const browserPolicy = read(project, "internal", "app", "user", "browser_policy.go");
+  const application = ["internal", "app", "user", "application"];
+  const inbound = ["internal", "app", "user", "adapters", "inbound", "http"];
+  const postgres = ["internal", "app", "user", "adapters", "outbound", "postgres"];
+  const handler = read(project, ...inbound, "handler.go");
+  const service = read(project, ...application, "service.go");
+  const applicationDTO = read(project, ...application, "dto.go");
+  const contracts = read(project, ...application, "contracts.go");
+  const passwordPorts = read(project, "internal", "app", "user", "ports", "password.go");
+  const passwordAdapter = read(project, "internal", "app", "user", "adapters", "outbound", "password", "bcrypt.go");
+  const mfaService = read(project, ...application, "mfa_service.go");
+  const mfaStore = read(project, ...postgres, "mfa_store.go");
+  const externalLogin = read(project, ...application, "external_login.go");
+  const sessionCookie = read(project, ...inbound, "session_cookie.go");
+  const browserPolicy = read(project, ...inbound, "browser_policy.go");
   const googleProvider = read(project, "internal", "platform", "authprovider", "google", "google.go");
   const composition = read(project, "internal", "app", "user", "composition.go");
   const config = read(project, "internal", "shared", "config", "config.go");
@@ -53,11 +59,17 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.doesNotMatch(service, /oauth2\.Config|GoogleLoginURL|GoogleCallback|findOrCreateGoogleUser|issueOAuthState/);
   assert.match(service, /func NewService\(deps Dependencies, cfg AuthConfig\)/);
   assert.doesNotMatch(service, /config\.Config/);
+  assert.doesNotMatch(applicationDTO, /json:/);
   assert.match(contracts, /type Dependencies struct/);
   assert.match(contracts, /type AuthConfig struct/);
-  assert.match(contracts, /type MFAStore interface/);
+  assert.match(contracts, /MFA\s+ports\.MFAStore/);
+  assert.match(contracts, /Passwords\s+ports\.PasswordHasher/);
+  assert.match(passwordPorts, /type PasswordHasher interface/);
+  assert.match(passwordAdapter, /var _ userports\.PasswordHasher/);
+  assert.doesNotMatch(read(project, ...application, "local_auth.go"), /x\/crypto\/bcrypt/);
+  assert.doesNotMatch(read(project, ...application, "user_query.go"), /x\/crypto\/bcrypt/);
   assert.match(contracts, /type MFASettings/);
-  assert.match(contracts, /type ProviderRegistry interface/);
+  assert.match(read(project, "internal", "app", "user", "application", "oauth.go"), /type ProviderRegistry struct/);
   assert.match(mfaService, /totpCode/);
   assert.match(mfaStore, /ConsumeChallenge/);
   assert.match(externalLogin, /validPKCEChallenge\(in\.CodeChallenge\)/);
@@ -94,6 +106,8 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));
+  assert.ok(existsSync(path.join(project, "internal", "app", "user", "adapters", "inbound", "http", "handler.go")));
+  assert.ok(existsSync(path.join(project, "internal", "app", "user", "ports", "repository.go")));
   assert.ok(existsSync(path.join(project, "internal", "platform", "authprovider", "google", "google.go")));
   for (const file of [
     "local_auth.go",
@@ -113,8 +127,14 @@ test("add auth writes generic provider login and exchange routes", (t) => {
     "mfa_store_test.go",
     "handler_mfa.go",
   ]) {
-    assert.ok(existsSync(path.join(project, "internal", "app", "user", file)), `${file} must be generated`);
+    const directory = ["handler_local.go", "handler_recovery.go", "handler_oauth.go", "handler_user.go", "handler_mfa.go", "session_cookie.go", "browser_policy.go"].includes(file)
+      ? inbound
+      : ["mfa_store.go", "mfa_store_test.go"].includes(file)
+        ? postgres
+        : application;
+    assert.ok(existsSync(path.join(project, ...directory, file)), `${file} must be generated in the canonical split boundary`);
   }
+  assert.equal(existsSync(path.join(project, "internal", "app", "user", "model")), false);
 });
 
 test("add auth --defaults keeps local same-site defaults and --yes remains non-TTY safe", (t) => {
@@ -156,13 +176,13 @@ test("generate method remains usable after auth splits its service and handler f
   execFileSync("go", ["mod", "tidy"], { cwd: project, stdio: "ignore" });
   execFileSync("go", ["test", "./..."], { cwd: project, stdio: "ignore" });
 
-  const handler = read(project, "internal", "app", "user", "handler.go");
-  const service = read(project, "internal", "app", "user", "service.go");
-  const repository = read(project, "internal", "app", "user", "repository.go");
-  const serviceTest = read(project, "internal", "app", "user", "service_test.go");
+  const handler = read(project, "internal", "app", "user", "adapters", "inbound", "http", "handler.go");
+  const service = read(project, "internal", "app", "user", "application", "service.go");
+  const repository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "repository.go");
+  const serviceTest = read(project, "internal", "app", "user", "application", "service_test.go");
 
   assert.match(listOutput, /route: GET \/users\/lookup-by-email/);
-  assert.match(listOutput, /next: fill in the TODO in service\.go/);
+  assert.match(listOutput, /next: fill in the TODO in application\/service\.go/);
   assert.match(lookupOutput, /route: GET \/users\/name\/\{name\}/);
   assert.match(handler, /usersGroup\.GET\("\/lookup-by-email", h\.lookupByEmail\)/);
   assert.match(handler, /usersGroup\.GET\("\/name\/:name", h\.findByName\)/);

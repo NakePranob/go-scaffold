@@ -1,0 +1,73 @@
+package application
+
+import (
+	"context"
+	"errors"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+	"{{goModule}}/internal/shared/id"
+
+	"github.com/google/uuid"
+)
+
+type ServicePort interface {
+	Create(context.Context, CreateInput) (*domain.{{pascalName}}, error)
+	List(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	Get(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	Update(context.Context, uuid.UUID, UpdateInput) (*domain.{{pascalName}}, error)
+	Delete(context.Context, uuid.UUID) error
+	// go-scaffold:service-interface
+}
+
+type Service struct {
+	repo ports.Repository
+}
+
+func NewService(repo ports.Repository) *Service {
+	return &Service{repo: repo}
+}
+
+func (s *Service) Create(ctx context.Context, in CreateInput) (*domain.{{pascalName}}, error) {
+	// TODO: map in to real domain fields and enforce invariants.
+	_ = in
+	m := &domain.{{pascalName}}{ID: id.New(), Version: 1}
+	if err := s.repo.Create(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *Service) List(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
+	return s.repo.FindAll(ctx, limit, offset)
+}
+
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {
+	return s.repo.FindByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*domain.{{pascalName}}, error) {
+	m, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: map in to real domain fields before saving.
+	m.Version = in.Version
+	if err := s.repo.Update(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	return nil
+}
+
+// IsNotFound is useful to non-HTTP callers without exposing persistence
+// errors. The inbound HTTP adapter maps the same domain sentinel to 404.
+func IsNotFound(err error) bool { return errors.Is(err, domain.ErrNotFound) }
+
+// go-scaffold:service-methods

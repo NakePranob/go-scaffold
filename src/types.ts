@@ -34,6 +34,8 @@ export type BrowserTopology = "same-origin" | "same-site" | "cross-site";
  * their tests support the combination.
  */
 export type ArchitectureStyle = "modular-monolith";
+export type ArchitectureBoundary = "hexagonal";
+export type PackageLayout = "split";
 export type ModuleSurface = "minimal" | "crud";
 export type ApplicationStyle = "service" | "cqrs";
 /**
@@ -45,6 +47,10 @@ export type ModuleProfile = "lean" | "crud" | "cqrs";
 
 export interface ArchitectureConfig {
   style: ArchitectureStyle;
+  /** Ports and adapters inside every module. */
+  boundary: ArchitectureBoundary;
+  /** Physical package layout: domain/application/ports/adapters. */
+  packageLayout: PackageLayout;
   defaultModuleSurface: ModuleSurface;
   defaultApplicationStyle: ApplicationStyle;
 }
@@ -52,10 +58,14 @@ export interface ArchitectureConfig {
 export interface ModuleConfig {
   surface: ModuleSurface;
   applicationStyle: ApplicationStyle;
+  boundary: ArchitectureBoundary;
+  packageLayout: PackageLayout;
 }
 
 export const DEFAULT_ARCHITECTURE_CONFIG: ArchitectureConfig = {
   style: "modular-monolith",
+  boundary: "hexagonal",
+  packageLayout: "split",
   defaultModuleSurface: "minimal",
   defaultApplicationStyle: "service",
 };

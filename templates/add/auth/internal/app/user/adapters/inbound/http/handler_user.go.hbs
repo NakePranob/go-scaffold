@@ -1,0 +1,41 @@
+package httpadapter
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/shared/middleware"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+func (h *Handler) resendVerification(c *gin.Context) {
+	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
+	if err := h.svc.ResendVerificationEmail(c.Request.Context(), userID); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// logoutAll ends every session for the caller, including the cookie used by
+// this request.
+func (h *Handler) logoutAll(c *gin.Context) {
+	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
+	if err := h.svc.LogoutAll(c.Request.Context(), userID); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.clearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) me(c *gin.Context) {
+	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
+	u, err := h.svc.Get(c.Request.Context(), userID)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, toMeResponse(u))
+}

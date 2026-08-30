@@ -1,0 +1,11 @@
+package domain
+
+import "errors"
+
+var (
+	ErrNotFound      = errors.New("{{pkg}} not found")
+	ErrConflict      = errors.New("{{pkg}} conflicts with an existing record")
+	ErrStaleVersion  = errors.New("{{pkg}} was modified by someone else")
+	ErrHasReferences = errors.New("{{pkg}} still has related records")
+	ErrNotImplemented = errors.New("{{pkg}} operation is not implemented")
+)

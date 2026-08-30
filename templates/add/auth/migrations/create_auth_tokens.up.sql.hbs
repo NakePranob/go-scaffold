@@ -1,6 +1,6 @@
 -- Durable recovery tokens for both refresh-store choices. Refresh rotation may
 -- use Redis, but password reset and email verification share this DB contract.
--- Only the SHA-256 hash is stored; see model/authtoken.go for what `kind`
+-- Only the SHA-256 hash is stored; see adapters/outbound/postgres/model.go for what `kind`
 -- means and why the rotation tombstone is a separate row.
 CREATE TABLE user_svc.auth_tokens (
     token_hash TEXT PRIMARY KEY,

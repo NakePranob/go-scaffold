@@ -14,6 +14,7 @@ import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
 import { DEFAULT_BROWSER_TOPOLOGY, validateBrowserTopology } from "../prompts/auth-wizard";
+import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
 // route `add auth` registers — kept next to AUTH_FILES's route list so the
@@ -193,7 +194,17 @@ export async function addAuth(
   // printed below, so `go vet` can't be the gate here.
   assertStillParses(projectDir, parsedBefore, "added auth");
 
-  writeConfig(projectDir, { ...config, features: { ...config.features, auth: true, authStore: store } });
+  const staleDocs = refreshProjectDocs(projectDir, config, { auth: true, authStore: store });
+  if (staleDocs.length) docsMessage += docsRefreshWarning(staleDocs, "add auth");
+
+  writeConfig(projectDir, {
+    ...config,
+    features: { ...config.features, auth: true, authStore: store },
+    modules: {
+      ...config.modules,
+      user: { surface: "minimal", applicationStyle: "service", boundary: "hexagonal", packageLayout: "split" },
+    },
+  });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
   console.log(

@@ -1,0 +1,157 @@
+// Package application contains role management use cases. It owns the rules
+// for permission grants and never imports GORM, Gin, or HTTP error types.
+package application
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"slices"
+
+	"{{goModule}}/internal/app/role/domain"
+	"{{goModule}}/internal/app/role/ports"
+)
+
+type ServicePort interface {
+	PermissionsOf(context.Context, string) (map[string]struct{}, error)
+	CodeExists(context.Context, string) (bool, error)
+	List(context.Context, int, int) ([]RoleListItem, error)
+	Create(context.Context, CreateInput) (*RoleListItem, error)
+	SetPermissions(context.Context, string, []string) (*RoleListItem, error)
+	Delete(context.Context, string) error
+	ListPermissions(context.Context, int, int) ([]domain.Permission, error)
+}
+
+type Service struct {
+	repo ports.Repository
+}
+
+func NewService(repo ports.Repository) *Service { return &Service{repo: repo} }
+
+func (s *Service) PermissionsOf(ctx context.Context, roleCode string) (map[string]struct{}, error) {
+	codes, err := s.repo.PermissionCodes(ctx, roleCode)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		set[code] = struct{}{}
+	}
+	return set, nil
+}
+
+func (s *Service) CodeExists(ctx context.Context, code string) (bool, error) {
+	if _, err := s.repo.FindByCode(ctx, code); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Service) List(ctx context.Context, limit, offset int) ([]RoleListItem, error) {
+	roles, err := s.repo.FindAll(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RoleListItem, len(roles))
+	for i, role := range roles {
+		perms, err := s.repo.PermissionCodes(ctx, role.Code)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = RoleListItem{Role: role, Permissions: perms}
+	}
+	return out, nil
+}
+
+var roleCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+func (s *Service) Create(ctx context.Context, in CreateInput) (*RoleListItem, error) {
+	if !roleCodePattern.MatchString(in.Code) {
+		return nil, errInvalidCode()
+	}
+	role := &domain.Role{Code: in.Code, Name: in.Name}
+	if err := s.repo.Create(ctx, role); err != nil {
+		return nil, err
+	}
+	return &RoleListItem{Role: *role, Permissions: []string{}}, nil
+}
+
+func (s *Service) SetPermissions(ctx context.Context, code string, permissionCodes []string) (*RoleListItem, error) {
+	role, err := s.repo.FindByCode(ctx, code)
+	if err != nil {
+		return nil, wrapFindErr(err)
+	}
+	if err := s.validatePermissionCodes(ctx, permissionCodes); err != nil {
+		return nil, err
+	}
+	if !slices.Contains(permissionCodes, PermRoleManage) {
+		isLast, err := s.isLastRoleManager(ctx, code)
+		if err != nil {
+			return nil, err
+		}
+		if isLast {
+			return nil, errLastRoleManager()
+		}
+	}
+	if err := s.repo.SetPermissions(ctx, code, permissionCodes); err != nil {
+		return nil, err
+	}
+	return &RoleListItem{Role: *role, Permissions: permissionCodes}, nil
+}
+
+func (s *Service) validatePermissionCodes(ctx context.Context, codes []string) error {
+	all, err := s.repo.AllPermissionCodes(ctx)
+	if err != nil {
+		return err
+	}
+	valid := make(map[string]struct{}, len(all))
+	for _, code := range all {
+		valid[code] = struct{}{}
+	}
+	for _, code := range codes {
+		if _, ok := valid[code]; !ok {
+			return errUnknownPermission()
+		}
+	}
+	return nil
+}
+
+func (s *Service) Delete(ctx context.Context, code string) error {
+	role, err := s.repo.FindByCode(ctx, code)
+	if err != nil {
+		return wrapFindErr(err)
+	}
+	if role.IsSystem {
+		return errSystemRole()
+	}
+	isLast, err := s.isLastRoleManager(ctx, code)
+	if err != nil {
+		return err
+	}
+	if isLast {
+		return errLastRoleManager()
+	}
+	return s.repo.Delete(ctx, code)
+}
+
+func (s *Service) isLastRoleManager(ctx context.Context, code string) (bool, error) {
+	others, err := s.repo.CountRolesWithPermission(ctx, PermRoleManage, code)
+	if err != nil {
+		return false, err
+	}
+	return others == 0, nil
+}
+
+func (s *Service) ListPermissions(ctx context.Context, limit, offset int) ([]domain.Permission, error) {
+	return s.repo.FindAllPermissions(ctx, limit, offset)
+}
+
+func wrapFindErr(err error) error {
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.ErrNotFound
+	}
+	return err
+}

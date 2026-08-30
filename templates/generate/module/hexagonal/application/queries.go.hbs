@@ -1,0 +1,25 @@
+package application
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
+)
+
+type QueryPort interface {
+	// go-scaffold:query-interface
+}
+
+type QueryHandler struct {
+	repo ports.QueryRepository
+}
+
+func NewQueryHandler(repo ports.QueryRepository) *QueryHandler {
+	return &QueryHandler{repo: repo}
+}
+
+var _ context.Context
+var _ *domain.{{pascalName}}
+
+// go-scaffold:query-methods

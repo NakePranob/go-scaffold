@@ -1,0 +1,84 @@
+package queue
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+type riverRoundTripJob struct {
+	Marker string `json:"marker"`
+}
+
+func (riverRoundTripJob) Kind() string { return "queue-test-round-trip" }
+
+// TestRiverEnqueueAndWorkerProcess proves the Postgres queue path beyond
+// client construction: a job is written, picked up by the worker adapter,
+// decoded, and handed to the registered backend-neutral handler.
+func TestRiverEnqueueAndWorkerProcess(t *testing.T) {
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		if os.Getenv("REQUIRE_TEST_DB") == "true" {
+			t.Fatal("TEST_DB_DSN is required when REQUIRE_TEST_DB=true")
+		}
+		t.Skip("River integration test skipped: set TEST_DB_DSN to a database with River migrations")
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get test database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	worker, err := NewRiverWorker(db, 1)
+	if err != nil {
+		t.Fatalf("create River worker: %v", err)
+	}
+
+	received := make(chan string, 1)
+	worker.Handle((riverRoundTripJob{}).Kind(), func(_ context.Context, raw []byte) error {
+		var job riverRoundTripJob
+		if err := json.Unmarshal(raw, &job); err != nil {
+			return err
+		}
+		received <- job.Marker
+		return nil
+	})
+
+	workerCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		if err := worker.Stop(stopCtx); err != nil {
+			t.Errorf("stop River worker: %v", err)
+		}
+	})
+	if err := worker.Start(workerCtx); err != nil {
+		t.Fatalf("start River worker: %v", err)
+	}
+
+	expected := uuid.NewString()
+	if err := worker.Enqueue(context.Background(), riverRoundTripJob{Marker: expected}, nil); err != nil {
+		t.Fatalf("enqueue River job: %v", err)
+	}
+
+	select {
+	case actual := <-received:
+		if actual != expected {
+			t.Fatalf("worker received marker %q, want %q", actual, expected)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("River worker did not process the enqueued job within 10s")
+	}
+}

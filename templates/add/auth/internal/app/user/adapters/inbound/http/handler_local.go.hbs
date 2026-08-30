@@ -1,0 +1,76 @@
+package httpadapter
+
+import (
+	"net/http"
+
+	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/shared/httpx"
+
+	"github.com/gin-gonic/gin"
+)
+
+func (h *Handler) register(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in registerInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	auth, err := h.svc.Register(c.Request.Context(), toRegisterInput(in))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.writeAuthResult(c, http.StatusCreated, auth)
+}
+
+func (h *Handler) login(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in loginInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	auth, err := h.svc.Login(c.Request.Context(), toLoginInput(in))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.writeAuthResult(c, http.StatusOK, auth)
+}
+
+func (h *Handler) refresh(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	raw, err := c.Cookie(refreshCookieName)
+	if err != nil || raw == "" {
+		c.Error(toHTTPError(domain.Rule("AUTH_INVALID_TOKEN", "invalid or expired token", domain.ErrInvalidToken)))
+		return
+	}
+	auth, err := h.svc.Refresh(c.Request.Context(), raw)
+	if err != nil {
+		h.clearRefreshCookie(c)
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusOK, toCookieResponse(auth))
+}
+
+func (h *Handler) logout(c *gin.Context) {
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	raw, _ := c.Cookie(refreshCookieName)
+	_ = h.svc.Logout(c.Request.Context(), raw)
+	h.clearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}

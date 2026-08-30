@@ -22,7 +22,8 @@ import (
 // run is this binary's composition root — the only function that sees every
 // module and wires them to each other. Modules never import one another; a
 // domain that needs another's behaviour declares a narrow interface and gets
-// the concrete service from here (see docs/architect/patterns.md).
+// its concrete implementation from the process composition package (see
+// docs/architect/patterns.md).
 //
 // It returns an error rather than calling os.Exit, so every defer below runs
 // on the way out and main() holds the only exit in the binary.
@@ -55,7 +56,7 @@ func run() error {
 
 	if !cfg.IsProd() {
 		// Development boot creates tables but never the schema they live in — each
-		// domain gets its own (see model.go's TableName), so it has to exist
+		// domain gets its own (see the outbound postgres model's TableName), so it has to exist
 		// before the bootstrap runs. Production runs the versioned SQL migrations
 		// instead, so this entire branch is skipped there.
 		// go-scaffold:schemas

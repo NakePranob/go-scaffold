@@ -80,13 +80,16 @@ export async function undoModule(
     if (!ok) throw new Error("undo cancelled");
   }
 
-  // detect --auth/--permission from the generated handler.go itself (not
+  // detect --auth/--permission from the generated handler itself (not
   // stored anywhere else) — unpatchMainGo needs the exact same flags used at
   // generate-time to reconstruct the identical line it's removing.
-  const handlerGoPath = path.join(moduleDir, "handler.go");
+  const handlerCandidates = [
+    path.join(moduleDir, "adapters", "inbound", "http", "handler.go"),
+  ];
+  const handlerGoPath = handlerCandidates.find((candidate) => fs.existsSync(candidate));
   let auth: boolean | undefined;
   let permission: string | undefined;
-  if (fs.existsSync(handlerGoPath)) {
+  if (handlerGoPath) {
     const handlerContent = fs.readFileSync(handlerGoPath, "utf8");
     auth = /jwtSecret\s+string/.test(handlerContent);
     permission = handlerContent.match(/h\.authz\.Require\("([^"]+)"\)/)?.[1];

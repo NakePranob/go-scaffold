@@ -31,31 +31,34 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.ok(readFileSync(path.join(project, "internal/app/order/composition.go"), "utf8"));
     assert.match(read(project, "cmd/api/wiring.go"), /order\.NewHandlerFromDB\(db\)\.Register\(api\)/);
 
-    const handler = read(project, "internal/app/order/handler.go");
-    assert.match(handler, /type service interface \{/);
-    assert.match(handler, /svc service/);
-    assert.doesNotMatch(handler, /svc \*Service/);
-    assert.match(handler, /Create\(context\.Context, createInput\)/);
-    assert.match(handler, /Update\(context\.Context, uuid\.UUID, updateInput\)/);
+    const handler = read(project, "internal/app/order/adapters/inbound/http/handler.go");
+    const requestDTO = read(project, "internal/app/order/adapters/inbound/http/dto.go");
+    assert.match(requestDTO, /binding:\"required,min=1\"/);
+    assert.match(requestDTO, /type response struct/);
+    assert.match(handler, /toCreateInput\(in\)/);
+    assert.match(handler, /toResponse\(application\.ToResponse\(m\)\)/);
+    assert.match(handler, /svc application\.ServicePort/);
+    assert.doesNotMatch(handler, /type service interface/);
+    assert.doesNotMatch(handler, /gorm\.io\/driver\/postgres/);
 
-    const service = read(project, "internal/app/order/service.go");
-    assert.match(service, /Create\(ctx context\.Context, in createInput\)/);
-    assert.match(service, /Update\(ctx context\.Context, id uuid\.UUID, in updateInput\)/);
+    const service = read(project, "internal/app/order/application/service.go");
+    assert.doesNotMatch(read(project, "internal/app/order/application/dto.go"), /json:/);
+    assert.match(service, /Create\(ctx context\.Context, in CreateInput\)/);
+    assert.match(service, /Update\(ctx context\.Context, id uuid\.UUID, in UpdateInput\)/);
 
-    const serviceTest = read(project, "internal/app/order/service_test.go");
+    const serviceTest = read(project, "internal/app/order/application/service_test.go");
     assert.match(serviceTest, /type repositoryStub struct/);
     assert.match(serviceTest, /createFn\s+func/);
     assert.match(serviceTest, /findByIDFn\s+func/);
     assert.match(serviceTest, /updateFn\s+func/);
     assert.doesNotMatch(serviceTest, /type fakeRepo struct/);
 
-    const handlerTest = read(project, "internal/app/order/handler_test.go");
-    assert.match(handlerTest, /type serviceStub struct/);
-    assert.match(handlerTest, /createFn\s+func/);
+    const handlerTest = read(project, "internal/app/order/adapters/inbound/http/handler_test.go");
+    assert.match(handlerTest, /func TestHandler_Register\(/);
     assert.doesNotMatch(handlerTest, /gorm\.io\/driver\/postgres/);
     assert.doesNotMatch(handlerTest, /TEST_DB_DSN/);
 
-    const repositoryTest = read(project, "internal/app/order/repository_test.go");
+    const repositoryTest = read(project, "internal/app/order/adapters/outbound/postgres/repository_test.go");
     assert.match(repositoryTest, /REQUIRE_TEST_DB/);
     assert.match(repositoryTest, /TEST_DB_DSN/);
     assert.doesNotMatch(repositoryTest, /AutoMigrate/);
@@ -81,13 +84,12 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.match(approveDocs, /"501":/);
     assert.doesNotMatch(approveDocs, /"200":/);
 
-    const approveHandler = read(project, "internal/app/order/handler.go");
-    const approveService = read(project, "internal/app/order/service.go");
-    assert.match(approveHandler, /Approve\(context\.Context, uuid\.UUID\) error/);
+    const approveHandler = read(project, "internal/app/order/adapters/inbound/http/handler.go");
+    const approveService = read(project, "internal/app/order/application/service.go");
     assert.match(approveHandler, /if err := h\.svc\.Approve\(c\.Request\.Context\(\), id\); err != nil/);
-    assert.match(approveHandler, /c\.Error\(err\)/);
+    assert.match(approveHandler, /c\.Error\(appError\(err\)\)/);
     assert.match(approveService, /func \(s \*Service\) Approve\(ctx context\.Context, id uuid\.UUID\) error \{/);
-    assert.match(approveService, /return apperror\.NewNotImplemented\(\)/);
+    assert.match(approveService, /return domain\.ErrNotImplemented/);
     assert.doesNotMatch(approveService.slice(approveService.indexOf("func (s *Service) Approve")), /repo\.FindByID|repo\.Update/);
 
     run("node", [CLI, "generate", "method", "orders", "submit", "--type", "post"], project);
@@ -96,6 +98,11 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.doesNotMatch(submitDocs, /in: path/);
     assert.match(submitDocs, /^post:/m);
     assert.match(submitDocs, /requestBody:/);
+
+    const submitDTO = read(project, "internal/app/order/adapters/inbound/http/dto.go");
+    assert.match(submitDTO, /type SubmitInput struct/);
+    assert.match(submitDTO, /func toSubmitInput\(in SubmitInput\) application\.SubmitInput/);
+    assert.match(read(project, "internal/app/order/adapters/inbound/http/handler.go"), /toSubmitInput\(in\)/);
 
     run("go", ["mod", "tidy"], project);
     run("go", ["test", "./..."], project);

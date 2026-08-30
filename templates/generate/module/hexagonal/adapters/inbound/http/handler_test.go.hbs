@@ -1,0 +1,30 @@
+package httpadapter
+
+import (
+	{{#if permission}}
+	"context"
+	"time"
+	{{/if}}
+	"testing"
+
+	{{#if permission}}
+	"{{goModule}}/internal/shared/middleware"
+	{{/if}}
+	"github.com/gin-gonic/gin"
+)
+
+func TestHandler_Register(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	{{#if permission}}
+	authz := middleware.NewAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		return map[string]struct{}{"{{permission}}": {}}, nil
+	}, time.Minute)
+	{{/if}}
+{{#if cqrs}}
+	h := NewHandler(nil, nil{{#if auth}}, "test-secret"{{/if}}{{#if permission}}, authz{{/if}})
+{{else}}
+	h := NewHandler(nil{{#if auth}}, "test-secret"{{/if}}{{#if permission}}, authz{{/if}})
+{{/if}}
+	h.Register(r)
+}

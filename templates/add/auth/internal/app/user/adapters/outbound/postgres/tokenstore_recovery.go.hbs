@@ -1,0 +1,84 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"{{goModule}}/internal/app/user/ports"
+	"{{goModule}}/internal/shared/tx"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+const (
+	kindPasswordSet = "pwreset"
+	kindEmailVerify = "emailverify"
+)
+
+// recoveryTokenStore is deliberately Postgres-backed for both auth store
+// choices. Refresh rotation may live in Redis, but password reset and email
+// verification must share a durable DB transaction with the user update.
+type recoveryTokenStore struct {
+	db *gorm.DB
+}
+
+var _ ports.RecoveryTokenStore = (*recoveryTokenStore)(nil)
+
+func NewRecoveryTokenStore(db *gorm.DB) ports.RecoveryTokenStore {
+	return newRecoveryTokenStore(db)
+}
+
+func newRecoveryTokenStore(db *gorm.DB) *recoveryTokenStore {
+	return &recoveryTokenStore{db: db}
+}
+
+func (s *recoveryTokenStore) withTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return tx.Do(ctx, s.db, fn)
+}
+
+func (s *recoveryTokenStore) put(ctx context.Context, hash, kind string, userID uuid.UUID, ttl time.Duration) error {
+	expiresAt := time.Now().Add(ttl)
+	row := AuthToken{TokenHash: hash, UserID: userID, Kind: kind, ExpiresAt: expiresAt}
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("token_hash = ?", hash).
+		Assign(map[string]any{"user_id": userID, "kind": kind, "expires_at": expiresAt}).
+		FirstOrCreate(&row).Error
+}
+
+func (s *recoveryTokenStore) consume(ctx context.Context, hash, kind string) (uuid.UUID, bool, error) {
+	var userID uuid.UUID
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`DELETE FROM user_svc.auth_tokens
+		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
+		 RETURNING user_id`, hash, kind).Row().Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return userID, true, nil
+}
+
+func (s *recoveryTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
+}
+
+func (s *recoveryTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.consume(ctx, tokenHash, kindPasswordSet)
+}
+
+func (s *recoveryTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.put(ctx, tokenHash, kindEmailVerify, userID, ttl)
+}
+
+func (s *recoveryTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
+	return s.consume(ctx, tokenHash, kindEmailVerify)
+}
+
+func (s *recoveryTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
+	return s.withTransaction(ctx, fn)
+}

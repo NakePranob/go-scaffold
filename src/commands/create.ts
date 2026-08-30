@@ -8,6 +8,7 @@ import { assertValidGoModulePath, normalizeApiPrefix, toDbName, validateApiPrefi
 import { promptProjectName, runCreateWizard } from "../prompts/create-wizard";
 import { cliVersion } from "../utils/version";
 import { ArchitectureConfig, DEFAULT_ARCHITECTURE_CONFIG, ProjectFeatures } from "../types";
+import { CONFIG_SCHEMA_VERSION } from "../utils/config";
 import { addObservability } from "./observability";
 import { architectureForModuleProfile } from "../utils/module-profile";
 
@@ -89,7 +90,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
   gofmtTree(projectDir);
   writeConfig(projectDir, {
-    schemaVersion: 1,
+    schemaVersion: CONFIG_SCHEMA_VERSION,
     projectName,
     goModule,
     apiPrefix,

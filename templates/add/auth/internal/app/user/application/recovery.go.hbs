@@ -1,6 +1,3 @@
-// Package application contains auth use cases and ports that are independent
-// of Gin, GORM models, and HTTP error payloads. Adapters in the parent user
-// package translate those contracts at the feature boundary.
 package application
 
 import (
@@ -8,55 +5,24 @@ import (
 	"errors"
 	"fmt"
 
+	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
+
 	"github.com/google/uuid"
 )
 
-var ErrInvalidToken = errors.New("invalid or expired one-time token")
-
-type Identity struct {
-	ID           uuid.UUID
-	UserID       uuid.UUID
-	PasswordHash string
-}
-
-type User struct {
-	ID            uuid.UUID
-	EmailVerified bool
-}
-
-// RecoveryRepository is an outbound port owned by the recovery use case.
-// Implementations map persistence rows to these plain application values.
-type RecoveryRepository interface {
-	FindIdentity(context.Context, uuid.UUID) (*Identity, error)
-	UpdateIdentity(context.Context, *Identity) error
-	FindUser(context.Context, uuid.UUID) (*User, error)
-	UpdateUser(context.Context, *User) error
-}
-
-type RecoveryTokens interface {
-	WithTransaction(context.Context, func(context.Context) error) error
-	ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error)
-	ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error)
-}
-
-type PasswordHasher interface {
-	Hash(string) (string, error)
-}
-
 type Recovery struct {
-	repo   RecoveryRepository
-	tokens RecoveryTokens
+	repo   ports.UserRepository
+	tokens ports.RecoveryTokenStore
 	hasher PasswordHasher
 }
 
-func NewRecovery(repo RecoveryRepository, tokens RecoveryTokens, hasher PasswordHasher) *Recovery {
+func NewRecovery(repo ports.UserRepository, tokens ports.RecoveryTokenStore, hasher PasswordHasher) *Recovery {
 	return &Recovery{repo: repo, tokens: tokens, hasher: hasher}
 }
 
-// ResetPassword consumes the token and updates the identity in one unit of
-// work. Postgres-backed token adapters run both writes through the same DB
-// transaction; the contract is deliberately a port so another adapter can
-// provide an equivalent retry-safe boundary.
+// ResetPassword consumes the token and updates the local identity in one
+// unit of work. The token adapter owns the transaction boundary.
 func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword string) (uuid.UUID, error) {
 	hash, err := r.hasher.Hash(newPassword)
 	if err != nil {
@@ -70,14 +36,17 @@ func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword str
 			return fmt.Errorf("consume password reset token: %w", err)
 		}
 		if !ok {
-			return ErrInvalidToken
+			return domain.ErrInvalidToken
 		}
 
-		identity, err := r.repo.FindIdentity(txctx, id)
+		identity, err := r.repo.FindIdentity(txctx, id, domain.ProviderLocal)
 		if err != nil {
 			return fmt.Errorf("find local identity: %w", err)
 		}
-		identity.PasswordHash = hash
+		if identity.PasswordHash == nil {
+			return errors.New("local identity has no password")
+		}
+		identity.PasswordHash = &hash
 		if err := r.repo.UpdateIdentity(txctx, identity); err != nil {
 			return fmt.Errorf("update password: %w", err)
 		}
@@ -95,10 +64,10 @@ func (r *Recovery) VerifyEmail(ctx context.Context, tokenHash string) (uuid.UUID
 			return fmt.Errorf("consume email verification token: %w", err)
 		}
 		if !ok {
-			return ErrInvalidToken
+			return domain.ErrInvalidToken
 		}
 
-		user, err := r.repo.FindUser(txctx, id)
+		user, err := r.repo.FindByID(txctx, id)
 		if err != nil {
 			return fmt.Errorf("find user for email verification: %w", err)
 		}

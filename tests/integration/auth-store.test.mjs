@@ -33,11 +33,11 @@ const has = (app, ...p) => existsSync(path.join(app, ...p));
 test("--store postgres writes the Postgres store and no Redis anywhere", (t) => {
   const app = project(t, "postgres");
 
-  assert.ok(has(app, "internal/app/user/tokenstore_pg.go"));
-  assert.ok(has(app, "internal/app/user/tokenstore_pg_test.go"));
-  assert.ok(has(app, "internal/app/user/model/authtoken.go"));
+  assert.ok(has(app, "internal/app/user/adapters/outbound/postgres/tokenstore_pg.go"));
+  assert.ok(has(app, "internal/app/user/adapters/outbound/postgres/tokenstore_pg_test.go"));
+  assert.ok(has(app, "internal/app/user/adapters/outbound/postgres/model.go"));
   assert.ok(has(app, "internal/shared/middleware/ratelimit_memory.go"));
-  assert.ok(!has(app, "internal/app/user/tokenstore_redis.go"), "the Redis store must not be written");
+  assert.ok(!has(app, "internal/app/user/adapters/outbound/redis/tokenstore.go"), "the Redis store must not be written");
   assert.ok(!has(app, "internal/platform/cache/redis.go"), "no Redis client is needed");
 
   const main = read(app, "cmd/api/wiring.go");
@@ -59,10 +59,10 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
 test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t) => {
   const app = project(t, "redis");
 
-  assert.ok(has(app, "internal/app/user/tokenstore_redis.go"));
-  assert.ok(has(app, "internal/app/user/tokenstore_redis_test.go"));
+  assert.ok(has(app, "internal/app/user/adapters/outbound/redis/tokenstore.go"));
+  assert.ok(has(app, "internal/app/user/adapters/outbound/redis/tokenstore_test.go"));
   assert.ok(has(app, "internal/shared/middleware/ratelimit_redis.go"));
-  assert.ok(!has(app, "internal/app/user/tokenstore_pg.go"), "the Postgres store must not be written");
+  assert.ok(!has(app, "internal/app/user/adapters/outbound/postgres/tokenstore_pg.go"), "the Postgres store must not be written");
   assert.ok(has(app, "internal/platform/cache/redis.go"), "add auth pulls Redis in on this path");
 
   const ci = read(app, ".github/workflows/ci.yml");
@@ -74,14 +74,18 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
   const composition = read(app, "internal/app/user/composition.go");
   assert.match(composition, /NewRedisTokenStore\(rdb, db\)/);
   assert.match(composition, /middleware\.NewRedisLimiter\(rdb\)/);
+  assert.doesNotMatch(composition, /type PgTokenStore = userpostgres\.PgTokenStore/);
+  assert.doesNotMatch(composition, /func NewPgTokenStore\(db \*gorm\.DB\)/);
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.match(main, /&usermodel\.AuthToken\{\},/, "recovery tokens need the auth_tokens table");
-  assert.ok(has(app, "internal/app/user/tokenstore_recovery.go"));
+  assert.ok(has(app, "internal/app/user/adapters/outbound/postgres/tokenstore_recovery.go"));
   assert.ok(
     execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),
     "the auth_tokens migration must also be generated for Redis refresh storage"
   );
+  execFileSync("go", ["mod", "tidy"], { cwd: app, stdio: "ignore" });
+  execFileSync("go", ["test", "./..."], { cwd: app, stdio: "ignore" });
 });
 
 // add rbac composes role locally and passes only its public capabilities into
@@ -198,7 +202,7 @@ test("add rbac composes auth and role locally on a project that never ran add wo
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, roleComposition\.Service, roleComposition\.Authz\)\.Register\(api\)/);
   assert.match(main, /roleComposition\.Handler\.Register\(api\)/);
   assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
-  assert.match(read(app, "internal/app/user/service.go"), /type RoleChecker interface/);
+  assert.match(read(app, "internal/app/user/application/service.go"), /roles\s+ports\.RoleChecker/);
 });
 
 for (const store of ["postgres", "redis"]) {
@@ -242,10 +246,10 @@ test("add rbac checks wiring.go before it edits anything else", (t) => {
   assert.throws(() => cli(app, "add", "rbac", "--yes"), /doesn't match what `add auth` wrote/);
 
   assert.match(
-    read(app, "internal/app/user/service.go"),
-    /type RoleChecker interface/,
-    "the base auth service remains unchanged when the pre-flight refuses"
+    read(app, "internal/app/user/application/service.go"),
+    /func \(s \*Service\) SetRole\(/,
+    "the canonical auth role capability remains unchanged when the pre-flight refuses"
   );
-  assert.doesNotMatch(read(app, "internal/app/user/service.go"), /SetRole\(/, "RBAC service behavior must not be patched");
+  assert.equal(has(app, "internal/app/user/model"), false, "auth must not create a second model package");
   assert.ok(!has(app, "internal/app/role"), "no role domain may be written either");
 });

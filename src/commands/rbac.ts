@@ -23,6 +23,7 @@ import {
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { assertNoDrift, assertStillParses, parseChecks, typeChecks } from "../utils/gocheck";
+import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
 // route `add rbac` registers or adds onto the user handler.
@@ -84,18 +85,17 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   );
 
   patchConfigForRbac(path.join(projectDir, "internal", "shared", "config", "config.go"));
-  patchUserModelForRbac(path.join(projectDir, "internal", "app", "user", "model", "user.go"));
+  patchUserModelForRbac(path.join(projectDir, "internal", "app", "user", "adapters", "outbound", "postgres", "model.go"));
   patchMiddlewareAuthForRbac(path.join(projectDir, "internal", "shared", "middleware", "auth.go"));
-  patchUserJWTForRbac(path.join(projectDir, "internal", "app", "user", "jwt.go"));
+  patchUserJWTForRbac(path.join(projectDir, "internal", "app", "user", "application", "jwt.go"));
   patchUserServiceForRbac(
-    path.join(projectDir, "internal", "app", "user", "service.go"),
-    config.goModule,
-    path.join(projectDir, "internal", "app", "user", "sessions.go")
+    path.join(projectDir, "internal", "app", "user", "application", "service.go"),
+    path.join(projectDir, "internal", "app", "user", "application", "sessions.go")
   );
-  patchUserServiceTestForRbac(path.join(projectDir, "internal", "app", "user", "service_test.go"));
-  patchUserDTOForRbac(path.join(projectDir, "internal", "app", "user", "dto.go"));
-  patchUserHandlerForRbac(path.join(projectDir, "internal", "app", "user", "handler.go"), config.goModule);
-  patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "errors.go"));
+  patchUserServiceTestForRbac(path.join(projectDir, "internal", "app", "user", "application", "service_test.go"));
+  patchUserDTOForRbac(path.join(projectDir, "internal", "app", "user", "adapters", "inbound", "http", "dto.go"));
+  patchUserHandlerForRbac(path.join(projectDir, "internal", "app", "user", "adapters", "inbound", "http", "handler.go"));
+  patchUserErrorsForRbac(path.join(projectDir, "internal", "app", "user", "application", "errors.go"));
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "role");
   // projects scaffolded before --store existed are all Redis-backed
   patchMainGoForRbac(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, config.features.authStore ?? "redis", config.features.worker ?? false);
@@ -127,12 +127,22 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
     recover: "internal/app/role/ and the rbac patches were left in place — reconcile cmd/api/wiring.go by hand.",
   });
 
-  writeConfig(projectDir, { ...config, features: { ...config.features, rbac: true } });
+  const staleDocs = refreshProjectDocs(projectDir, config, { rbac: true });
+
+  writeConfig(projectDir, {
+    ...config,
+    features: { ...config.features, rbac: true },
+    modules: {
+      ...config.modules,
+      role: { surface: "crud", applicationStyle: "service", boundary: "hexagonal", packageLayout: "split" },
+    },
+  });
 
   console.log(pc.green("\nadded internal/app/role/ and internal/shared/middleware/authz.go"));
   console.log(
     "registered GET /users, GET /users/:id, PATCH /users/:id/set-role, /roles, and /permissions in cmd/api/wiring.go" + docsMessage
   );
+  if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add rbac")));
   console.log(
     pc.yellow(
       "\n⚠ The development table bootstrap does NOT seed role/permission data — it only creates the\n" +

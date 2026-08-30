@@ -21,7 +21,10 @@ const SHARED: Entry[] = [
 // its whole dependency tree into go.mod for nothing. Swapping later means
 // re-running `add worker` with the other backend, or copying the adapter in
 // by hand — the queue.go contract it implements does not change.
-const RIVER: Entry[] = [{ template: "add/worker/internal/platform/queue/river.go.hbs", output: "internal/platform/queue/river.go" }];
+const RIVER: Entry[] = [
+  { template: "add/worker/internal/platform/queue/river.go.hbs", output: "internal/platform/queue/river.go" },
+  { template: "add/worker/internal/platform/queue/river_test.go.hbs", output: "internal/platform/queue/river_test.go" },
+];
 
 const ASYNQ: Entry[] = [
   { template: "add/worker/internal/platform/queue/asynq.go.hbs", output: "internal/platform/queue/asynq.go" },

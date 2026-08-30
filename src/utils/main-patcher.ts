@@ -30,7 +30,7 @@ export interface RoutePatch {
 // API binary supplies infrastructure and security dependencies, then only
 // registers the feature's handler.
 function mainGoLines(patch: RoutePatch) {
-  const modelAlias = `${patch.pkg}model`; // every domain's model subpackage is named "model"
+  const modelAlias = `${patch.pkg}postgres`; // every domain's persistence adapter is named "postgres"
   const handlerArgs = ["db"];
   const legacyHandlerArgs = [`${patch.pkg}Svc`];
   if (patch.auth) handlerArgs.push("cfg.JWTSecret");
@@ -42,7 +42,7 @@ function mainGoLines(patch: RoutePatch) {
   if (patch.permission) legacyHandlerArgs.push("roleComposition.Authz");
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
-    modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/model"`,
+    modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/adapters/outbound/postgres"`,
     // Development schema bootstrap creates tables but not the schema they live in — see
     // the comment on go-scaffold:schemas in main.go.hbs. One Exec per schema,
     // guarded by its own sentinel so two modules sharing a schema name only
@@ -53,7 +53,7 @@ function mainGoLines(patch: RoutePatch) {
       `}`,
     ].join("\n"),
     schemaSentinel: `CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}`,
-    migrateLine: `&${modelAlias}.${patch.pascalName}{},`,
+    migrateLine: `&${modelAlias}.${patch.pascalName}Model{},`,
     // kept only so undo can clean projects generated before feature-local
     // composition was introduced.
     legacyServicePrefix: `${patch.pkg}Svc :=`,
