@@ -106,6 +106,12 @@ for (const store of ["postgres", "redis"]) {
     assert.match(main, /roleComposition\.Handler\.Register\(api\)/);
     assert.doesNotMatch(main, /role\.NewService\(|role\.NewHandler\(/, "wiring.go must not construct role internals");
     assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/, "wiring.go must not construct user internals");
+
+    // gofmt aligns fields with whitespace, so RBAC's marker patch must detect
+    // the canonical Role claim semantically instead of appending a duplicate.
+    const jwt = read(app, "internal/app/user/application/jwt.go");
+    assert.equal(jwt.match(/^\s*Role\s+string\s+`json:"role,omitempty"`/gm)?.length, 1, "the access claims must contain one Role field");
+    assert.equal(jwt.match(/^\s*Role\s*:\s*role\s*,/gm)?.length, 1, "the access claims literal must contain one Role value");
   });
 }
 

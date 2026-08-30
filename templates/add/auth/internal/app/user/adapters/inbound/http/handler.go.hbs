@@ -132,6 +132,8 @@ func (h *Handler) Register(rg gin.IRouter) {
 	usersGroup.GET("/me", h.me)
 	usersGroup.POST("/me/resend-verification", resendVerificationLimit, h.resendVerification)
 	usersGroup.POST("/me/logout-all", h.logoutAll)
+	usersGroup.GET("/me/sessions", h.sessions)
+	usersGroup.DELETE("/me/sessions/:id", h.revokeSession)
 	usersGroup.GET("/me/mfa", h.mfaStatus)
 	usersGroup.POST("/me/mfa/setup", mfaSetupLimit, h.setupMFA)
 	usersGroup.POST("/me/mfa/confirm", mfaConfirmLimit, h.confirmMFA)

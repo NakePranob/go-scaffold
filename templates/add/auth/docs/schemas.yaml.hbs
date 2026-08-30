@@ -114,3 +114,22 @@ MeResponse:
     email_verified: { type: boolean }
     # go-scaffold:me-response-fields
     created_at: { type: string, format: date-time }
+
+SessionResponse:
+  type: object
+  required: [id, user_agent, created_at, last_used_at, expires_at, current]
+  properties:
+    id: { type: string, format: uuid }
+    user_agent: { type: string, description: browser or client User-Agent captured at sign-in }
+    created_at: { type: string, format: date-time }
+    last_used_at: { type: string, format: date-time }
+    expires_at: { type: string, format: date-time }
+    current: { type: boolean, description: true when this session issued the current access token }
+
+SessionsResponse:
+  type: object
+  required: [sessions]
+  properties:
+    sessions:
+      type: array
+      items: { $ref: '#/SessionResponse' }

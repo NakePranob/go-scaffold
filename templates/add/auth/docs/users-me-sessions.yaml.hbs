@@ -1,0 +1,13 @@
+get:
+  summary: List active sessions for the current user
+  description: Returns active refresh-token sessions with safe device metadata. Raw refresh tokens and token hashes are never returned.
+  operationId: listMySessions
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "200":
+      description: active sessions
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/SessionsResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

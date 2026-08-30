@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"{{goModule}}/internal/app/user/domain"
@@ -36,7 +38,9 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*AuthRes
 	if err != nil {
 		return nil, errInvalidToken()
 	}
-	return s.issueTokens(ctx, u, token.AbsoluteExpiresAt)
+	return s.issueTokens(ctx, u, SessionContext{
+		ID: token.SessionID, UserAgent: token.UserAgent, CreatedAt: token.CreatedAt,
+	}, token.AbsoluteExpiresAt)
 }
 
 // Logout is intentional, not reuse: a missing or already-gone token still
@@ -58,10 +62,51 @@ func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) error {
 	return s.refreshTokens.RevokeAllRefreshTokens(ctx, userID)
 }
 
-func (s *Service) issueTokens(ctx context.Context, u *domain.User, absoluteExpiresAt ...time.Time) (*AuthResponse, error) {
+func (s *Service) ListSessions(ctx context.Context, userID, currentSessionID uuid.UUID) ([]Session, error) {
+	items, err := s.refreshTokens.ListRefreshSessions(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list refresh sessions: %w", err)
+	}
+	out := make([]Session, 0, len(items))
+	for _, item := range items {
+		out = append(out, Session{
+			ID: item.ID, UserAgent: item.UserAgent, CreatedAt: item.CreatedAt,
+			LastUsedAt: item.LastUsedAt, ExpiresAt: item.ExpiresAt,
+			Current: item.ID == currentSessionID,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].LastUsedAt.After(out[j].LastUsedAt)
+	})
+	return out, nil
+}
+
+func (s *Service) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID) error {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return fmt.Errorf("session identity is invalid")
+	}
+	return s.refreshTokens.RevokeRefreshSession(ctx, userID, sessionID)
+}
+
+func (s *Service) issueTokens(ctx context.Context, u *domain.User, session SessionContext, absoluteExpiresAt ...time.Time) (*AuthResponse, error) {
+	clock := s.now
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock()
+	if session.ID == uuid.Nil {
+		session.ID = uuid.New()
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	if session.UserAgent = normalizeUserAgent(session.UserAgent); session.UserAgent == "" {
+		session.UserAgent = "unknown"
+	}
 	access, err := s.issueAccessToken(
 		u.ID,
 		u.Role,
+		session.ID,
 		// go-scaffold:issue-access-token-args
 	)
 	if err != nil {
@@ -71,11 +116,6 @@ func (s *Service) issueTokens(ctx context.Context, u *domain.User, absoluteExpir
 	if err != nil {
 		return nil, fmt.Errorf("generate refresh token: %w", err)
 	}
-	clock := s.now
-	if clock == nil {
-		clock = time.Now
-	}
-	now := clock()
 	abs := now.Add(s.config.JWTRefreshMaxTTL)
 	if len(absoluteExpiresAt) > 0 && !absoluteExpiresAt[0].IsZero() {
 		abs = absoluteExpiresAt[0]
@@ -87,7 +127,11 @@ func (s *Service) issueTokens(ctx context.Context, u *domain.User, absoluteExpir
 	if !expiresAt.After(now) || !abs.After(now) {
 		return nil, fmt.Errorf("refresh token lifetime is exhausted")
 	}
-	if err := s.refreshTokens.SetRefreshToken(ctx, hashToken(refresh), RefreshTokenRecord{UserID: u.ID, ExpiresAt: expiresAt, AbsoluteExpiresAt: abs}); err != nil {
+	if err := s.refreshTokens.SetRefreshToken(ctx, hashToken(refresh), RefreshTokenRecord{
+		UserID: u.ID, SessionID: session.ID, UserAgent: session.UserAgent,
+		CreatedAt: session.CreatedAt, LastUsedAt: now, ExpiresAt: expiresAt,
+		AbsoluteExpiresAt: abs,
+	}); err != nil {
 		return nil, fmt.Errorf("store refresh token: %w", err)
 	}
 	return &AuthResponse{
@@ -96,4 +140,14 @@ func (s *Service) issueTokens(ctx context.Context, u *domain.User, absoluteExpir
 		TokenType:    "Bearer",
 		ExpiresIn:    int(s.config.JWTAccessTTL.Seconds()),
 	}, nil
+}
+
+const maxUserAgentLength = 512
+
+func normalizeUserAgent(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > maxUserAgentLength {
+		return value[:maxUserAgentLength]
+	}
+	return value
 }

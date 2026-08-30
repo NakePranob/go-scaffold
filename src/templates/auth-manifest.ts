@@ -8,6 +8,7 @@ type Entry = { template: string; output: string };
 // must create one canonical implementation tree.
 const SHARED: Entry[] = [
   { template: "add/auth/internal/shared/middleware/auth.go.hbs", output: "internal/shared/middleware/auth.go" },
+  { template: "add/auth/internal/shared/middleware/auth_test.go.hbs", output: "internal/shared/middleware/auth_test.go" },
   { template: "add/auth/internal/shared/middleware/ratelimit.go.hbs", output: "internal/shared/middleware/ratelimit.go" },
 
   { template: "add/auth/internal/app/user/domain/entity.go.hbs", output: "internal/app/user/domain/entity.go" },

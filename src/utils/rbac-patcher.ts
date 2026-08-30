@@ -1,7 +1,7 @@
 import { AuthStore } from "../types";
 import fs from "fs-extra";
 import { authHandlerLineFor } from "./auth-patcher";
-import { insertBeforeMarkerOnce } from "./marker-patch";
+import { insertBeforeMarker, insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const SCHEMA_MARKER = "// go-scaffold:schemas";
@@ -54,7 +54,12 @@ export function patchUserModelForRbac(userModelPath: string): void {
 export function patchMiddlewareAuthForRbac(middlewareAuthPath: string): void {
   let content = fs.readFileSync(middlewareAuthPath, "utf8");
   content = insertBeforeMarkerOnce(content, "// go-scaffold:middleware-auth-keys", 'const RoleKey = "role"', 'RoleKey = "role"');
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:middleware-auth-claims", 'Role string `json:"role,omitempty"`', "Role string");
+  content = insertGoLineBeforeMarkerOnce(
+    content,
+    "// go-scaffold:middleware-auth-claims",
+    'Role string `json:"role,omitempty"`',
+    /^\s*Role\s+string\s+`json:"role,omitempty"`/m
+  );
   content = insertBeforeMarkerOnce(content, "// go-scaffold:middleware-auth-context", "c.Set(RoleKey, claims.Role)", "c.Set(RoleKey");
   fs.writeFileSync(middlewareAuthPath, content);
 }
@@ -66,10 +71,33 @@ export function patchMiddlewareAuthForRbac(middlewareAuthPath: string): void {
 // specifically so a marker patch can extend either without reformatting.
 export function patchUserJWTForRbac(jwtGoPath: string): void {
   let content = fs.readFileSync(jwtGoPath, "utf8");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:jwt-claims", 'Role string `json:"role,omitempty"`', "Role string");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:issue-access-token-params", "role string,", "role string,");
-  content = insertBeforeMarkerOnce(content, "// go-scaffold:jwt-claims-values", "Role: role,", "Role: role,");
+  content = insertGoLineBeforeMarkerOnce(
+    content,
+    "// go-scaffold:jwt-claims",
+    'Role string `json:"role,omitempty"`',
+    /^\s*Role\s+string\s+`json:"role,omitempty"`/m
+  );
+  content = insertGoLineBeforeMarkerOnce(
+    content,
+    "// go-scaffold:issue-access-token-params",
+    "role string,",
+    /^\s*role\s+string\s*,/m
+  );
+  content = insertGoLineBeforeMarkerOnce(
+    content,
+    "// go-scaffold:jwt-claims-values",
+    "Role: role,",
+    /^\s*Role\s*:\s*role\s*,/m
+  );
   fs.writeFileSync(jwtGoPath, content);
+}
+
+// Go fmt aligns struct fields and can turn a literal sentinel such as
+// `Role string` into `Role       string`. Match the Go line semantically so a
+// subsequent `add rbac` cannot append a duplicate field after formatting.
+function insertGoLineBeforeMarkerOnce(content: string, marker: string, block: string, line: RegExp): string {
+  if (line.test(content)) return content;
+  return insertBeforeMarker(content, marker, block);
 }
 
 // patchUserServiceForRbac verifies the auth application already exposes the

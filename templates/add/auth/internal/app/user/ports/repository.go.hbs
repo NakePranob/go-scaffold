@@ -36,8 +36,20 @@ type RoleChecker interface {
 
 type RefreshTokenRecord struct {
 	UserID            uuid.UUID `json:"user_id"`
+	SessionID         uuid.UUID `json:"session_id"`
+	UserAgent         string    `json:"user_agent"`
+	CreatedAt         time.Time `json:"created_at"`
+	LastUsedAt        time.Time `json:"last_used_at"`
 	ExpiresAt         time.Time `json:"expires_at"`
 	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
+}
+
+type RefreshSession struct {
+	ID         uuid.UUID
+	UserAgent  string
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+	ExpiresAt  time.Time
 }
 
 type RefreshTokenStore interface {
@@ -46,6 +58,8 @@ type RefreshTokenStore interface {
 	ConsumeRefreshToken(context.Context, string) (RefreshTokenRecord, bool, error)
 	DeleteRefreshToken(context.Context, string, uuid.UUID) error
 	RevokeAllRefreshTokens(context.Context, uuid.UUID) error
+	ListRefreshSessions(context.Context, uuid.UUID) ([]RefreshSession, error)
+	RevokeRefreshSession(context.Context, uuid.UUID, uuid.UUID) error
 	IsRefreshTokenUsed(context.Context, string) (uuid.UUID, bool, error)
 }
 
@@ -76,6 +90,8 @@ type MFAEnrollment struct {
 
 type MFAChallenge struct {
 	UserID    uuid.UUID
+	SessionID uuid.UUID
+	UserAgent string
 	ExpiresAt time.Time
 }
 

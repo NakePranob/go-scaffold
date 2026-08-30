@@ -13,14 +13,17 @@ import (
 
 const UserIDKey = "user_id"
 
+const SessionIDKey = "session_id"
+
 // go-scaffold:middleware-auth-keys
 
 // accessClaims mirrors internal/app/user's own claims shape — duplicated
 // rather than imported, since shared/ can never import a domain package.
-// The two are kept in sync by convention: sub = user id, typ = "access",
-// nothing else is load-bearing here.
+// The two are kept in sync by convention: sub = user id, typ = "access", and
+// sid = the stable refresh-session identity used by session management.
 type accessClaims struct {
-	Typ string `json:"typ"`
+	Typ       string    `json:"typ"`
+	SessionID uuid.UUID `json:"sid,omitempty"`
 	// go-scaffold:middleware-auth-claims
 	jwt.RegisteredClaims
 }
@@ -53,6 +56,9 @@ func RequireAuth(secret string) gin.HandlerFunc {
 		}
 
 		c.Set(UserIDKey, userID)
+		if claims.SessionID != uuid.Nil {
+			c.Set(SessionIDKey, claims.SessionID)
+		}
 		// go-scaffold:middleware-auth-context
 		c.Next()
 	}

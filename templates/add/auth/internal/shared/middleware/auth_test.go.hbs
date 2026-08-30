@@ -1,0 +1,48 @@
+package middleware
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+)
+
+func TestRequireAuthExposesSessionIDFromAccessToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secret := "test-secret"
+	userID := uuid.New()
+	sessionID := uuid.New()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims{
+		Typ:       "access",
+		SessionID: sessionID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			IssuedAt: jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute)),
+		},
+	})
+	raw, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	router := gin.New()
+	router.Use(RequireAuth(secret))
+	router.GET("/", func(c *gin.Context) {
+		if got := c.MustGet(SessionIDKey); got != sessionID {
+			t.Fatalf("session id = %v, want %s", got, sessionID)
+		}
+		c.Status(http.StatusNoContent)
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+raw)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", response.Code)
+	}
+}

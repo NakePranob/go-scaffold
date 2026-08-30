@@ -194,6 +194,10 @@ nonce; the frontend still owns the callback route and sends the code to the
 exchange endpoint. The provider redirect URI is separate from
 `CORS_ALLOWED_ORIGINS`; the latter remains an exact-origin credentialed API
 policy. Token responses use `Cache-Control: no-store` and `Pragma: no-cache`.
+Authenticated users can list active device sessions with
+`GET /users/me/sessions` and revoke an individual session with
+`DELETE /users/me/sessions/:id`; only User-Agent and session lifecycle
+timestamps are returned.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
 guard independently of CORS.

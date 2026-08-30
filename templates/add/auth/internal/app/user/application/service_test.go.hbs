@@ -102,6 +102,32 @@ func (f *fakeTokenStore) RevokeAllRefreshTokens(_ context.Context, userID uuid.U
 	delete(f.sessions, userID)
 	return nil
 }
+func (f *fakeTokenStore) ListRefreshSessions(_ context.Context, userID uuid.UUID) ([]RefreshSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]RefreshSession, 0)
+	for _, token := range f.active {
+		if token.UserID != userID || !token.ExpiresAt.After(time.Now()) {
+			continue
+		}
+		out = append(out, RefreshSession{
+			ID: token.SessionID, UserAgent: token.UserAgent, CreatedAt: token.CreatedAt,
+			LastUsedAt: token.LastUsedAt, ExpiresAt: token.ExpiresAt,
+		})
+	}
+	return out, nil
+}
+func (f *fakeTokenStore) RevokeRefreshSession(_ context.Context, userID, sessionID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for hash, token := range f.active {
+		if token.UserID == userID && token.SessionID == sessionID {
+			delete(f.active, hash)
+			delete(f.sessions[userID], hash)
+		}
+	}
+	return nil
+}
 func (f *fakeTokenStore) IsRefreshTokenUsed(_ context.Context, hash string) (uuid.UUID, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -552,8 +578,10 @@ func TestService_Refresh_DoesNotExtendTheAbsoluteLifetime(t *testing.T) {
 	raw := "bounded-refresh-token"
 	issuedAt := time.Now()
 	absoluteExpiry := issuedAt.Add(2 * time.Hour)
+	sessionID := uuid.New()
 	if err := tokens.SetRefreshToken(ctx, hashToken(raw), RefreshTokenRecord{
-		UserID:            userID,
+		UserID:            userID, SessionID: sessionID, UserAgent: "test-device",
+		CreatedAt:         issuedAt.Add(-time.Hour), LastUsedAt: issuedAt.Add(-time.Minute),
 		ExpiresAt:         issuedAt.Add(time.Hour),
 		AbsoluteExpiresAt: absoluteExpiry,
 	}); err != nil {
@@ -575,6 +603,9 @@ func TestService_Refresh_DoesNotExtendTheAbsoluteLifetime(t *testing.T) {
 	}
 	if !rotated.ExpiresAt.Equal(absoluteExpiry) {
 		t.Fatalf("rotated inactivity expiry was not capped at the absolute expiry: got %s want %s", rotated.ExpiresAt, absoluteExpiry)
+	}
+	if rotated.SessionID != sessionID || rotated.UserAgent != "test-device" {
+		t.Fatalf("refresh rotation changed session identity/metadata: got id=%s ua=%q", rotated.SessionID, rotated.UserAgent)
 	}
 }
 

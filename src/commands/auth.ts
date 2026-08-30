@@ -32,6 +32,8 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
   { urlPath: "/users/me/resend-verification", file: "./auth/users-me-resend-verification.yaml" },
   { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
+  { urlPath: "/users/me/sessions", file: "./auth/users-me-sessions.yaml" },
+  { urlPath: "/users/me/sessions/{id}", file: "./auth/users-me-session.yaml" },
   { urlPath: "/users/me/mfa", file: "./auth/users-me-mfa.yaml" },
   { urlPath: "/users/me/mfa/setup", file: "./auth/users-me-mfa-setup.yaml" },
   { urlPath: "/users/me/mfa/confirm", file: "./auth/users-me-mfa-confirm.yaml" },
@@ -41,7 +43,8 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 
 // addAuth scaffolds email/password authentication: a users+identities model
 // pair, JWT access tokens, a selectable refresh token store with
-// rotation + reuse detection, and register/login/refresh/logout/me. No RBAC
+// rotation + reuse detection, register/login/refresh/logout/me, and
+// per-user session listing/revocation. No RBAC
 // (no roles/permissions) — that's a separate opt-in on top of this, since
 // most projects need "is this caller logged in" long before they need "can
 // this caller do X".
@@ -221,6 +224,7 @@ export async function addAuth(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
       "POST /users/me/{resend-verification,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
+      "GET /users/me/sessions, DELETE /users/me/sessions/{id}, " +
       "GET /users/me/mfa, and POST /auth/mfa/verify in cmd/api/wiring.go" +
       docsMessage
   );

@@ -3,6 +3,7 @@ package httpadapter
 import (
 	"net/http"
 
+	"{{goModule}}/internal/shared/httpx"
 	"{{goModule}}/internal/shared/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,35 @@ func (h *Handler) logoutAll(c *gin.Context) {
 		return
 	}
 	h.clearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) sessions(c *gin.Context) {
+	setNoStoreHeaders(c)
+	items, err := h.svc.ListSessions(c.Request.Context(), currentUserID(c), currentSessionID(c))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	out := make([]sessionResponse, len(items))
+	for i := range items {
+		out[i] = toSessionResponse(items[i])
+	}
+	c.JSON(http.StatusOK, sessionsResponse{Sessions: out})
+}
+
+func (h *Handler) revokeSession(c *gin.Context) {
+	sessionID, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.RevokeSession(c.Request.Context(), currentUserID(c), sessionID); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	if sessionID == currentSessionID(c) {
+		h.clearRefreshCookie(c)
+	}
 	c.Status(http.StatusNoContent)
 }
 

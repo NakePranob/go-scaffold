@@ -92,7 +92,7 @@ func (s *PostgresMFAStore) CreateChallenge(ctx context.Context, hash string, cha
 	if hash == "" || challenge.UserID == uuid.Nil || !challenge.ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("MFA challenge is invalid")
 	}
-	row := MFAChallenge{ChallengeHash: hash, UserID: challenge.UserID, ExpiresAt: challenge.ExpiresAt}
+	row := MFAChallenge{ChallengeHash: hash, UserID: challenge.UserID, SessionID: challenge.SessionID, UserAgent: challenge.UserAgent, ExpiresAt: challenge.ExpiresAt}
 	return tx.From(ctx, s.db).WithContext(ctx).Create(&row).Error
 }
 
@@ -101,8 +101,8 @@ func (s *PostgresMFAStore) ConsumeChallenge(ctx context.Context, hash string) (p
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
 		`DELETE FROM user_svc.mfa_challenges
 		 WHERE challenge_hash = ? AND expires_at > now()
-		 RETURNING user_id, expires_at`, hash,
-	).Row().Scan(&challenge.UserID, &challenge.ExpiresAt)
+		 RETURNING user_id, session_id, user_agent, expires_at`, hash,
+	).Row().Scan(&challenge.UserID, &challenge.SessionID, &challenge.UserAgent, &challenge.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ports.MFAChallenge{}, false, nil
 	}

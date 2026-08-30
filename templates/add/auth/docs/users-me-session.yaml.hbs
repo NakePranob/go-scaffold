@@ -1,0 +1,14 @@
+delete:
+  summary: Revoke one session for the current user
+  operationId: revokeMySession
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    "204": { description: session revoked }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

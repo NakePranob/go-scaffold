@@ -12,6 +12,8 @@ CREATE TABLE user_svc.mfa_enrollments (
 CREATE TABLE user_svc.mfa_challenges (
     challenge_hash TEXT PRIMARY KEY,
     user_id        UUID NOT NULL REFERENCES user_svc.users(id) ON DELETE CASCADE,
+    session_id     UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+    user_agent     TEXT NOT NULL DEFAULT '',
     expires_at     TIMESTAMPTZ NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
