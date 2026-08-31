@@ -60,3 +60,19 @@ func errMFAConfig() error {
 func errUnknownRole() error {
 	return domain.Rule("USER_UNKNOWN_ROLE", "unknown role code", domain.ErrUnknownRole)
 }
+
+func errIdentityAlreadyLinked() error {
+	return domain.Rule("AUTH_IDENTITY_ALREADY_LINKED", "this login method is already linked", domain.ErrIdentityAlreadyLinked)
+}
+
+func errIdentityConflict() error {
+	return domain.Rule("AUTH_IDENTITY_CONFLICT", "this provider account is linked to another user", domain.ErrConflict)
+}
+
+func errIdentityNotFound() error {
+	return domain.Rule("AUTH_IDENTITY_NOT_FOUND", "login method not found", domain.ErrNotFound)
+}
+
+func errLastIdentity() error {
+	return domain.Rule("AUTH_LAST_IDENTITY", "you cannot remove your last login method", domain.ErrLastIdentity)
+}

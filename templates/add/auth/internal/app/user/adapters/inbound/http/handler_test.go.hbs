@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"{{goModule}}/internal/app/user/application"
+	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -154,6 +157,10 @@ func TestHandler_ProviderExchangeReturnsJSONAndSetsRefreshCookie(t *testing.T) {
 func TestHandler_SessionRoutesAreProtected(t *testing.T) {
 	router := newOAuthTestRouter(t)
 	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/users/me/identities"},
+		{http.MethodPost, "/users/me/identities/fake/link"},
+		{http.MethodPost, "/users/me/identities/fake/link/exchange"},
+		{http.MethodDelete, "/users/me/identities/fake"},
 		{http.MethodGet, "/users/me/sessions"},
 		{http.MethodDelete, "/users/me/sessions/00000000-0000-0000-0000-000000000001"},
 	} {
@@ -162,6 +169,19 @@ func TestHandler_SessionRoutesAreProtected(t *testing.T) {
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("%s %s status = %d, want 401", route.method, route.path, response.Code)
 		}
+	}
+}
+
+func TestHandler_IdentityLinkErrorPreservesConflictStatus(t *testing.T) {
+	h := NewHandler(stubService{}, "test-secret", time.Hour, true, "strict", allowAllLimiter{})
+	mapped := h.identityLinkError("fake", domain.Rule("AUTH_IDENTITY_CONFLICT", "identity conflict", domain.ErrConflict))
+
+	var appErr *apperror.AppError
+	if !errors.As(mapped, &appErr) {
+		t.Fatalf("mapped error = %T, want *apperror.AppError", mapped)
+	}
+	if appErr.HTTPStatus != http.StatusConflict || appErr.Code != "AUTH_IDENTITY_CONFLICT" {
+		t.Fatalf("mapped error = status %d code %q, want 409 AUTH_IDENTITY_CONFLICT", appErr.HTTPStatus, appErr.Code)
 	}
 }
 

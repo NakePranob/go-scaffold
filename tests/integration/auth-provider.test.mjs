@@ -37,7 +37,9 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const inbound = ["internal", "app", "user", "adapters", "inbound", "http"];
   const postgres = ["internal", "app", "user", "adapters", "outbound", "postgres"];
   const handler = read(project, ...inbound, "handler.go");
+  const identityHandler = read(project, ...inbound, "handler_identity.go");
   const service = read(project, ...application, "service.go");
+  const identities = read(project, ...application, "identities.go");
   const applicationDTO = read(project, ...application, "dto.go");
   const contracts = read(project, ...application, "contracts.go");
   const passwordPorts = read(project, "internal", "app", "user", "ports", "password.go");
@@ -57,6 +59,12 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(handler, /POST\("\/:provider\/exchange", h\.providerExchange\)/);
   assert.match(handler, /GET\("\/me\/sessions", h\.sessions\)/);
   assert.match(handler, /DELETE\("\/me\/sessions\/:id", h\.revokeSession\)/);
+  assert.match(identityHandler, /GET\("\/me\/identities", h\.listIdentities\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link", linkLimiter, h\.beginIdentityLink\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link\/exchange", linkLimiter, h\.exchangeIdentityLink\)/);
+  assert.match(identityHandler, /DELETE\("\/me\/identities\/:provider", h\.unlinkIdentity\)/);
+  assert.match(identities, /func \(s \*Service\) ExchangeIdentityLink\(/);
+  assert.match(read(project, ...application, "identities_test.go"), /AUTH_LAST_IDENTITY/);
   assert.doesNotMatch(handler, /providerCallback|StatusSeeOther|RedirectTarget/);
   assert.doesNotMatch(service, /oauth2\.Config|GoogleLoginURL|GoogleCallback|findOrCreateGoogleUser|issueOAuthState/);
   assert.match(service, /func NewService\(deps Dependencies, cfg AuthConfig\)/);
@@ -107,11 +115,18 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(read(project, "docs", "auth", "provider-login.yaml"), /minLength: 43/);
   assert.match(read(project, "docs", "auth", "users-me-sessions.yaml"), /listMySessions/);
   assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
+  assert.match(read(project, "docs", "auth", "users-me-identities.yaml"), /listMyIdentities/);
+  assert.match(read(project, "docs", "auth", "users-me-identity-link.yaml"), /startIdentityLink/);
+  assert.match(read(project, "docs", "auth", "users-me-identity-link-exchange.yaml"), /exchangeIdentityLink/);
+  assert.match(read(project, "docs", "auth", "users-me-identity.yaml"), /unlinkMyIdentity/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /SessionResponse:/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /IdentityResponse:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "adapters", "inbound", "http", "handler.go")));
+  assert.ok(existsSync(path.join(project, "internal", "app", "user", "adapters", "inbound", "http", "handler_identity.go")));
+  assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "identities.go")));
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "ports", "repository.go")));
   assert.ok(existsSync(path.join(project, "internal", "platform", "authprovider", "google", "google.go")));
   for (const file of [
@@ -119,6 +134,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
     "sessions.go",
     "recovery_service.go",
     "external_login.go",
+    "identities.go",
     "user_query.go",
     "handler_local.go",
     "handler_recovery.go",
@@ -131,8 +147,9 @@ test("add auth writes generic provider login and exchange routes", (t) => {
     "mfa_store.go",
     "mfa_store_test.go",
     "handler_mfa.go",
+    "handler_identity.go",
   ]) {
-    const directory = ["handler_local.go", "handler_recovery.go", "handler_oauth.go", "handler_user.go", "handler_mfa.go", "session_cookie.go", "browser_policy.go"].includes(file)
+    const directory = ["handler_local.go", "handler_recovery.go", "handler_oauth.go", "handler_user.go", "handler_mfa.go", "handler_identity.go", "session_cookie.go", "browser_policy.go"].includes(file)
       ? inbound
       : ["mfa_store.go", "mfa_store_test.go"].includes(file)
         ? postgres
@@ -150,6 +167,16 @@ test("add auth --defaults keeps local same-site defaults and --yes remains non-T
   assert.match(env, /^AUTH_BROWSER_TOPOLOGY=same-site$/m);
   assert.match(env, /^COOKIE_SECURE=false$/m);
   assert.match(env, /^COOKIE_SAMESITE=strict$/m);
+});
+
+test("add auth --store redis keeps identity linking compilable", (t) => {
+  const project = createProject(t, "redis-auth-app");
+  cli(project, "add", "auth", "--store", "redis", "--yes");
+  execFileSync("go", ["mod", "tidy"], { cwd: project, stdio: "ignore" });
+  execFileSync("go", ["test", "./..."], { cwd: project, stdio: "ignore" });
+
+  assert.match(read(project, "internal", "app", "user", "adapters", "outbound", "redis", "tokenstore.go"), /LoginTransaction/);
+  assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "identities_test.go")));
 });
 
 test("cross-site topology emits the required None + Secure cookie defaults", (t) => {

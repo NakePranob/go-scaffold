@@ -186,6 +186,14 @@ approval before changing their contract.
   rotation; responses expose only User-Agent and lifecycle timestamps, never
   refresh tokens or token hashes. The current access token carries the session
   ID as `sid` so the adapter can mark the current device.
+- Authenticated users can manage login identities through
+  `GET /users/me/identities`, `POST /users/me/identities/:provider/link`,
+  `POST /users/me/identities/:provider/link/exchange`, and
+  `DELETE /users/me/identities/:provider`. The link transaction is bound to
+  the current user as well as provider/state/PKCE/nonce; it can never create a
+  session or silently move a provider account between users. Return only safe
+  provider metadata, allow at most one identity per provider per user, and
+  refuse to unlink the last remaining login method.
 - Password reset and email verification consume a one-time token in the same
   retry-safe transaction as the user/identity update. A failed post-commit
   session revocation must not make a successful reset impossible to retry.

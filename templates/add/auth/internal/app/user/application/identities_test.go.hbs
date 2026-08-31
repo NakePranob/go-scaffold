@@ -1,0 +1,69 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+func TestService_IdentityLinkBindsOAuthTransactionToCaller(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	userID := uuid.New()
+	otherUserID := uuid.New()
+
+	if _, err := svc.BeginIdentityLink(context.Background(), userID, provider.Name(), validLoginStart()); err != nil {
+		t.Fatalf("begin identity link: %v", err)
+	}
+
+	_, err := svc.ExchangeIdentityLink(context.Background(), otherUserID, provider.Name(), validLoginExchange())
+	if got := oauthErrorCode(t, err); got != OAuthStateInvalid {
+		t.Fatalf("oauth code = %q, want %q", got, OAuthStateInvalid)
+	}
+	if provider.completeCnt != 0 {
+		t.Fatal("provider must not receive a transaction bound to another user")
+	}
+}
+
+func TestService_IdentityLinkIsIdempotentForSameProviderSubject(t *testing.T) {
+	provider, svc := validFakeProvider(t)
+	userID := uuid.New()
+
+	if _, err := svc.BeginIdentityLink(context.Background(), userID, provider.Name(), validLoginStart()); err != nil {
+		t.Fatalf("begin first identity link: %v", err)
+	}
+	first, err := svc.ExchangeIdentityLink(context.Background(), userID, provider.Name(), validLoginExchange())
+	if err != nil {
+		t.Fatalf("exchange first identity link: %v", err)
+	}
+
+	if _, err := svc.BeginIdentityLink(context.Background(), userID, provider.Name(), validLoginStart()); err != nil {
+		t.Fatalf("begin repeated identity link: %v", err)
+	}
+	second, err := svc.ExchangeIdentityLink(context.Background(), userID, provider.Name(), validLoginExchange())
+	if err != nil {
+		t.Fatalf("exchange repeated identity link: %v", err)
+	}
+	if first.ID != second.ID || first.Provider != second.Provider {
+		t.Fatalf("repeated link returned a different identity: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestService_UnlinkIdentityRejectsRemovingLastLoginMethod(t *testing.T) {
+	userID := uuid.New()
+	providerUID := "local-user"
+	repo := &fakeRepo{}
+	repo.identities = append(repo.identities, domain.Identity{
+		ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, ProviderUID: &providerUID,
+	})
+	svc := newTestService(repo, newFakeTokenStore())
+
+	err := svc.UnlinkIdentity(context.Background(), userID, string(domain.ProviderLocal))
+	var ruleErr *domain.RuleError
+	if !errors.As(err, &ruleErr) || ruleErr.Code != "AUTH_LAST_IDENTITY" {
+		t.Fatalf("unlink last identity error = %v, want AUTH_LAST_IDENTITY", err)
+	}
+}

@@ -118,6 +118,10 @@ func (s *Service) SetRole(ctx context.Context, userID uuid.UUID, roleCode string
 // ServicePort is the inbound application boundary. HTTP, jobs, and future
 // transports depend on this capability set instead of the concrete service.
 type ServicePort interface {
+	ListIdentities(context.Context, uuid.UUID) ([]IdentityResponse, error)
+	BeginIdentityLink(context.Context, uuid.UUID, string, LoginStartInput) (*Authorization, error)
+	ExchangeIdentityLink(context.Context, uuid.UUID, string, LoginExchangeInput) (*IdentityResponse, error)
+	UnlinkIdentity(context.Context, uuid.UUID, string) error
 	// go-scaffold:service-interface
 	Register(context.Context, RegisterInput) (*AuthResult, error)
 	Login(context.Context, LoginInput) (*AuthResult, error)

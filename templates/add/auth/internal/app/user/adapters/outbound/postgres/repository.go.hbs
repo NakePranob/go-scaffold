@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Repository struct {
@@ -68,6 +69,20 @@ func (r *Repository) FindIdentity(ctx context.Context, userID uuid.UUID, provide
 	return toDomainIdentity(&row), nil
 }
 
+func (r *Repository) ListIdentities(ctx context.Context, userID uuid.UUID) ([]domain.Identity, error) {
+	var rows []Identity
+	if err := tx.From(ctx, r.db).WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	items := make([]domain.Identity, len(rows))
+	for i := range rows {
+		items[i] = *toDomainIdentity(&rows[i])
+	}
+	return items, nil
+}
+
 func (r *Repository) FindIdentityByProviderUID(ctx context.Context, provider domain.Provider, providerUID string) (*domain.Identity, error) {
 	var row Identity
 	if err := tx.From(ctx, r.db).WithContext(ctx).
@@ -86,6 +101,34 @@ func (r *Repository) CreateIdentity(ctx context.Context, identity *domain.Identi
 func (r *Repository) UpdateIdentity(ctx context.Context, identity *domain.Identity) error {
 	row := fromDomainIdentity(identity)
 	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Save(&row).Error)
+}
+
+// DeleteIdentity locks the user's identity rows before checking the count so
+// two concurrent unlink requests cannot both remove the last login method.
+func (r *Repository) DeleteIdentity(ctx context.Context, userID uuid.UUID, provider domain.Provider) error {
+	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var rows []Identity
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id = ?", userID).
+			Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+			return err
+		}
+
+		var target *Identity
+		for i := range rows {
+			if rows[i].Provider == string(provider) {
+				target = &rows[i]
+				break
+			}
+		}
+		if target == nil {
+			return domain.ErrNotFound
+		}
+		if len(rows) <= 1 {
+			return domain.ErrLastIdentity
+		}
+		return db.Delete(&Identity{}, "id = ? AND user_id = ?", target.ID, userID).Error
+	}))
 }
 
 // CreateUserWithIdentity inserts the profile and its first login method in

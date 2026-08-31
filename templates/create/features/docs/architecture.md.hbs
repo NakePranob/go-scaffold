@@ -60,7 +60,7 @@ internal/
 ```
 
 Installed process and platform additions:
-{{#if auth}}- `cmd/seed` and `platform/authprovider/google/` for user bootstrap and Google OAuth/OIDC
+{{#if auth}}- `cmd/seed` and `platform/authprovider/google/` for user bootstrap, Google OAuth/OIDC login, and authenticated identity linking
 {{/if}}{{#if worker}}- `cmd/worker` and `platform/{mail,queue}/` for queue/SMTP jobs{{#if (eq queue "asynq")}}, plus `platform/cache/` for Redis{{/if}}
 {{/if}}{{#if observability}}- `platform/telemetry/` for the OTLP exporter
 {{/if}}{{#if rbac}}- `shared/middleware/authz.go` and `app/role/` for RBAC policy
@@ -73,10 +73,10 @@ a real external system.
 add a `shared/utils` or similarly generic package — name it after what it
 actually does.
 
-Optional feature boundaries are explicit: auth owns user authentication and
-provider ports; RBAC owns role policy and authorization; worker owns queue and
-mail adapters; observability owns metrics/tracing setup. They do not create a
-second domain architecture.
+Optional feature boundaries are explicit: auth owns user authentication,
+identity linking, and provider ports; RBAC owns role policy and authorization;
+worker owns queue and mail adapters; observability owns metrics/tracing setup.
+They do not create a second domain architecture.
 
 ## 3. API Style
 

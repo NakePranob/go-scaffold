@@ -176,6 +176,7 @@ func (s *PgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string
 	}
 	row := AuthToken{
 		TokenHash:     stateHash,
+		UserID:        transaction.UserID,
 		Kind:          kindOAuthState,
 		ExpiresAt:     transaction.ExpiresAt,
 		Provider:      transaction.Provider,
@@ -185,7 +186,7 @@ func (s *PgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("token_hash = ?", stateHash).
 		Assign(map[string]any{
-			"user_id":        uuid.Nil,
+			"user_id":        transaction.UserID,
 			"kind":           kindOAuthState,
 			"expires_at":     transaction.ExpiresAt,
 			"provider":       transaction.Provider,
@@ -199,8 +200,9 @@ func (s *PgTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash st
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
 		`DELETE FROM user_svc.auth_tokens
 		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
-		 RETURNING provider, code_challenge, nonce, expires_at`,
+		 RETURNING user_id, provider, code_challenge, nonce, expires_at`,
 		stateHash, kindOAuthState).Row().Scan(
+		&transaction.UserID,
 		&transaction.Provider,
 		&transaction.CodeChallenge,
 		&transaction.Nonce,

@@ -1,0 +1,13 @@
+get:
+  summary: List login identities for the current user
+  description: Returns safe provider metadata only; provider subjects and password hashes are never exposed.
+  operationId: listMyIdentities
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  responses:
+    "200":
+      description: linked login identities
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/IdentitiesResponse' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

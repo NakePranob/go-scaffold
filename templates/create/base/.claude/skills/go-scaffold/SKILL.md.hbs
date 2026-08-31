@@ -260,6 +260,15 @@ boundary. For browser OAuth, preserve this client-owned callback contract:
   `Pragma: no-cache`.
   Never accept a request-supplied redirect destination or place an access token,
   refresh token, authorization code, or state in a URI.
+- Authenticated identity management is a separate account flow, not another
+  login endpoint: list safe metadata at `GET /users/me/identities`, start and
+  finish linking at `POST /users/me/identities/:provider/link` and
+  `POST /users/me/identities/:provider/link/exchange`, and unlink with
+  `DELETE /users/me/identities/:provider`. Bind the server-side transaction to
+  the caller's user ID, never issue or replace a session during link exchange,
+  keep one identity per provider per user, and reject unlinking the last login
+  method. Provider subjects and password hashes must never cross the HTTP
+  boundary.
 - Map provider and validation failures to controlled public codes only:
   `oauth_denied`, `oauth_state_invalid`, `oauth_provider_unavailable`, and
   `oauth_failed`. Do not expose raw provider descriptions or technical causes.

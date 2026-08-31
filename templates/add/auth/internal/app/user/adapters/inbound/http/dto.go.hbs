@@ -116,11 +116,49 @@ type sessionsResponse struct {
 	Sessions []sessionResponse `json:"sessions"`
 }
 
+type identityLinkStartInput struct {
+	State               string `json:"state" binding:"required"`
+	CodeChallenge       string `json:"code_challenge" binding:"required"`
+	CodeChallengeMethod string `json:"code_challenge_method" binding:"required"`
+}
+
+type identityLinkExchangeInput struct {
+	Code         string `json:"code" binding:"required"`
+	State        string `json:"state" binding:"required"`
+	CodeVerifier string `json:"code_verifier" binding:"required"`
+}
+
+type identityLinkStartResponse struct {
+	AuthorizationURL string `json:"authorization_url"`
+}
+
+type identityResponse struct {
+	ID        uuid.UUID `json:"id"`
+	Provider  string    `json:"provider"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type identitiesResponse struct {
+	Identities []identityResponse `json:"identities"`
+}
+
 func toSessionResponse(session userapp.Session) sessionResponse {
 	return sessionResponse{
 		ID: session.ID, UserAgent: session.UserAgent, CreatedAt: session.CreatedAt,
 		LastUsedAt: session.LastUsedAt, ExpiresAt: session.ExpiresAt, Current: session.Current,
 	}
+}
+
+func toIdentityLinkStartInput(in identityLinkStartInput) userapp.LoginStartInput {
+	return userapp.LoginStartInput{State: in.State, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod}
+}
+
+func toIdentityLinkExchangeInput(in identityLinkExchangeInput) userapp.LoginExchangeInput {
+	return userapp.LoginExchangeInput{Code: in.Code, State: in.State, CodeVerifier: in.CodeVerifier}
+}
+
+func toIdentityResponse(identity userapp.IdentityResponse) identityResponse {
+	return identityResponse{ID: identity.ID, Provider: identity.Provider, CreatedAt: identity.CreatedAt}
 }
 
 func toCookieResponse(auth *userapp.AuthResponse) authCookieResponse {
