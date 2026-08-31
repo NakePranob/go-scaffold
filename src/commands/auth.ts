@@ -30,6 +30,10 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/auth/{provider}/login", file: "./auth/provider-login.yaml" },
   { urlPath: "/auth/{provider}/exchange", file: "./auth/provider-exchange.yaml" },
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
+  { urlPath: "/users/me/identities", file: "./auth/users-me-identities.yaml" },
+  { urlPath: "/users/me/identities/{provider}/link", file: "./auth/users-me-identity-link.yaml" },
+  { urlPath: "/users/me/identities/{provider}/link/exchange", file: "./auth/users-me-identity-link-exchange.yaml" },
+  { urlPath: "/users/me/identities/{provider}", file: "./auth/users-me-identity.yaml" },
   { urlPath: "/users/me/resend-verification", file: "./auth/users-me-resend-verification.yaml" },
   { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
   { urlPath: "/users/me/sessions", file: "./auth/users-me-sessions.yaml" },
@@ -224,8 +228,9 @@ export async function addAuth(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
       "POST /users/me/{resend-verification,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
-      "GET /users/me/sessions, DELETE /users/me/sessions/{id}, " +
-      "GET /users/me/mfa, and POST /auth/mfa/verify in cmd/api/wiring.go" +
+      "GET /users/me/{identities,sessions,mfa}, POST /users/me/identities/{provider}/{link,link/exchange}, " +
+      "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, " +
+      "POST /auth/mfa/verify in cmd/api/wiring.go" +
       docsMessage
   );
   console.log(

@@ -1,0 +1,26 @@
+post:
+  summary: Complete linking a provider identity to the current user
+  description: Consumes the one-time OAuth transaction and links the provider subject to the caller. It never creates or switches a session.
+  operationId: exchangeIdentityLink
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - name: provider
+      in: path
+      required: true
+      schema: { type: string, example: google }
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/OAuthExchangeInput' }
+  responses:
+    "200":
+      description: linked identity
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/IdentityResponse' }
+    "400": { description: invalid OAuth state or provider response }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { description: provider identity is already linked or owned by another user }
+    "503": { description: provider unavailable }

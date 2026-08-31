@@ -133,3 +133,38 @@ SessionsResponse:
     sessions:
       type: array
       items: { $ref: '#/SessionResponse' }
+
+IdentityResponse:
+  type: object
+  required: [id, provider, created_at]
+  properties:
+    id: { type: string, format: uuid }
+    provider: { type: string, example: google }
+    created_at: { type: string, format: date-time }
+
+IdentitiesResponse:
+  type: object
+  required: [identities]
+  properties:
+    identities:
+      type: array
+      items: { $ref: '#/IdentityResponse' }
+
+IdentityLinkStartInput:
+  type: object
+  required: [state, code_challenge, code_challenge_method]
+  additionalProperties: false
+  properties:
+    state: { type: string, minLength: 1 }
+    code_challenge:
+      type: string
+      minLength: 43
+      maxLength: 128
+      pattern: '^[A-Za-z0-9._~-]+$'
+    code_challenge_method: { type: string, enum: [S256] }
+
+IdentityLinkStartResponse:
+  type: object
+  required: [authorization_url]
+  properties:
+    authorization_url: { type: string, format: uri }

@@ -334,6 +334,7 @@ func (f *fakeMFAStore) ConsumeRecoveryCode(_ context.Context, userID uuid.UUID, 
 type fakeRepo struct {
 	user              *domain.User
 	identity          *domain.Identity
+	identities        []domain.Identity
 	updateIdentityErr error
 	updateUserErr     error
 	failures          map[string]int
@@ -387,25 +388,95 @@ func (f *fakeRepo) UpdateUser(_ context.Context, u *domain.User) error {
 	return nil
 }
 func (f *fakeRepo) FindAll(context.Context, int, int) ([]domain.User, error) { return nil, nil }
-func (f *fakeRepo) FindIdentity(_ context.Context, userID uuid.UUID, _ domain.Provider) (*domain.Identity, error) {
-	if f.identity != nil && f.identity.UserID == userID {
+
+func (f *fakeRepo) FindIdentity(_ context.Context, userID uuid.UUID, provider domain.Provider) (*domain.Identity, error) {
+	for i := range f.identities {
+		if f.identities[i].UserID == userID && f.identities[i].Provider == provider {
+			copy := f.identities[i]
+			return &copy, nil
+		}
+	}
+	if f.identity != nil && f.identity.UserID == userID && f.identity.Provider == provider {
 		copy := *f.identity
 		return &copy, nil
 	}
 	return nil, domain.ErrNotFound
 }
-func (f *fakeRepo) FindIdentityByProviderUID(context.Context, domain.Provider, string) (*domain.Identity, error) {
+func (f *fakeRepo) ListIdentities(_ context.Context, userID uuid.UUID) ([]domain.Identity, error) {
+	out := make([]domain.Identity, 0, len(f.identities)+1)
+	for _, identity := range f.identities {
+		if identity.UserID == userID {
+			out = append(out, identity)
+		}
+	}
+	if f.identity != nil && f.identity.UserID == userID {
+		found := false
+		for _, identity := range out {
+			if identity.ID == f.identity.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, *f.identity)
+		}
+	}
+	return out, nil
+}
+func (f *fakeRepo) FindIdentityByProviderUID(_ context.Context, provider domain.Provider, providerUID string) (*domain.Identity, error) {
+	for i := range f.identities {
+		if f.identities[i].Provider == provider && f.identities[i].ProviderUID != nil && *f.identities[i].ProviderUID == providerUID {
+			copy := f.identities[i]
+			return &copy, nil
+		}
+	}
+	if f.identity != nil && f.identity.Provider == provider && f.identity.ProviderUID != nil && *f.identity.ProviderUID == providerUID {
+		copy := *f.identity
+		return &copy, nil
+	}
 	return nil, domain.ErrNotFound
 }
 func (f *fakeRepo) CreateUserWithIdentity(context.Context, *domain.User, *domain.Identity) error {
 	return nil
 }
-func (f *fakeRepo) CreateIdentity(context.Context, *domain.Identity) error { return nil }
+func (f *fakeRepo) CreateIdentity(_ context.Context, identity *domain.Identity) error {
+	f.identities = append(f.identities, *identity)
+	return nil
+}
 func (f *fakeRepo) UpdateIdentity(_ context.Context, i *domain.Identity) error {
 	if f.updateIdentityErr != nil {
 		return f.updateIdentityErr
 	}
 	f.identity = i
+	return nil
+}
+func (f *fakeRepo) DeleteIdentity(_ context.Context, userID uuid.UUID, provider domain.Provider) error {
+	count := 0
+	target := -1
+	for i := range f.identities {
+		if f.identities[i].UserID != userID {
+			continue
+		}
+		count++
+		if f.identities[i].Provider == provider {
+			target = i
+		}
+	}
+	legacyTarget := f.identity != nil && f.identity.UserID == userID && f.identity.Provider == provider
+	if legacyTarget {
+		count++
+	}
+	if target < 0 && !legacyTarget {
+		return domain.ErrNotFound
+	}
+	if count <= 1 {
+		return domain.ErrLastIdentity
+	}
+	if target >= 0 {
+		f.identities = append(f.identities[:target], f.identities[target+1:]...)
+	} else {
+		f.identity = nil
+	}
 	return nil
 }
 

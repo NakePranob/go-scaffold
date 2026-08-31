@@ -16,10 +16,12 @@ type UserRepository interface {
 	UpdateUser(context.Context, *domain.User) error
 	FindAll(context.Context, int, int) ([]domain.User, error)
 	FindIdentity(context.Context, uuid.UUID, domain.Provider) (*domain.Identity, error)
+	ListIdentities(context.Context, uuid.UUID) ([]domain.Identity, error)
 	FindIdentityByProviderUID(context.Context, domain.Provider, string) (*domain.Identity, error)
 	CreateUserWithIdentity(context.Context, *domain.User, *domain.Identity) error
 	CreateIdentity(context.Context, *domain.Identity) error
 	UpdateIdentity(context.Context, *domain.Identity) error
+	DeleteIdentity(context.Context, uuid.UUID, domain.Provider) error
 	LoginLockedUntil(context.Context, string) (time.Time, error)
 	RecordLoginFailure(context.Context, string, int, time.Duration) error
 	ClearLoginFailures(context.Context, string) error
@@ -65,6 +67,7 @@ type RefreshTokenStore interface {
 
 type LoginTransaction struct {
 	Provider      string    `json:"provider"`
+	UserID        uuid.UUID `json:"user_id"`
 	CodeChallenge string    `json:"code_challenge"`
 	Nonce         string    `json:"nonce"`
 	ExpiresAt     time.Time `json:"expires_at"`

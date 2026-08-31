@@ -198,6 +198,11 @@ Authenticated users can list active device sessions with
 `GET /users/me/sessions` and revoke an individual session with
 `DELETE /users/me/sessions/:id`; only User-Agent and session lifecycle
 timestamps are returned.
+They can also list safe login-provider metadata with
+`GET /users/me/identities`, link a provider through the authenticated
+`/users/me/identities/:provider/link` start/exchange flow, and unlink a
+provider with `DELETE /users/me/identities/:provider`; the last login method
+cannot be removed.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
 guard independently of CORS.

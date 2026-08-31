@@ -1,0 +1,97 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"{{goModule}}/internal/app/user/domain"
+
+	"github.com/google/uuid"
+)
+
+func (s *Service) ListIdentities(ctx context.Context, userID uuid.UUID) ([]IdentityResponse, error) {
+	items, err := s.repo.ListIdentities(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list login identities: %w", err)
+	}
+
+	out := make([]IdentityResponse, len(items))
+	for i := range items {
+		out[i] = ToIdentityResponse(items[i])
+	}
+	return out, nil
+}
+
+func (s *Service) ExchangeIdentityLink(ctx context.Context, userID uuid.UUID, providerName string, in LoginExchangeInput) (*IdentityResponse, error) {
+	if userID == uuid.Nil {
+		return nil, NewOAuthError(OAuthStateInvalid, fmt.Errorf("authenticated user is required to link an identity"))
+	}
+
+	identity, err := s.exchangeExternalIdentity(ctx, providerName, in, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.linkExternalIdentity(ctx, userID, identity)
+}
+
+func (s *Service) linkExternalIdentity(ctx context.Context, userID uuid.UUID, info ExternalIdentity) (*IdentityResponse, error) {
+	provider := domain.Provider(strings.TrimSpace(info.Provider))
+	if userID == uuid.Nil || provider == "" || strings.TrimSpace(info.Subject) == "" {
+		return nil, NewOAuthError(OAuthFailed, fmt.Errorf("external identity is incomplete"))
+	}
+
+	// Replaying the same provider account from the same user is idempotent.
+	// A provider subject already owned by another user is a conflict and must
+	// never be silently moved between accounts.
+	if existing, err := s.repo.FindIdentityByProviderUID(ctx, provider, info.Subject); err == nil {
+		if existing.UserID != userID {
+			return nil, errIdentityConflict()
+		}
+		out := ToIdentityResponse(*existing)
+		return &out, nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return nil, fmt.Errorf("find linked identity: %w", err)
+	}
+
+	// The database permits one identity per provider for each user. Return a
+	// controlled conflict instead of exposing a persistence duplicate error.
+	if _, err := s.repo.FindIdentity(ctx, userID, provider); err == nil {
+		return nil, errIdentityAlreadyLinked()
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return nil, fmt.Errorf("check existing provider identity: %w", err)
+	}
+
+	providerUID := info.Subject
+	identity := &domain.Identity{
+		ID: uuid.New(), UserID: userID, Provider: provider, ProviderUID: &providerUID,
+	}
+	if err := s.repo.CreateIdentity(ctx, identity); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return nil, errIdentityAlreadyLinked()
+		}
+		return nil, fmt.Errorf("link identity: %w", err)
+	}
+
+	out := ToIdentityResponse(*identity)
+	return &out, nil
+}
+
+func (s *Service) UnlinkIdentity(ctx context.Context, userID uuid.UUID, providerName string) error {
+	provider := domain.Provider(strings.TrimSpace(providerName))
+	if userID == uuid.Nil || provider == "" {
+		return errIdentityNotFound()
+	}
+	if err := s.repo.DeleteIdentity(ctx, userID, provider); err != nil {
+		switch {
+		case errors.Is(err, domain.ErrLastIdentity):
+			return errLastIdentity()
+		case errors.Is(err, domain.ErrNotFound):
+			return errIdentityNotFound()
+		default:
+			return fmt.Errorf("unlink identity: %w", err)
+		}
+	}
+	return nil
+}

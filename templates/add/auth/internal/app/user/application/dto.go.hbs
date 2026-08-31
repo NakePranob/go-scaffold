@@ -43,6 +43,20 @@ type Session struct {
 	Current    bool
 }
 
+// IdentityResponse is the safe public view of a login identity. Provider
+// subjects and password hashes never cross the application/HTTP boundary.
+type IdentityResponse struct {
+	ID        uuid.UUID
+	Provider  string
+	CreatedAt time.Time
+}
+
+func ToIdentityResponse(identity domain.Identity) IdentityResponse {
+	return IdentityResponse{
+		ID: identity.ID, Provider: string(identity.Provider), CreatedAt: identity.CreatedAt,
+	}
+}
+
 type AuthResponse struct {
 	AccessToken  string
 	RefreshToken string

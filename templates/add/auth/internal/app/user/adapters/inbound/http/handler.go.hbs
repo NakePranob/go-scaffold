@@ -115,6 +115,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	mfaSetupLimit := middleware.RateLimit(h.limiter, "mfa-setup", 5, time.Minute)
 	mfaConfirmLimit := middleware.RateLimit(h.limiter, "mfa-confirm", 5, time.Minute)
 	mfaDisableLimit := middleware.RateLimit(h.limiter, "mfa-disable", 5, time.Minute)
+	identityLinkLimit := middleware.RateLimit(h.limiter, "identity-link", 10, time.Minute)
 
 	authGroup := rg.Group("/auth")
 	authGroup.POST("/register", registerLimit, h.register)
@@ -138,6 +139,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	usersGroup.POST("/me/mfa/setup", mfaSetupLimit, h.setupMFA)
 	usersGroup.POST("/me/mfa/confirm", mfaConfirmLimit, h.confirmMFA)
 	usersGroup.POST("/me/mfa/disable", mfaDisableLimit, h.disableMFA)
+	h.registerIdentityRoutes(usersGroup, identityLinkLimit)
 	// Admin user routes are enabled only when the optional RBAC authorizer is
 	// supplied by the composition root. Auth-only projects keep the endpoint
 	// surface limited to authentication and the current-user operations.
@@ -207,8 +209,10 @@ func toHTTPError(err error) error {
 		switch ruleErr.Code {
 		case "USER_NOT_FOUND":
 			status = http.StatusNotFound
-		case "USER_EMAIL_TAKEN", "AUTH_ALREADY_VERIFIED", "AUTH_MFA_ALREADY_ENABLED", "AUTH_MFA_NOT_ENROLLED", "AUTH_MFA_SETUP_REQUIRED":
+		case "USER_EMAIL_TAKEN", "AUTH_ALREADY_VERIFIED", "AUTH_MFA_ALREADY_ENABLED", "AUTH_MFA_NOT_ENROLLED", "AUTH_MFA_SETUP_REQUIRED", "AUTH_IDENTITY_ALREADY_LINKED", "AUTH_IDENTITY_CONFLICT", "AUTH_LAST_IDENTITY":
 			status = http.StatusConflict
+		case "AUTH_IDENTITY_NOT_FOUND":
+			status = http.StatusNotFound
 		case "AUTH_INVALID_CREDENTIALS", "AUTH_INVALID_TOKEN", "AUTH_MFA_INVALID":
 			status = http.StatusUnauthorized
 		case "AUTH_MFA_UNAVAILABLE":

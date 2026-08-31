@@ -1,0 +1,25 @@
+post:
+  summary: Start linking a provider identity to the current user
+  description: Creates a one-time OAuth transaction bound to the authenticated user and returns the provider authorization URL.
+  operationId: startIdentityLink
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - name: provider
+      in: path
+      required: true
+      schema: { type: string, example: google }
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/IdentityLinkStartInput' }
+  responses:
+    "200":
+      description: provider authorization URL
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/IdentityLinkStartResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "503": { description: provider unavailable }

@@ -15,7 +15,7 @@
 | Logging | `log/slog`, JSON handler |
 | Migrations | [golang-migrate](https://github.com/golang-migrate/migrate) |
 | Testing | stdlib `testing`, real Postgres for integration tests |
-| Authentication | {{#if auth}}JWT access/refresh sessions, password recovery, email verification, provider login, and MFA{{else}}optional via `go-scaffold add auth`{{/if}} |
+| Authentication | {{#if auth}}JWT access/refresh sessions, password recovery, email verification, provider login/linking, and MFA{{else}}optional via `go-scaffold add auth`{{/if}} |
 | Authorization | {{#if rbac}}RBAC role/permission middleware{{else}}optional RBAC via `go-scaffold add rbac`{{/if}} |
 | Background jobs | {{#if worker}}{{queue}} queue backend with SMTP mail and `cmd/worker`{{else}}optional via `go-scaffold add worker`{{/if}} |
 

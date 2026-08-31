@@ -15,7 +15,9 @@ var (
 	ErrMFAAlreadyEnabled = errors.New("MFA is already enabled")
 	ErrMFANotEnrolled    = errors.New("MFA is not enrolled")
 	ErrMFASetupRequired  = errors.New("MFA setup is required")
-	ErrUnknownRole       = errors.New("unknown role")
+	ErrUnknownRole           = errors.New("unknown role")
+	ErrIdentityAlreadyLinked = errors.New("login identity is already linked")
+	ErrLastIdentity          = errors.New("cannot remove the last login identity")
 )
 
 type RuleError struct {

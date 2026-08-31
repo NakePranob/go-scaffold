@@ -1,0 +1,80 @@
+package httpadapter
+
+import (
+	"errors"
+	"net/http"
+
+	userapp "{{goModule}}/internal/app/user/application"
+	"{{goModule}}/internal/shared/httpx"
+
+	"github.com/gin-gonic/gin"
+)
+
+// registerIdentityRoutes keeps account-linking routes out of the main auth
+// route file while the handler remains in the same inbound adapter package.
+func (h *Handler) registerIdentityRoutes(usersGroup gin.IRouter, linkLimiter gin.HandlerFunc) {
+	usersGroup.GET("/me/identities", h.listIdentities)
+	usersGroup.POST("/me/identities/:provider/link", linkLimiter, h.beginIdentityLink)
+	usersGroup.POST("/me/identities/:provider/link/exchange", linkLimiter, h.exchangeIdentityLink)
+	usersGroup.DELETE("/me/identities/:provider", h.unlinkIdentity)
+}
+
+func (h *Handler) listIdentities(c *gin.Context) {
+	setNoStoreHeaders(c)
+	items, err := h.svc.ListIdentities(c.Request.Context(), currentUserID(c))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	out := make([]identityResponse, len(items))
+	for i := range items {
+		out[i] = toIdentityResponse(items[i])
+	}
+	c.JSON(http.StatusOK, identitiesResponse{Identities: out})
+}
+
+func (h *Handler) beginIdentityLink(c *gin.Context) {
+	setNoStoreHeaders(c)
+	var in identityLinkStartInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	authorization, err := h.svc.BeginIdentityLink(c.Request.Context(), currentUserID(c), c.Param("provider"), toIdentityLinkStartInput(in))
+	if err != nil {
+		c.Error(h.oauthAppError(c.Param("provider"), err))
+		return
+	}
+	c.JSON(http.StatusOK, identityLinkStartResponse{AuthorizationURL: authorization.URL})
+}
+
+func (h *Handler) exchangeIdentityLink(c *gin.Context) {
+	setNoStoreHeaders(c)
+	var in identityLinkExchangeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthFailed, err)))
+		return
+	}
+	identity, err := h.svc.ExchangeIdentityLink(c.Request.Context(), currentUserID(c), c.Param("provider"), toIdentityLinkExchangeInput(in))
+	if err != nil {
+		c.Error(h.identityLinkError(c.Param("provider"), err))
+		return
+	}
+	c.JSON(http.StatusOK, toIdentityResponse(*identity))
+}
+
+func (h *Handler) identityLinkError(provider string, err error) error {
+	var oauthErr *userapp.OAuthError
+	if errors.As(err, &oauthErr) {
+		return h.oauthAppError(provider, err)
+	}
+	return toHTTPError(err)
+}
+
+func (h *Handler) unlinkIdentity(c *gin.Context) {
+	if err := h.svc.UnlinkIdentity(c.Request.Context(), currentUserID(c), c.Param("provider")); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
