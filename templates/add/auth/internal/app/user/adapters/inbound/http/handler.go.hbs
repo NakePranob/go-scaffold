@@ -215,6 +215,8 @@ func toHTTPError(err error) error {
 			status = http.StatusNotFound
 		case "AUTH_INVALID_CREDENTIALS", "AUTH_INVALID_TOKEN", "AUTH_MFA_INVALID":
 			status = http.StatusUnauthorized
+		case "AUTH_INVALID_PASSWORD":
+			status = http.StatusBadRequest
 		case "AUTH_MFA_UNAVAILABLE":
 			status = http.StatusServiceUnavailable
 		case "AUTH_TOO_MANY_ATTEMPTS":

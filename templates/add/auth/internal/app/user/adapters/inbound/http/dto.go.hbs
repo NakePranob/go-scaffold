@@ -13,13 +13,13 @@ import (
 // transport-neutral inputs from handler mapping code.
 type registerInput struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
+	Password string `json:"password" binding:"required,min=8,max=72"`
 	Name     string `json:"name" binding:"required"`
 }
 
 type loginInput struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
+	Password string `json:"password" binding:"required,max=72"`
 }
 
 type loginExchangeInput struct {
@@ -62,7 +62,7 @@ type forgotPasswordInput struct {
 
 type resetPasswordInput struct {
 	Token       string `json:"token" binding:"required"`
-	NewPassword string `json:"new_password" binding:"required,min=8"`
+	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
 }
 
 type verifyEmailInput struct {
@@ -126,6 +126,10 @@ type identityLinkExchangeInput struct {
 	Code         string `json:"code" binding:"required"`
 	State        string `json:"state" binding:"required"`
 	CodeVerifier string `json:"code_verifier" binding:"required"`
+}
+
+type localIdentityLinkInput struct {
+	Password string `json:"password" binding:"required,min=8,max=72"`
 }
 
 type identityLinkStartResponse struct {

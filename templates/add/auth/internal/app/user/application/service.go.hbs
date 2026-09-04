@@ -92,6 +92,17 @@ func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
+// bcrypt accepts at most 72 bytes. Enforce the same bound in the application
+// layer so every caller (HTTP, seed, jobs, and future transports) gets the
+// same safe contract instead of a provider-specific hashing failure.
+func validatePassword(password string) error {
+	length := len([]byte(password))
+	if length < 8 || length > 72 {
+		return errInvalidPassword()
+	}
+	return nil
+}
+
 // SetRole validates the role against the role catalog before persisting it.
 func (s *Service) SetRole(ctx context.Context, userID uuid.UUID, roleCode string) (*domain.User, error) {
 	u, err := s.repo.FindByID(ctx, userID)
@@ -119,6 +130,7 @@ func (s *Service) SetRole(ctx context.Context, userID uuid.UUID, roleCode string
 // transports depend on this capability set instead of the concrete service.
 type ServicePort interface {
 	ListIdentities(context.Context, uuid.UUID) ([]IdentityResponse, error)
+	LinkLocalIdentity(context.Context, uuid.UUID, string) error
 	BeginIdentityLink(context.Context, uuid.UUID, string, LoginStartInput) (*Authorization, error)
 	ExchangeIdentityLink(context.Context, uuid.UUID, string, LoginExchangeInput) (*IdentityResponse, error)
 	UnlinkIdentity(context.Context, uuid.UUID, string) error

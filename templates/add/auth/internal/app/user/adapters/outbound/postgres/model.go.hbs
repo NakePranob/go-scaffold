@@ -9,29 +9,52 @@ import (
 )
 
 type User struct {
-	ID            uuid.UUID `gorm:"type:uuid;primaryKey"`
-	Email         string    `gorm:"uniqueIndex:idx_users_email;not null"`
-	Name          string
-	AvatarURL     string
-	EmailVerified bool
-	Role          string `gorm:"type:varchar(20);not null;default:'staff'"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Name      string
+	AvatarURL string
+	Role      string `gorm:"type:varchar(20);not null;default:'staff'"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (User) TableName() string { return "user_svc.users" }
 
-type Identity struct {
-	ID           uuid.UUID `gorm:"type:uuid;primaryKey"`
-	UserID       uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_identities_user_provider,priority:1"`
-	Provider     string    `gorm:"type:varchar(20);not null;uniqueIndex:idx_identities_user_provider,priority:2;uniqueIndex:idx_identities_provider_uid,priority:1"`
-	PasswordHash *string
-	ProviderUID  *string `gorm:"column:provider_uid;uniqueIndex:idx_identities_provider_uid,priority:2"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+type UserEmail struct {
+	ID              uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	UserID          uuid.UUID  `gorm:"type:uuid;not null;index:idx_user_emails_user;uniqueIndex:idx_user_emails_primary,where:is_primary"`
+	Email           string     `gorm:"type:varchar(255);not null"`
+	EmailNormalized string     `gorm:"type:varchar(255);not null;uniqueIndex:idx_user_emails_normalized"`
+	IsPrimary       bool       `gorm:"not null;default:true"`
+	VerifiedAt      *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
-func (Identity) TableName() string { return "user_svc.identities" }
+func (UserEmail) TableName() string { return "user_svc.user_emails" }
+
+type PasswordCredential struct {
+	ID                  uuid.UUID `gorm:"type:uuid;primaryKey"`
+	UserID              uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_password_credentials_user"`
+	PasswordHash        string    `gorm:"column:password_hash;type:text;not null"`
+	HashAlgorithm       string    `gorm:"type:varchar(32);not null;default:'bcrypt'"`
+	PasswordChangedAt   time.Time `gorm:"not null"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+func (PasswordCredential) TableName() string { return "user_svc.password_credentials" }
+
+type ExternalIdentity struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+	UserID    uuid.UUID `gorm:"type:uuid;not null"`
+	Provider  string    `gorm:"type:varchar(50);not null;uniqueIndex:idx_external_identities_user_provider,priority:2"`
+	Issuer    string    `gorm:"type:text;not null;uniqueIndex:idx_external_identities_issuer_subject,priority:1"`
+	Subject   string    `gorm:"type:text;not null;uniqueIndex:idx_external_identities_issuer_subject,priority:2"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (ExternalIdentity) TableName() string { return "user_svc.external_identities" }
 
 type AuthToken struct {
 	TokenHash         string     `gorm:"primaryKey;type:text"`

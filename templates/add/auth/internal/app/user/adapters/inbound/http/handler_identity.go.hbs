@@ -14,9 +14,27 @@ import (
 // route file while the handler remains in the same inbound adapter package.
 func (h *Handler) registerIdentityRoutes(usersGroup gin.IRouter, linkLimiter gin.HandlerFunc) {
 	usersGroup.GET("/me/identities", h.listIdentities)
+	usersGroup.POST("/me/identities/local", linkLimiter, h.linkLocalIdentity)
 	usersGroup.POST("/me/identities/:provider/link", linkLimiter, h.beginIdentityLink)
 	usersGroup.POST("/me/identities/:provider/link/exchange", linkLimiter, h.exchangeIdentityLink)
 	usersGroup.DELETE("/me/identities/:provider", h.unlinkIdentity)
+}
+
+func (h *Handler) linkLocalIdentity(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in localIdentityLinkInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.LinkLocalIdentity(c.Request.Context(), currentUserID(c), in.Password); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) listIdentities(c *gin.Context) {
@@ -35,6 +53,9 @@ func (h *Handler) listIdentities(c *gin.Context) {
 
 func (h *Handler) beginIdentityLink(c *gin.Context) {
 	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	var in identityLinkStartInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.Error(httpx.BindErr(err))
@@ -50,6 +71,9 @@ func (h *Handler) beginIdentityLink(c *gin.Context) {
 
 func (h *Handler) exchangeIdentityLink(c *gin.Context) {
 	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	var in identityLinkExchangeInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthFailed, err)))
@@ -72,6 +96,9 @@ func (h *Handler) identityLinkError(provider string, err error) error {
 }
 
 func (h *Handler) unlinkIdentity(c *gin.Context) {
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	if err := h.svc.UnlinkIdentity(c.Request.Context(), currentUserID(c), c.Param("provider")); err != nil {
 		c.Error(toHTTPError(err))
 		return

@@ -217,6 +217,7 @@ func (p *Provider) Complete(ctx context.Context, in application.LoginCompleteInp
 	}
 	return application.ExternalIdentity{
 		Provider:      p.Name(),
+		Issuer:        p.issuer,
 		Subject:       claims.Subject,
 		Email:         email,
 		EmailVerified: info.EmailVerified || claims.EmailVerified,

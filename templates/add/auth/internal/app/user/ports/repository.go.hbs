@@ -17,7 +17,7 @@ type UserRepository interface {
 	FindAll(context.Context, int, int) ([]domain.User, error)
 	FindIdentity(context.Context, uuid.UUID, domain.Provider) (*domain.Identity, error)
 	ListIdentities(context.Context, uuid.UUID) ([]domain.Identity, error)
-	FindIdentityByProviderUID(context.Context, domain.Provider, string) (*domain.Identity, error)
+	FindIdentityByProviderUID(context.Context, string, string) (*domain.Identity, error)
 	CreateUserWithIdentity(context.Context, *domain.User, *domain.Identity) error
 	CreateIdentity(context.Context, *domain.Identity) error
 	UpdateIdentity(context.Context, *domain.Identity) error

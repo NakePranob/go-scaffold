@@ -24,6 +24,41 @@ func (s *Service) ListIdentities(ctx context.Context, userID uuid.UUID) ([]Ident
 	return out, nil
 }
 
+// LinkLocalIdentity adds a password credential to an already authenticated
+// account. This is the supported Google/OIDC -> email/password path: it
+// creates a credential for the existing user instead of creating a second
+// account keyed by the same email address.
+func (s *Service) LinkLocalIdentity(ctx context.Context, userID uuid.UUID, password string) error {
+	if userID == uuid.Nil || strings.TrimSpace(password) == "" {
+		return fmt.Errorf("authenticated user and password are required")
+	}
+	if err := validatePassword(password); err != nil {
+		return err
+	}
+	if _, err := s.repo.FindByID(ctx, userID); err != nil {
+		return wrapFindErr(err)
+	}
+	if _, err := s.repo.FindIdentity(ctx, userID, domain.ProviderLocal); err == nil {
+		return errIdentityAlreadyLinked()
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("check local identity: %w", err)
+	}
+
+	hash, err := s.passwords.Hash(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	hashStr := string(hash)
+	identity := &domain.Identity{ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &hashStr}
+	if err := s.repo.CreateIdentity(ctx, identity); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return errIdentityAlreadyLinked()
+		}
+		return fmt.Errorf("link local identity: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ExchangeIdentityLink(ctx context.Context, userID uuid.UUID, providerName string, in LoginExchangeInput) (*IdentityResponse, error) {
 	if userID == uuid.Nil {
 		return nil, NewOAuthError(OAuthStateInvalid, fmt.Errorf("authenticated user is required to link an identity"))
@@ -45,7 +80,10 @@ func (s *Service) linkExternalIdentity(ctx context.Context, userID uuid.UUID, in
 	// Replaying the same provider account from the same user is idempotent.
 	// A provider subject already owned by another user is a conflict and must
 	// never be silently moved between accounts.
-	if existing, err := s.repo.FindIdentityByProviderUID(ctx, provider, info.Subject); err == nil {
+	if strings.TrimSpace(info.Issuer) == "" {
+		return nil, NewOAuthError(OAuthFailed, fmt.Errorf("external identity issuer is missing"))
+	}
+	if existing, err := s.repo.FindIdentityByProviderUID(ctx, info.Issuer, info.Subject); err == nil {
 		if existing.UserID != userID {
 			return nil, errIdentityConflict()
 		}
@@ -65,7 +103,7 @@ func (s *Service) linkExternalIdentity(ctx context.Context, userID uuid.UUID, in
 
 	providerUID := info.Subject
 	identity := &domain.Identity{
-		ID: uuid.New(), UserID: userID, Provider: provider, ProviderUID: &providerUID,
+		ID: uuid.New(), UserID: userID, Provider: provider, Issuer: info.Issuer, ProviderUID: &providerUID,
 	}
 	if err := s.repo.CreateIdentity(ctx, identity); err != nil {
 		if errors.Is(err, domain.ErrConflict) {

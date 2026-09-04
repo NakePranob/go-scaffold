@@ -40,6 +40,7 @@ type LoginCompleteInput struct {
 // provider's stable subject identifier, never an email address.
 type ExternalIdentity struct {
 	Provider      string
+	Issuer        string
 	Subject       string
 	Email         string
 	EmailVerified bool

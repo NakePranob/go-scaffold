@@ -26,7 +26,13 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string, limit int, window 
 		return true
 	}
 	if count == 1 {
-		r.rdb.Expire(ctx, redisKey, window)
+		if err := r.rdb.Expire(ctx, redisKey, window).Err(); err != nil {
+			// Never leave a counter without a TTL: an expired window must not
+			// become a permanent lockout after a transient Redis failure. The
+			// limiter is intentionally fail-open, so discard this best-effort
+			// counter and let the endpoint's own controls handle the request.
+			_ = r.rdb.Del(ctx, redisKey).Err()
+		}
 	}
 	return count <= int64(limit)
 }

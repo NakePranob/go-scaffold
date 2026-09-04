@@ -1,0 +1,14 @@
+CREATE TABLE user_svc.user_emails (
+    id              UUID PRIMARY KEY,
+    user_id         UUID NOT NULL REFERENCES user_svc.users(id) ON DELETE CASCADE,
+    email           VARCHAR(255) NOT NULL,
+    email_normalized VARCHAR(255) NOT NULL,
+    is_primary      BOOLEAN NOT NULL DEFAULT true,
+    verified_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_user_emails_normalized ON user_svc.user_emails (email_normalized);
+CREATE UNIQUE INDEX idx_user_emails_primary ON user_svc.user_emails (user_id) WHERE is_primary;
+CREATE INDEX idx_user_emails_user ON user_svc.user_emails (user_id);

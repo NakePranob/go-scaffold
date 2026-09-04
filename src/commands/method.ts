@@ -162,6 +162,8 @@ async function generateHexagonalMethod(
       ? {
           repositoryModelType: "User",
           repositoryToDomain: "toDomainUser",
+          repositoryToDomainCall: "r.toDomainUser(ctx, &row)",
+          repositoryToDomainCallReturnsError: true,
           repositoryErrorMapper: "persistenceError",
           repositoryStubReceiver: "f *fakeRepo",
           handlerErrorMapper: "toHTTPError",

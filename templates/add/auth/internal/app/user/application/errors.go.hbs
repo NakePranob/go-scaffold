@@ -25,6 +25,10 @@ func errInvalidCredentials() error {
 	return domain.Rule("AUTH_INVALID_CREDENTIALS", "invalid email or password", domain.ErrInvalidCredential)
 }
 
+func errInvalidPassword() error {
+	return domain.Rule("AUTH_INVALID_PASSWORD", "password must be between 8 and 72 bytes", domain.ErrInvalidPassword)
+}
+
 func errInvalidToken() error {
 	return domain.Rule("AUTH_INVALID_TOKEN", "invalid or expired token", domain.ErrInvalidToken)
 }

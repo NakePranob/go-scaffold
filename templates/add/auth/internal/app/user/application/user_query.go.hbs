@@ -49,6 +49,9 @@ func (s *Service) EnsureUser(ctx context.Context, email, password, name string) 
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return nil, fmt.Errorf("find existing user: %w", err)
 	}
+	if err := validatePassword(password); err != nil {
+		return nil, err
+	}
 
 	hash, err := s.passwords.Hash(password)
 	if err != nil {

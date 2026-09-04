@@ -50,6 +50,8 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const sessionCookie = read(project, ...inbound, "session_cookie.go");
   const browserPolicy = read(project, ...inbound, "browser_policy.go");
   const googleProvider = read(project, "internal", "platform", "authprovider", "google", "google.go");
+  const postgresModel = read(project, ...postgres, "model.go");
+  const migrations = execFileSync("ls", [path.join(project, "migrations")], { encoding: "utf8" });
   const composition = read(project, "internal", "app", "user", "composition.go");
   const config = read(project, "internal", "shared", "config", "config.go");
   const env = read(project, ".env.example");
@@ -60,10 +62,28 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(handler, /GET\("\/me\/sessions", h\.sessions\)/);
   assert.match(handler, /DELETE\("\/me\/sessions\/:id", h\.revokeSession\)/);
   assert.match(identityHandler, /GET\("\/me\/identities", h\.listIdentities\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/local", linkLimiter, h\.linkLocalIdentity\)/);
   assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link", linkLimiter, h\.beginIdentityLink\)/);
   assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link\/exchange", linkLimiter, h\.exchangeIdentityLink\)/);
   assert.match(identityHandler, /DELETE\("\/me\/identities\/:provider", h\.unlinkIdentity\)/);
   assert.match(identities, /func \(s \*Service\) ExchangeIdentityLink\(/);
+  assert.match(identities, /func \(s \*Service\) LinkLocalIdentity\(/);
+  assert.match(postgresModel, /type UserEmail struct/);
+  assert.match(postgresModel, /type PasswordCredential struct/);
+  assert.match(postgresModel, /type ExternalIdentity struct/);
+  assert.match(postgresModel, /Issuer\s+string[^\n]*type:text/);
+  assert.match(postgresModel, /UserID\s+uuid\.UUID[^\n]*uniqueIndex:idx_user_emails_primary,where:is_primary/);
+  assert.doesNotMatch(postgresModel, /IsPrimary\s+bool[^\n]*uniqueIndex:idx_user_emails_primary/);
+  assert.doesNotMatch(postgresModel, /type Identity struct/);
+  assert.match(migrations, /_create_user_emails\.up\.sql/);
+  assert.match(migrations, /_create_password_credentials\.up\.sql/);
+  assert.match(migrations, /_create_external_identities\.up\.sql/);
+  assert.doesNotMatch(migrations, /_create_identities\.up\.sql/);
+  const userEmailsMigration = readFileSync(
+    path.join(project, "migrations", migrations.split("\n").find((file) => file.includes("_create_user_emails.up.sql"))),
+    "utf8",
+  );
+  assert.match(userEmailsMigration, /CREATE UNIQUE INDEX idx_user_emails_primary ON user_svc\.user_emails \(user_id\) WHERE is_primary;/);
   assert.match(read(project, ...application, "identities_test.go"), /AUTH_LAST_IDENTITY/);
   assert.doesNotMatch(handler, /providerCallback|StatusSeeOther|RedirectTarget/);
   assert.doesNotMatch(service, /oauth2\.Config|GoogleLoginURL|GoogleCallback|findOrCreateGoogleUser|issueOAuthState/);
@@ -116,6 +136,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(read(project, "docs", "auth", "users-me-sessions.yaml"), /listMySessions/);
   assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
   assert.match(read(project, "docs", "auth", "users-me-identities.yaml"), /listMyIdentities/);
+  assert.match(read(project, "docs", "auth", "users-me-identity-local-link.yaml"), /linkMyLocalIdentity/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link.yaml"), /startIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link-exchange.yaml"), /exchangeIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity.yaml"), /unlinkMyIdentity/);
@@ -221,6 +242,7 @@ test("generate method remains usable after auth splits its service and handler f
   assert.match(service, /func \(s \*Service\) LookupByEmail\(/);
   assert.match(service, /func \(s \*Service\) FindByName\(/);
   assert.match(repository, /func \(r \*Repository\) FindByName\(/);
+  assert.match(repository, /r\.toDomainUser\(ctx, &row\)/);
   assert.match(serviceTest, /func \(f \*fakeRepo\) FindByName\(/);
   assert.ok(existsSync(path.join(project, "migrations")));
 });

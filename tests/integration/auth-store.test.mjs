@@ -49,6 +49,9 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
   assert.doesNotMatch(main, /rdb/, "wiring.go must not reference a Redis client");
   // the table AutoMigrate needs in dev, and the migration prod uses
   assert.match(main, /&usermodel\.AuthToken\{\},/);
+  assert.match(main, /&usermodel\.UserEmail\{\},/);
+  assert.match(main, /&usermodel\.PasswordCredential\{\},/);
+  assert.match(main, /&usermodel\.ExternalIdentity\{\},/);
   assert.ok(
     readFileSync(path.join(app, "migrations", "embed.go"), "utf8") &&
       execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),
@@ -79,6 +82,9 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.match(main, /&usermodel\.AuthToken\{\},/, "recovery tokens need the auth_tokens table");
+  assert.match(main, /&usermodel\.UserEmail\{\},/);
+  assert.match(main, /&usermodel\.PasswordCredential\{\},/);
+  assert.match(main, /&usermodel\.ExternalIdentity\{\},/);
   assert.ok(has(app, "internal/app/user/adapters/outbound/postgres/tokenstore_recovery.go"));
   assert.ok(
     execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),

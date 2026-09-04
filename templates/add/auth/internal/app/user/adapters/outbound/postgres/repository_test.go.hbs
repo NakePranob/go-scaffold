@@ -60,31 +60,34 @@ func repositoryDBForTest(t *testing.T) *gorm.DB {
 	return tx
 }
 
+func stringPtr(value string) *string { return &value }
+
 // CreateUserWithIdentity's whole reason to be a transaction: a user that
 // exists with no way to log in is unreachable. If the identity insert fails,
 // the user it was meant to arrive with must vanish too — a function-backed
 // stub can't prove this, since it never runs a real insert against a real
 // constraint. This forces exactly that: the user insert succeeds (it's a
-// brand new row), but the identity insert collides with an existing Google
-// identity's provider_uid.
+// brand new row), but the identity insert collides with an existing external
+// identity's issuer/subject.
 func TestRepository_CreateUserWithIdentity_RollsBackBothOnIdentityConflict(t *testing.T) {
 	repo := NewRepository(repositoryDBForTest(t))
 	ctx := context.Background()
 
-	providerUID := "conflicting-provider-uid"
+	issuer := "https://accounts.google.com"
+	providerUID := "conflicting-provider-subject"
 	existing := &domain.User{ID: uuid.New(), Email: "first@example.com"}
 	if err := repo.CreateUserWithIdentity(ctx, existing, &domain.Identity{
-		ID: uuid.New(), Provider: domain.ProviderGoogle, ProviderUID: &providerUID,
+		ID: uuid.New(), Provider: domain.ProviderGoogle, Issuer: issuer, ProviderUID: &providerUID,
 	}); err != nil {
 		t.Fatalf("seed existing user+identity: %v", err)
 	}
 
 	blocked := &domain.User{ID: uuid.New(), Email: "second@example.com"}
 	err := repo.CreateUserWithIdentity(ctx, blocked, &domain.Identity{
-		ID: uuid.New(), Provider: domain.ProviderGoogle, ProviderUID: &providerUID,
+		ID: uuid.New(), Provider: domain.ProviderGoogle, Issuer: issuer, ProviderUID: &providerUID,
 	})
 	if !errors.Is(err, domain.ErrConflict) {
-		t.Fatalf("want a mapped user conflict from the conflicting provider_uid, got %v", err)
+		t.Fatalf("want a mapped user conflict from the conflicting issuer/subject, got %v", err)
 	}
 
 	if _, findErr := repo.FindByID(ctx, blocked.ID); !errors.Is(findErr, domain.ErrNotFound) {
@@ -103,13 +106,13 @@ func TestRepository_CreateUserWithIdentity_DuplicateEmailIsDetectable(t *testing
 
 	email := "dup@example.com"
 	if err := repo.CreateUserWithIdentity(ctx, &domain.User{ID: uuid.New(), Email: email}, &domain.Identity{
-		ID: uuid.New(), Provider: domain.ProviderLocal,
+		ID: uuid.New(), Provider: domain.ProviderLocal, PasswordHash: stringPtr("hash-one"),
 	}); err != nil {
 		t.Fatalf("seed first user: %v", err)
 	}
 
 	err := repo.CreateUserWithIdentity(ctx, &domain.User{ID: uuid.New(), Email: email}, &domain.Identity{
-		ID: uuid.New(), Provider: domain.ProviderLocal,
+		ID: uuid.New(), Provider: domain.ProviderLocal, PasswordHash: stringPtr("hash-two"),
 	})
 	if !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("want a mapped user conflict for the reused email, got %v", err)

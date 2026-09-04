@@ -53,7 +53,7 @@ func TestPostgresMFAStore_ConsumesChallengesAndRecoveryCodesOnce(t *testing.T) {
 	store := NewPostgresMFAStore(db)
 	ctx := context.Background()
 	userID := uuid.New()
-	if err := db.Create(&User{ID: userID, Email: "mfa-store-" + uuid.NewString() + "@example.com"}).Error; err != nil {
+	if err := db.Create(&User{ID: userID}).Error; err != nil {
 		t.Fatalf("create test user: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Delete(&User{}, "id = ?", userID).Error })

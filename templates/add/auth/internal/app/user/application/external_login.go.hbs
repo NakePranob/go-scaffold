@@ -183,15 +183,15 @@ func mapProviderError(err error) error {
 // provider subject wins; only a verified external email may link to an
 // existing account.
 func (s *Service) findOrCreateExternalUser(ctx context.Context, info ExternalIdentity) (*domain.User, error) {
-	if strings.TrimSpace(info.Provider) == "" || strings.TrimSpace(info.Subject) == "" || strings.TrimSpace(info.Email) == "" {
-		return nil, fmt.Errorf("external identity is missing provider, subject, or email")
+	if strings.TrimSpace(info.Provider) == "" || strings.TrimSpace(info.Issuer) == "" || strings.TrimSpace(info.Subject) == "" || strings.TrimSpace(info.Email) == "" {
+		return nil, fmt.Errorf("external identity is missing provider, issuer, subject, or email")
 	}
 	if len(info.Provider) > 20 {
 		return nil, fmt.Errorf("external identity provider name is too long")
 	}
 
 	provider := domain.Provider(info.Provider)
-	if ident, err := s.repo.FindIdentityByProviderUID(ctx, provider, info.Subject); err == nil {
+	if ident, err := s.repo.FindIdentityByProviderUID(ctx, info.Issuer, info.Subject); err == nil {
 		user, findErr := s.repo.FindByID(ctx, ident.UserID)
 		if findErr != nil {
 			return nil, fmt.Errorf("find user for existing identity: %w", findErr)
@@ -205,7 +205,7 @@ func (s *Service) findOrCreateExternalUser(ctx context.Context, info ExternalIde
 	email := normalizeEmail(info.Email)
 	if info.EmailVerified {
 		if u, err := s.repo.FindByEmail(ctx, email); err == nil {
-			ident := &domain.Identity{ID: id.New(), UserID: u.ID, Provider: provider, ProviderUID: &providerUID}
+			ident := &domain.Identity{ID: id.New(), UserID: u.ID, Provider: provider, Issuer: info.Issuer, ProviderUID: &providerUID}
 			if err := s.repo.CreateIdentity(ctx, ident); err != nil {
 				return nil, fmt.Errorf("link external identity: %w", err)
 			}
@@ -216,7 +216,7 @@ func (s *Service) findOrCreateExternalUser(ctx context.Context, info ExternalIde
 	}
 
 	u := &domain.User{ID: id.New(), Email: email, Name: info.Name, AvatarURL: info.AvatarURL, EmailVerified: info.EmailVerified, Role: domain.DefaultRole}
-	ident := &domain.Identity{ID: id.New(), Provider: provider, ProviderUID: &providerUID}
+	ident := &domain.Identity{ID: id.New(), Provider: provider, Issuer: info.Issuer, ProviderUID: &providerUID}
 	if err := s.repo.CreateUserWithIdentity(ctx, u, ident); err != nil {
 		if errors.Is(err, domain.ErrConflict) {
 			return nil, errEmailTaken()
