@@ -32,6 +32,31 @@ test("check accepts service and CQRS modules in the same modular monolith", () =
   }
 });
 
+test("check accepts the RBAC role module with an HTTP DTO boundary", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-rbac-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "add", "auth", "--defaults");
+    run(project, "add", "rbac", "--yes");
+
+    const applicationDTO = readFileSync(path.join(project, "internal", "app", "role", "application", "dto.go"), "utf8");
+    const httpDTO = readFileSync(path.join(project, "internal", "app", "role", "adapters", "inbound", "http", "dto.go"), "utf8");
+    const handler = readFileSync(path.join(project, "internal", "app", "role", "adapters", "inbound", "http", "handler.go"), "utf8");
+
+    assert.doesNotMatch(applicationDTO, /json:/);
+    assert.match(httpDTO, /type createInput struct/);
+    assert.match(httpDTO, /json:"permission_codes"/);
+    assert.match(handler, /var in createInput/);
+    assert.match(handler, /toCreateInput\(in\)/);
+    assert.match(handler, /var in setPermissionsInput/);
+    assert.match(handler, /toSetPermissionsInput\(in\)/);
+    assert.match(run(project, "check"), /architecture check passed: 2 split module\(s\), hexagonal boundary/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("check rejects a project missing the process composition package", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-process-missing-"));
   try {

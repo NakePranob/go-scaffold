@@ -1,0 +1,52 @@
+package httpadapter
+
+import (
+	"time"
+
+	"{{goModule}}/internal/app/role/application"
+)
+
+// Request DTOs belong to the inbound adapter. Keep JSON names and binding
+// tags out of application inputs so role use cases remain transport-neutral.
+type createInput struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+func toCreateInput(in createInput) application.CreateInput {
+	return application.CreateInput{Code: in.Code, Name: in.Name}
+}
+
+type setPermissionsInput struct {
+	PermissionCodes *[]string `json:"permission_codes"`
+}
+
+func toSetPermissionsInput(in setPermissionsInput) application.SetPermissionsInput {
+	return application.SetPermissionsInput{PermissionCodes: in.PermissionCodes}
+}
+
+// Response DTOs belong to the inbound adapter too. Application responses are
+// deliberately free of JSON tags and are mapped explicitly before encoding.
+type roleResponse struct {
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	IsSystem    bool      `json:"is_system"`
+	Permissions []string  `json:"permissions"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func toRoleResponse(out application.RoleResponse) roleResponse {
+	return roleResponse{
+		Code: out.Code, Name: out.Name, IsSystem: out.IsSystem,
+		Permissions: out.Permissions, CreatedAt: out.CreatedAt,
+	}
+}
+
+type permissionResponse struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+}
+
+func toPermissionResponse(out application.PermissionResponse) permissionResponse {
+	return permissionResponse{Code: out.Code, Description: out.Description}
+}
