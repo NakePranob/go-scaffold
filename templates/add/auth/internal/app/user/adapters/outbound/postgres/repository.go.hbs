@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"time"
 
 	"{{goModule}}/internal/app/user/domain"
@@ -26,24 +28,52 @@ func NewRepository(db *gorm.DB) *Repository {
 }
 
 func (r *Repository) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
-	var row User
-	if err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "email = ?", email).Error; err != nil {
+	db := tx.From(ctx, r.db).WithContext(ctx)
+	var emailRow UserEmail
+	if err := db.Where("email_normalized = ?", normalizeEmail(email)).First(&emailRow).Error; err != nil {
 		return nil, persistenceError(err)
 	}
-	return toDomainUser(&row), nil
+	return findUserWithEmail(db, emailRow.UserID, &emailRow)
 }
 
 func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
-	var row User
-	if err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+	db := tx.From(ctx, r.db).WithContext(ctx)
+	var emailRow UserEmail
+	if err := db.Where("user_id = ? AND is_primary = true", id).First(&emailRow).Error; err != nil {
 		return nil, persistenceError(err)
 	}
-	return toDomainUser(&row), nil
+	return findUserWithEmail(db, id, &emailRow)
 }
 
 func (r *Repository) UpdateUser(ctx context.Context, user *domain.User) error {
-	row := fromDomainUser(user)
-	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Save(&row).Error)
+	if user == nil || strings.TrimSpace(user.Email) == "" {
+		return errors.New("user email is required")
+	}
+	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		row := fromDomainUser(user)
+		if err := db.Save(&row).Error; err != nil {
+			return err
+		}
+
+		var emailRow UserEmail
+		err := db.Where("user_id = ? AND is_primary = true", user.ID).First(&emailRow).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			emailRow = UserEmail{ID: uuid.New(), UserID: user.ID, IsPrimary: true}
+		} else if err != nil {
+			return err
+		}
+		emailRow.Email = strings.TrimSpace(user.Email)
+		emailRow.EmailNormalized = normalizeEmail(user.Email)
+		if user.EmailVerified {
+			if emailRow.VerifiedAt == nil {
+				now := time.Now()
+				emailRow.VerifiedAt = &now
+			}
+		} else {
+			emailRow.VerifiedAt = nil
+		}
+		return db.Save(&emailRow).Error
+	}))
 }
 
 func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.User, error) {
@@ -53,81 +83,137 @@ func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.U
 	if err != nil {
 		return nil, persistenceError(err)
 	}
+	ids := make([]uuid.UUID, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ID
+	}
+	var emailRows []UserEmail
+	if len(ids) > 0 {
+		if err := tx.From(ctx, r.db).WithContext(ctx).
+			Where("user_id IN ? AND is_primary = true", ids).Find(&emailRows).Error; err != nil {
+			return nil, persistenceError(err)
+		}
+	}
+	emails := make(map[uuid.UUID]*UserEmail, len(emailRows))
+	for i := range emailRows {
+		emails[emailRows[i].UserID] = &emailRows[i]
+	}
 	items := make([]domain.User, len(rows))
 	for i := range rows {
-		items[i] = *toDomainUser(&rows[i])
+		items[i] = *toDomainUserWithEmail(&rows[i], emails[rows[i].ID])
 	}
 	return items, nil
 }
 
 func (r *Repository) FindIdentity(ctx context.Context, userID uuid.UUID, provider domain.Provider) (*domain.Identity, error) {
-	var row Identity
-	if err := tx.From(ctx, r.db).WithContext(ctx).
-		First(&row, "user_id = ? AND provider = ?", userID, string(provider)).Error; err != nil {
+	db := tx.From(ctx, r.db).WithContext(ctx)
+	if provider == domain.ProviderLocal {
+		var row PasswordCredential
+		if err := db.Where("user_id = ?", userID).First(&row).Error; err != nil {
+			return nil, persistenceError(err)
+		}
+		return toDomainPasswordIdentity(&row), nil
+	}
+	var row ExternalIdentity
+	if err := db.Where("user_id = ? AND provider = ?", userID, string(provider)).First(&row).Error; err != nil {
 		return nil, persistenceError(err)
 	}
-	return toDomainIdentity(&row), nil
+	return toDomainExternalIdentity(&row), nil
 }
 
 func (r *Repository) ListIdentities(ctx context.Context, userID uuid.UUID) ([]domain.Identity, error) {
-	var rows []Identity
-	if err := tx.From(ctx, r.db).WithContext(ctx).
-		Where("user_id = ?", userID).
-		Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+	db := tx.From(ctx, r.db).WithContext(ctx)
+	var passwordRows []PasswordCredential
+	if err := db.Where("user_id = ?", userID).Find(&passwordRows).Error; err != nil {
 		return nil, persistenceError(err)
 	}
-	items := make([]domain.Identity, len(rows))
-	for i := range rows {
-		items[i] = *toDomainIdentity(&rows[i])
+	var externalRows []ExternalIdentity
+	if err := db.Where("user_id = ?", userID).Find(&externalRows).Error; err != nil {
+		return nil, persistenceError(err)
 	}
+	items := make([]domain.Identity, 0, len(passwordRows)+len(externalRows))
+	for i := range passwordRows {
+		items = append(items, *toDomainPasswordIdentity(&passwordRows[i]))
+	}
+	for i := range externalRows {
+		items = append(items, *toDomainExternalIdentity(&externalRows[i]))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID.String() < items[j].ID.String()
+		}
+		return items[i].CreatedAt.Before(items[j].CreatedAt)
+	})
 	return items, nil
 }
 
-func (r *Repository) FindIdentityByProviderUID(ctx context.Context, provider domain.Provider, providerUID string) (*domain.Identity, error) {
-	var row Identity
+func (r *Repository) FindIdentityByProviderUID(ctx context.Context, issuer, subject string) (*domain.Identity, error) {
+	var row ExternalIdentity
 	if err := tx.From(ctx, r.db).WithContext(ctx).
-		First(&row, "provider = ? AND provider_uid = ?", string(provider), providerUID).Error; err != nil {
+		First(&row, "issuer = ? AND subject = ?", issuer, subject).Error; err != nil {
 		return nil, persistenceError(err)
 	}
-	return toDomainIdentity(&row), nil
+	return toDomainExternalIdentity(&row), nil
 }
 
 // CreateIdentity links a new login method onto an existing user.
 func (r *Repository) CreateIdentity(ctx context.Context, identity *domain.Identity) error {
-	row := fromDomainIdentity(identity)
-	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Create(&row).Error)
+	return persistenceError(createIdentity(tx.From(ctx, r.db).WithContext(ctx), identity))
 }
 
 func (r *Repository) UpdateIdentity(ctx context.Context, identity *domain.Identity) error {
-	row := fromDomainIdentity(identity)
-	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Save(&row).Error)
+	if identity == nil {
+		return errors.New("identity is required")
+	}
+	db := tx.From(ctx, r.db).WithContext(ctx)
+	if identity.Provider == domain.ProviderLocal {
+		if identity.PasswordHash == nil {
+			return errors.New("local identity password is required")
+		}
+		row := PasswordCredential{ID: identity.ID, UserID: identity.UserID, PasswordHash: *identity.PasswordHash, HashAlgorithm: "bcrypt", PasswordChangedAt: time.Now(), CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt}
+		return persistenceError(db.Save(&row).Error)
+	}
+	row, err := externalIdentityFromDomain(identity)
+	if err != nil {
+		return err
+	}
+	return persistenceError(db.Save(&row).Error)
 }
 
 // DeleteIdentity locks the user's identity rows before checking the count so
 // two concurrent unlink requests cannot both remove the last login method.
 func (r *Repository) DeleteIdentity(ctx context.Context, userID uuid.UUID, provider domain.Provider) error {
 	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
-		var rows []Identity
-		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("user_id = ?", userID).
-			Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+		var user User
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, "id = ?", userID).Error; err != nil {
 			return err
 		}
-
-		var target *Identity
-		for i := range rows {
-			if rows[i].Provider == string(provider) {
-				target = &rows[i]
-				break
-			}
+		var passwordCount, externalCount int64
+		if err := db.Model(&PasswordCredential{}).Where("user_id = ?", userID).Count(&passwordCount).Error; err != nil {
+			return err
 		}
-		if target == nil {
+		if err := db.Model(&ExternalIdentity{}).Where("user_id = ?", userID).Count(&externalCount).Error; err != nil {
+			return err
+		}
+		total := passwordCount + externalCount
+		if total == 0 {
 			return domain.ErrNotFound
 		}
-		if len(rows) <= 1 {
+		if total <= 1 {
 			return domain.ErrLastIdentity
 		}
-		return db.Delete(&Identity{}, "id = ? AND user_id = ?", target.ID, userID).Error
+		if provider == domain.ProviderLocal {
+			result := db.Where("user_id = ?", userID).Delete(&PasswordCredential{})
+			if result.Error == nil && result.RowsAffected == 0 {
+				return domain.ErrNotFound
+			}
+			return result.Error
+		}
+		result := db.Where("user_id = ? AND provider = ?", userID, string(provider)).Delete(&ExternalIdentity{})
+		if result.Error == nil && result.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
+		return result.Error
 	}))
 }
 
@@ -135,13 +221,23 @@ func (r *Repository) DeleteIdentity(ctx context.Context, userID uuid.UUID, provi
 // one transaction. A user without an identity cannot authenticate.
 func (r *Repository) CreateUserWithIdentity(ctx context.Context, user *domain.User, identity *domain.Identity) error {
 	userRow := fromDomainUser(user)
-	identityRow := fromDomainIdentity(identity)
 	return persistenceError(tx.From(ctx, r.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		if err := db.Create(&userRow).Error; err != nil {
 			return persistenceError(err)
 		}
-		identityRow.UserID = userRow.ID
-		return persistenceError(db.Create(&identityRow).Error)
+		verifiedAt := (*time.Time)(nil)
+		if user.EmailVerified {
+			now := time.Now()
+			verifiedAt = &now
+		}
+		if err := db.Create(&UserEmail{
+			ID: uuid.New(), UserID: userRow.ID, Email: strings.TrimSpace(user.Email),
+			EmailNormalized: normalizeEmail(user.Email), IsPrimary: true, VerifiedAt: verifiedAt,
+		}).Error; err != nil {
+			return persistenceError(err)
+		}
+		identity.UserID = userRow.ID
+		return persistenceError(createIdentity(db, identity))
 	}))
 }
 
@@ -194,16 +290,48 @@ func persistenceError(err error) error {
 	return err
 }
 
-func toDomainUser(row *User) *domain.User {
+func findUserWithEmail(db *gorm.DB, userID uuid.UUID, emailRow *UserEmail) (*domain.User, error) {
+	var row User
+	if err := db.First(&row, "id = ?", userID).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	return toDomainUserWithEmail(&row, emailRow), nil
+}
+
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// toDomainUser is the one-row mapping hook used by generic generated method
+// extensions. It hydrates the primary email because auth stores addresses in
+// user_emails rather than on the profile row.
+//nolint:unused // generate method uses this seam when a custom user lookup is added.
+func (r *Repository) toDomainUser(ctx context.Context, row *User) (*domain.User, error) {
+	var emailRow UserEmail
+	if err := tx.From(ctx, r.db).WithContext(ctx).
+		Where("user_id = ? AND is_primary = true", row.ID).
+		First(&emailRow).Error; err != nil {
+		return nil, persistenceError(err)
+	}
+	return toDomainUserWithEmail(row, &emailRow), nil
+}
+
+func toDomainUserWithEmail(row *User, emailRow *UserEmail) *domain.User {
 	if row == nil {
 		return nil
 	}
+	var email string
+	var verified bool
+	if emailRow != nil {
+		email = emailRow.Email
+		verified = emailRow.VerifiedAt != nil
+	}
 	return &domain.User{
 		ID:            row.ID,
-		Email:         row.Email,
+		Email:         email,
 		Name:          row.Name,
 		AvatarURL:     row.AvatarURL,
-		EmailVerified: row.EmailVerified,
+		EmailVerified: verified,
 		Role:          row.Role,
 		CreatedAt:     row.CreatedAt,
 		UpdatedAt:     row.UpdatedAt,
@@ -212,42 +340,71 @@ func toDomainUser(row *User) *domain.User {
 
 func fromDomainUser(user *domain.User) User {
 	return User{
-		ID:            user.ID,
-		Email:         user.Email,
-		Name:          user.Name,
-		AvatarURL:     user.AvatarURL,
-		EmailVerified: user.EmailVerified,
-		Role:          user.Role,
+		ID:        user.ID,
+		Name:      user.Name,
+		AvatarURL: user.AvatarURL,
+		Role:      user.Role,
 		CreatedAt:     user.CreatedAt,
 		UpdatedAt:     user.UpdatedAt,
 	}
 }
 
-func toDomainIdentity(row *Identity) *domain.Identity {
+func toDomainPasswordIdentity(row *PasswordCredential) *domain.Identity {
 	if row == nil {
 		return nil
 	}
+	hash := row.PasswordHash
 	return &domain.Identity{
-		ID:           row.ID,
-		UserID:       row.UserID,
-		Provider:     domain.Provider(row.Provider),
-		PasswordHash: row.PasswordHash,
-		ProviderUID:  row.ProviderUID,
-		CreatedAt:    row.CreatedAt,
-		UpdatedAt:    row.UpdatedAt,
+		ID: row.ID, UserID: row.UserID, Provider: domain.ProviderLocal,
+		PasswordHash: &hash, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
 
-func fromDomainIdentity(identity *domain.Identity) Identity {
-	return Identity{
-		ID:           identity.ID,
-		UserID:       identity.UserID,
-		Provider:     string(identity.Provider),
-		PasswordHash: identity.PasswordHash,
-		ProviderUID:  identity.ProviderUID,
-		CreatedAt:    identity.CreatedAt,
-		UpdatedAt:    identity.UpdatedAt,
+
+func toDomainExternalIdentity(row *ExternalIdentity) *domain.Identity {
+	if row == nil {
+		return nil
 	}
+	subject := row.Subject
+	return &domain.Identity{
+		ID: row.ID, UserID: row.UserID, Provider: domain.Provider(row.Provider),
+		Issuer: row.Issuer, ProviderUID: &subject, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func createIdentity(db *gorm.DB, identity *domain.Identity) error {
+	if identity == nil || identity.UserID == uuid.Nil || identity.ID == uuid.Nil {
+		return errors.New("identity id and user id are required")
+	}
+	if identity.Provider == domain.ProviderLocal {
+		if identity.PasswordHash == nil {
+			return errors.New("local identity password is required")
+		}
+		return db.Create(&PasswordCredential{
+			ID: identity.ID, UserID: identity.UserID, PasswordHash: *identity.PasswordHash,
+			HashAlgorithm: "bcrypt", PasswordChangedAt: time.Now(),
+			CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt,
+		}).Error
+	}
+	row, err := externalIdentityFromDomain(identity)
+	if err != nil {
+		return err
+	}
+	return db.Create(&row).Error
+}
+
+func externalIdentityFromDomain(identity *domain.Identity) (ExternalIdentity, error) {
+	if identity == nil || identity.ID == uuid.Nil || identity.UserID == uuid.Nil {
+		return ExternalIdentity{}, errors.New("identity id and user id are required")
+	}
+	if strings.TrimSpace(identity.Issuer) == "" || identity.ProviderUID == nil || strings.TrimSpace(*identity.ProviderUID) == "" {
+		return ExternalIdentity{}, errors.New("external identity issuer and subject are required")
+	}
+	return ExternalIdentity{
+		ID: identity.ID, UserID: identity.UserID, Provider: string(identity.Provider),
+		Issuer: identity.Issuer, Subject: *identity.ProviderUID,
+		CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt,
+	}, nil
 }
 
 // go-scaffold:repository-methods

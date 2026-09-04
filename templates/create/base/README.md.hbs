@@ -201,7 +201,9 @@ timestamps are returned.
 They can also list safe login-provider metadata with
 `GET /users/me/identities`, link a provider through the authenticated
 `/users/me/identities/:provider/link` start/exchange flow, and unlink a
-provider with `DELETE /users/me/identities/:provider`; the last login method
+provider with `DELETE /users/me/identities/:provider`. For a Google/OIDC-only
+account, `POST /users/me/identities/local` adds an email/password credential to
+the same account; it does not create a second user. The last login method
 cannot be removed.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin

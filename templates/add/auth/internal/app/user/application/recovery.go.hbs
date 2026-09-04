@@ -24,6 +24,9 @@ func NewRecovery(repo ports.UserRepository, tokens ports.RecoveryTokenStore, has
 // ResetPassword consumes the token and updates the local identity in one
 // unit of work. The token adapter owns the transaction boundary.
 func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword string) (uuid.UUID, error) {
+	if err := validatePassword(newPassword); err != nil {
+		return uuid.Nil, err
+	}
 	hash, err := r.hasher.Hash(newPassword)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("hash password: %w", err)

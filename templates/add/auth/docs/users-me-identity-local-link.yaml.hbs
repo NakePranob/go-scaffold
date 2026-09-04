@@ -1,0 +1,16 @@
+post:
+  summary: Add an email/password login to the current user
+  description: Creates a password credential for the authenticated account. It does not create another account, even when the account originally signed in with Google.
+  operationId: linkMyLocalIdentity
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/LocalIdentityLinkInput' }
+  responses:
+    "204": { description: email/password login linked }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { description: email/password login is already linked }

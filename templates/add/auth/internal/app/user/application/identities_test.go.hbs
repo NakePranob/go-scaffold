@@ -28,6 +28,39 @@ func TestService_IdentityLinkBindsOAuthTransactionToCaller(t *testing.T) {
 	}
 }
 
+func TestService_LinkLocalIdentityAddsPasswordToExistingAccount(t *testing.T) {
+	userID := uuid.New()
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "google@example.com"}}
+	svc := newTestService(repo, newFakeTokenStore())
+
+	if err := svc.LinkLocalIdentity(context.Background(), userID, "new-password"); err != nil {
+		t.Fatalf("link local identity: %v", err)
+	}
+	identity, err := repo.FindIdentity(context.Background(), userID, domain.ProviderLocal)
+	if err != nil {
+		t.Fatalf("find linked local identity: %v", err)
+	}
+	if identity.PasswordHash == nil || *identity.PasswordHash != "hashed:new-password" {
+		t.Fatalf("password was not hashed through the password port: %+v", identity)
+	}
+}
+
+func TestService_LinkLocalIdentityRejectsSecondPasswordCredential(t *testing.T) {
+	userID := uuid.New()
+	hash := "already-hashed"
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "user@example.com"}}
+	repo.identities = append(repo.identities, domain.Identity{
+		ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &hash,
+	})
+	svc := newTestService(repo, newFakeTokenStore())
+
+	err := svc.LinkLocalIdentity(context.Background(), userID, "another-password")
+	var ruleErr *domain.RuleError
+	if !errors.As(err, &ruleErr) || ruleErr.Code != "AUTH_IDENTITY_ALREADY_LINKED" {
+		t.Fatalf("link duplicate local identity error = %v, want AUTH_IDENTITY_ALREADY_LINKED", err)
+	}
+}
+
 func TestService_IdentityLinkIsIdempotentForSameProviderSubject(t *testing.T) {
 	provider, svc := validFakeProvider(t)
 	userID := uuid.New()

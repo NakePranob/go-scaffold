@@ -38,6 +38,9 @@ func (s *Service) throttled(ctx context.Context, key string) bool {
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput) (*AuthResult, error) {
+	if err := validatePassword(in.Password); err != nil {
+		return nil, err
+	}
 	hash, err := s.passwords.Hash(in.Password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)

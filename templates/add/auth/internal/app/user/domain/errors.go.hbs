@@ -6,6 +6,7 @@ var (
 	ErrNotFound          = errors.New("user not found")
 	ErrConflict          = errors.New("user conflict")
 	ErrInvalidCredential = errors.New("invalid credentials")
+	ErrInvalidPassword   = errors.New("password must be between 8 and 72 bytes")
 	ErrInvalidToken      = errors.New("invalid or expired token")
 	ErrEmailTaken        = errors.New("email already registered")
 	ErrTooManyAttempts   = errors.New("too many failed attempts")

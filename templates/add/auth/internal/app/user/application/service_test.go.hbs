@@ -423,14 +423,14 @@ func (f *fakeRepo) ListIdentities(_ context.Context, userID uuid.UUID) ([]domain
 	}
 	return out, nil
 }
-func (f *fakeRepo) FindIdentityByProviderUID(_ context.Context, provider domain.Provider, providerUID string) (*domain.Identity, error) {
+func (f *fakeRepo) FindIdentityByProviderUID(_ context.Context, issuer, providerUID string) (*domain.Identity, error) {
 	for i := range f.identities {
-		if f.identities[i].Provider == provider && f.identities[i].ProviderUID != nil && *f.identities[i].ProviderUID == providerUID {
+		if f.identities[i].Issuer == issuer && f.identities[i].ProviderUID != nil && *f.identities[i].ProviderUID == providerUID {
 			copy := f.identities[i]
 			return &copy, nil
 		}
 	}
-	if f.identity != nil && f.identity.Provider == provider && f.identity.ProviderUID != nil && *f.identity.ProviderUID == providerUID {
+	if f.identity != nil && f.identity.Issuer == issuer && f.identity.ProviderUID != nil && *f.identity.ProviderUID == providerUID {
 		copy := *f.identity
 		return &copy, nil
 	}

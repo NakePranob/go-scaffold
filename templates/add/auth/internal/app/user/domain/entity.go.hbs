@@ -34,6 +34,7 @@ type Identity struct {
 	ID           uuid.UUID
 	UserID       uuid.UUID
 	Provider     Provider
+	Issuer       string
 	PasswordHash *string
 	ProviderUID  *string
 	CreatedAt    time.Time

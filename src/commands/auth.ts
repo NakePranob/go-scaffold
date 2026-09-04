@@ -31,6 +31,7 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/auth/{provider}/exchange", file: "./auth/provider-exchange.yaml" },
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
   { urlPath: "/users/me/identities", file: "./auth/users-me-identities.yaml" },
+  { urlPath: "/users/me/identities/local", file: "./auth/users-me-identity-local-link.yaml" },
   { urlPath: "/users/me/identities/{provider}/link", file: "./auth/users-me-identity-link.yaml" },
   { urlPath: "/users/me/identities/{provider}/link/exchange", file: "./auth/users-me-identity-link-exchange.yaml" },
   { urlPath: "/users/me/identities/{provider}", file: "./auth/users-me-identity.yaml" },
@@ -45,8 +46,8 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/auth/mfa/verify", file: "./auth/mfa-verify.yaml" },
 ];
 
-// addAuth scaffolds email/password authentication: a users+identities model
-// pair, JWT access tokens, a selectable refresh token store with
+// addAuth scaffolds email/password authentication: an account plus separate
+// email, password-credential, and external-identity records, JWT access tokens, a selectable refresh token store with
 // rotation + reuse detection, register/login/refresh/logout/me, and
 // per-user session listing/revocation. No RBAC
 // (no roles/permissions) — that's a separate opt-in on top of this, since
@@ -102,25 +103,40 @@ export async function addAuth(
     {}
   );
 
+  const emailVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/create_user_emails.up.sql.hbs", output: path.join("migrations", `${emailVersion}_create_user_emails.up.sql`) },
+      { template: "add/auth/migrations/create_user_emails.down.sql.hbs", output: path.join("migrations", `${emailVersion}_create_user_emails.down.sql`) },
+    ],
+    {}
+  );
+  const passwordVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/create_password_credentials.up.sql.hbs", output: path.join("migrations", `${passwordVersion}_create_password_credentials.up.sql`) },
+      { template: "add/auth/migrations/create_password_credentials.down.sql.hbs", output: path.join("migrations", `${passwordVersion}_create_password_credentials.down.sql`) },
+    ],
+    {}
+  );
+  const externalIdentityVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/create_external_identities.up.sql.hbs", output: path.join("migrations", `${externalIdentityVersion}_create_external_identities.up.sql`) },
+      { template: "add/auth/migrations/create_external_identities.down.sql.hbs", output: path.join("migrations", `${externalIdentityVersion}_create_external_identities.down.sql`) },
+    ],
+    {}
+  );
+
   const mfaVersion = newMigrationVersion(migrationsDir);
   await applyTemplateEntries(
     projectDir,
     [
       { template: "add/auth/migrations/create_mfa.up.sql.hbs", output: path.join("migrations", `${mfaVersion}_create_mfa.up.sql`) },
       { template: "add/auth/migrations/create_mfa.down.sql.hbs", output: path.join("migrations", `${mfaVersion}_create_mfa.down.sql`) },
-    ],
-    {}
-  );
-  // identities references users(id) — must apply strictly after it. A
-  // second newMigrationVersion() call, scanning the dir again now that the
-  // users pair is already written, guarantees a later (or same-second,
-  // bumped) timestamp rather than assuming +1 by hand.
-  const identitiesVersion = newMigrationVersion(migrationsDir);
-  await applyTemplateEntries(
-    projectDir,
-    [
-      { template: "add/auth/migrations/create_identities.up.sql.hbs", output: path.join("migrations", `${identitiesVersion}_create_identities.up.sql`) },
-      { template: "add/auth/migrations/create_identities.down.sql.hbs", output: path.join("migrations", `${identitiesVersion}_create_identities.down.sql`) },
     ],
     {}
   );
@@ -228,7 +244,7 @@ export async function addAuth(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
       "POST /users/me/{resend-verification,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
-      "GET /users/me/{identities,sessions,mfa}, POST /users/me/identities/{provider}/{link,link/exchange}, " +
+      "GET /users/me/{identities,sessions,mfa}, POST /users/me/identities/local, POST /users/me/identities/{provider}/{link,link/exchange}, " +
       "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, " +
       "POST /auth/mfa/verify in cmd/api/wiring.go" +
       docsMessage

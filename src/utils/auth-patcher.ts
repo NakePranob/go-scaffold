@@ -137,6 +137,9 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
     'if cfg.IsProd() && cfg.JWTSecret == "dev-secret-change-me" {',
     '\treturn errors.New("JWT_SECRET is still the dev default — set a real secret before deploying with APP_ENV=production")',
     "}",
+    'if cfg.IsProd() && len([]byte(cfg.JWTSecret)) < 32 {',
+    '\treturn errors.New("JWT_SECRET must be at least 32 bytes before deploying with APP_ENV=production")',
+    "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
 
@@ -184,7 +187,13 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   ].join("\n");
   content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
 
-  const migrateLines = ["&usermodel.User{},", "&usermodel.Identity{},", "&usermodel.LoginThrottle{},"];
+  const migrateLines = [
+    "&usermodel.User{},",
+    "&usermodel.UserEmail{},",
+    "&usermodel.PasswordCredential{},",
+    "&usermodel.ExternalIdentity{},",
+    "&usermodel.LoginThrottle{},",
+  ];
   // Recovery tokens are always durable in Postgres, even when refresh tokens
   // live in Redis, so reset/verification can share the user transaction.
   migrateLines.push("&usermodel.AuthToken{},");

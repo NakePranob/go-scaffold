@@ -1055,6 +1055,11 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     throw new Error(`expected 200 with alice's email on /me, got:\n${meWithToken}`);
   }
 
+  const duplicateLocalLink = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/identities/local`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", '{"password":"anotherpassword123"}']);
+  if (status(duplicateLocalLink) !== "409" || !duplicateLocalLink.includes("AUTH_IDENTITY_ALREADY_LINKED")) {
+    throw new Error(`expected linking a second local credential to be rejected, got:\n${duplicateLocalLink}`);
+  }
+
   const rotated = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${loginCookie}`]);
   if (!/^HTTP\/1\.1 200/.test(rotated)) throw new Error(`expected 200 on refresh, got:\n${rotated}`);
   const rotatedCookie = cookie(rotated);
@@ -1342,6 +1347,7 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
     "/v1/users/me:",
     "/v1/users/me/resend-verification:",
     "/v1/users/me/logout-all:",
+    "/v1/users/me/identities/local:",
     "/v1/users/me/mfa:",
     "/v1/users/me/mfa/setup:",
     "/v1/users/me/mfa/confirm:",
@@ -1781,7 +1787,8 @@ step(
 // database was already dropped by then) — real by design for the stub-based
 // service tests they're named for, but it means the repository_test.go files
 // added alongside this step would otherwise never run in this suite, ever.
-// Give them one real, migrated database (auth's create_users/create_identities
+// Give them one real, migrated database (auth's create_users/create_user_emails/
+// create_password_credentials/create_external_identities
 // plus rbac's add_roles, which is what makes the cross-schema
 // user_svc.users -> role_svc.roles FK exist) and prove they actually catch
 // something: a transaction that doesn't roll back, or a replace that doesn't
@@ -2019,7 +2026,7 @@ step(
     // into .env itself instead.
     let envContent = readFileSync(path.join(fullApp, ".env.example"), "utf8")
       .replace(/^APP_ENV=.*/m, "APP_ENV=production")
-      .replace(/^JWT_SECRET=.*/m, "JWT_SECRET=smoke-test-secret")
+      .replace(/^JWT_SECRET=.*/m, "JWT_SECRET=smoke-test-secret-01234567890123456789")
       .replace(/^SMTP_HOST=.*/m, "SMTP_HOST=localhost")
       .replace(/^COOKIE_SECURE=.*/m, "COOKIE_SECURE=true")
       .replace(/^DB_DSN=.*/m, `DB_DSN=${fullDb.dbDsn}`)

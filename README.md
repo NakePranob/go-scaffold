@@ -478,6 +478,10 @@ Auth adds:
 - JWT access tokens and refresh-token rotation with reuse detection
 - registration, login, logout, refresh, password reset, and email verification
 - generic provider OAuth routes, with Google as the first adapter
+- account identity storage split into `users`, `user_emails`,
+  `password_credentials`, and `external_identities`; a Google-only user can
+  add a password through `POST /users/me/identities/local` without creating a
+  second account
 - failed-login lockout and user-session management
 - MFA endpoints and configuration hooks
 - internal/app/user, auth middleware, cmd/seed, migrations, and OpenAPI

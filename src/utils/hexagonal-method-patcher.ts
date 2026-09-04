@@ -31,6 +31,8 @@ export interface HexagonalMethodPatchPaths {
   /** Auth has a richer persistence adapter than generated domain modules. */
   repositoryModelType?: string;
   repositoryToDomain?: string;
+  repositoryToDomainCall?: string;
+  repositoryToDomainCallReturnsError?: boolean;
   repositoryErrorMapper?: string;
   repositoryStubReceiver?: string;
   handlerErrorMapper?: string;
@@ -345,14 +347,25 @@ export function patchHexagonalMethod(
     const column = toDbName(opts.field!);
     const modelType = paths.repositoryModelType ?? `${naming.pascalName}Model`;
     const toDomain = paths.repositoryToDomain ?? "toDomain";
+    const toDomainCall = paths.repositoryToDomainCall ?? `${toDomain}(&row)`;
+    const toDomainCallReturnsError = paths.repositoryToDomainCallReturnsError ?? false;
     const errorMapper = paths.repositoryErrorMapper ?? "mapDatabaseError";
+    const mapping = toDomainCallReturnsError
+      ? [
+          `\tm, err := ${toDomainCall}`,
+          `\tif err != nil {`,
+          `\t\treturn nil, ${errorMapper}(err)`,
+          `\t}`,
+          `\treturn m, nil`,
+        ]
+      : [`\treturn ${toDomainCall}, nil`];
     adapter = insert(adapter, REPOSITORY_METHODS_MARKER, [
       `func (r *Repository) FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*domain.${naming.pascalName}, error) {`,
       `\tvar row ${modelType}`,
       `\tif err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "${column} = ?", ${fieldParam}).Error; err != nil {`,
       `\t\treturn nil, ${errorMapper}(err)`,
       `\t}`,
-      `\treturn ${toDomain}(&row), nil`,
+      ...mapping,
       `}`,
       "",
     ].join("\n"));

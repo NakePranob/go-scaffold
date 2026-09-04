@@ -3,7 +3,7 @@ RegisterInput:
   required: [email, password, name]
   properties:
     email: { type: string, format: email }
-    password: { type: string, format: password, minLength: 8 }
+    password: { type: string, format: password, minLength: 8, maxLength: 72 }
     name: { type: string }
 
 LoginInput:
@@ -11,7 +11,7 @@ LoginInput:
   required: [email, password]
   properties:
     email: { type: string, format: email }
-    password: { type: string, format: password }
+    password: { type: string, format: password, maxLength: 72 }
 
 ForgotPasswordInput:
   type: object
@@ -24,7 +24,7 @@ ResetPasswordInput:
   required: [token, new_password]
   properties:
     token: { type: string }
-    new_password: { type: string, format: password, minLength: 8 }
+    new_password: { type: string, format: password, minLength: 8, maxLength: 72 }
 
 VerifyEmailInput:
   type: object
@@ -168,3 +168,10 @@ IdentityLinkStartResponse:
   required: [authorization_url]
   properties:
     authorization_url: { type: string, format: uri }
+
+LocalIdentityLinkInput:
+  type: object
+  required: [password]
+  additionalProperties: false
+  properties:
+    password: { type: string, format: password, minLength: 8, maxLength: 72 }

@@ -90,6 +90,7 @@ func validFakeProvider(t *testing.T) (*fakeLoginProvider, *Service) {
 		}
 		return ExternalIdentity{
 			Provider:      "fake",
+			Issuer:        "https://provider.example.test",
 			Subject:       "subject-1",
 			Email:         "user@example.com",
 			EmailVerified: true,
@@ -165,6 +166,7 @@ func TestService_ExchangeLoginRejectsIdentityFromAnotherProvider(t *testing.T) {
 	provider.completeFn = func(LoginCompleteInput) (ExternalIdentity, error) {
 		return ExternalIdentity{
 			Provider:      "another-provider",
+			Issuer:        "https://provider.example.test",
 			Subject:       "subject-1",
 			Email:         "user@example.com",
 			EmailVerified: true,
