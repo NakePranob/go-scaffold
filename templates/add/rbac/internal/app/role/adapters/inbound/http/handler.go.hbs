@@ -45,44 +45,45 @@ func (h *Handler) list(c *gin.Context) {
 		c.Error(toHTTPError(err))
 		return
 	}
-	out := make([]application.RoleResponse, len(items))
+	out := make([]roleResponse, len(items))
 	for i := range items {
-		out[i] = application.ToRoleResponse(items[i])
+		out[i] = toRoleResponse(application.ToRoleResponse(items[i]))
 	}
 	c.JSON(http.StatusOK, p.Response(out))
 }
 
 func (h *Handler) create(c *gin.Context) {
-	var in application.CreateInput
+	var in createInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.Error(httpx.BindErr(err))
 		return
 	}
-	item, err := h.svc.Create(c.Request.Context(), in)
+	item, err := h.svc.Create(c.Request.Context(), toCreateInput(in))
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return
 	}
-	c.JSON(http.StatusCreated, application.ToRoleResponse(*item))
+	c.JSON(http.StatusCreated, toRoleResponse(application.ToRoleResponse(*item)))
 }
 
 func (h *Handler) setPermissions(c *gin.Context) {
-	var in application.SetPermissionsInput
+	var in setPermissionsInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.Error(httpx.BindErr(err))
 		return
 	}
-	if in.PermissionCodes == nil {
+	appInput := toSetPermissionsInput(in)
+	if appInput.PermissionCodes == nil {
 		c.Error(apperror.NewValidation("invalid role input", map[string]string{"permission_codes": "is required"}))
 		return
 	}
-	item, err := h.svc.SetPermissions(c.Request.Context(), c.Param("code"), *in.PermissionCodes)
+	item, err := h.svc.SetPermissions(c.Request.Context(), c.Param("code"), *appInput.PermissionCodes)
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return
 	}
 	h.authz.Invalidate(item.Role.Code)
-	c.JSON(http.StatusOK, application.ToRoleResponse(*item))
+	c.JSON(http.StatusOK, toRoleResponse(application.ToRoleResponse(*item)))
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -101,9 +102,9 @@ func (h *Handler) listPermissions(c *gin.Context) {
 		c.Error(toHTTPError(err))
 		return
 	}
-	out := make([]application.PermissionResponse, len(items))
+	out := make([]permissionResponse, len(items))
 	for i := range items {
-		out[i] = application.ToPermissionResponse(items[i])
+		out[i] = toPermissionResponse(application.ToPermissionResponse(items[i]))
 	}
 	c.JSON(http.StatusOK, p.Response(out))
 }

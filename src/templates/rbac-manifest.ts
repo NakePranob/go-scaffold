@@ -14,6 +14,7 @@ export const RBAC_FILES: { template: string; output: string }[] = [
   { template: "add/rbac/internal/app/role/application/service.go.hbs", output: "internal/app/role/application/service.go" },
   { template: "add/rbac/internal/app/role/application/service_test.go.hbs", output: "internal/app/role/application/service_test.go" },
 
+  { template: "add/rbac/internal/app/role/adapters/inbound/http/dto.go.hbs", output: "internal/app/role/adapters/inbound/http/dto.go" },
   { template: "add/rbac/internal/app/role/adapters/inbound/http/handler.go.hbs", output: "internal/app/role/adapters/inbound/http/handler.go" },
   { template: "add/rbac/internal/app/role/adapters/inbound/http/handler_test.go.hbs", output: "internal/app/role/adapters/inbound/http/handler_test.go" },
   { template: "add/rbac/internal/app/role/adapters/outbound/postgres/model.go.hbs", output: "internal/app/role/adapters/outbound/postgres/model.go" },

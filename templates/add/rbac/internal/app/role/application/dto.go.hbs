@@ -9,12 +9,12 @@ import (
 const PermRoleManage = "role:manage"
 
 type CreateInput struct {
-	Code string `json:"code"`
-	Name string `json:"name"`
+	Code string
+	Name string
 }
 
 type SetPermissionsInput struct {
-	PermissionCodes *[]string `json:"permission_codes"`
+	PermissionCodes *[]string
 }
 
 type RoleListItem struct {
@@ -23,16 +23,16 @@ type RoleListItem struct {
 }
 
 type RoleResponse struct {
-	Code        string    `json:"code"`
-	Name        string    `json:"name"`
-	IsSystem    bool      `json:"is_system"`
-	Permissions []string  `json:"permissions"`
-	CreatedAt   time.Time `json:"created_at"`
+	Code        string
+	Name        string
+	IsSystem    bool
+	Permissions []string
+	CreatedAt   time.Time
 }
 
 type PermissionResponse struct {
-	Code        string `json:"code"`
-	Description string `json:"description"`
+	Code        string
+	Description string
 }
 
 func ToRoleResponse(item RoleListItem) RoleResponse {
