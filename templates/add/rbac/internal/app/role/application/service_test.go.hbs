@@ -2,8 +2,10 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"{{goModule}}/internal/app/role/domain"
@@ -122,5 +124,18 @@ func TestService_Delete_SystemRoleRejected(t *testing.T) {
 	err := svc.Delete(context.Background(), "admin")
 	if got := status(t, err); got != http.StatusConflict {
 		t.Fatalf("want 409 for a system role, got %d", got)
+	}
+}
+
+func TestToRoleResponse_EmptyPermissionsMarshalAsArray(t *testing.T) {
+	// The repository's Pluck leaves the slice nil for a role with no grants,
+	// and `null` breaks any client that treats permissions as a list — which
+	// is every one of them, since the seeded `staff` role starts empty.
+	body, err := json.Marshal(ToRoleResponse(RoleListItem{Role: domain.Role{Code: "staff"}}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"Permissions":[]`) {
+		t.Fatalf("want an empty array for a role with no permissions, got %s", body)
 	}
 }

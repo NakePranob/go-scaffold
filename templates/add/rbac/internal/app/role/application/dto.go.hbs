@@ -36,9 +36,17 @@ type PermissionResponse struct {
 }
 
 func ToRoleResponse(item RoleListItem) RoleResponse {
+	// A role holding nothing must still answer `[]`, never `null`: Pluck
+	// leaves the slice nil, and the seeded `staff` role starts with no grants
+	// at all — so this is the common case, not an edge one. Every HTTP path
+	// (list, create, set-permissions) maps through here.
+	permissions := item.Permissions
+	if permissions == nil {
+		permissions = []string{}
+	}
 	return RoleResponse{
 		Code: item.Role.Code, Name: item.Role.Name, IsSystem: item.Role.IsSystem,
-		Permissions: item.Permissions, CreatedAt: item.Role.CreatedAt,
+		Permissions: permissions, CreatedAt: item.Role.CreatedAt,
 	}
 }
 
