@@ -9,7 +9,7 @@ import (
 )
 
 type QueryPort interface {
-	List(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	List(context.Context, ports.ListFilter) ([]domain.{{pascalName}}, int64, error)
 	Get(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
 	// go-scaffold:query-interface
 }
@@ -22,8 +22,8 @@ func NewQueryHandler(repo ports.QueryRepository) *QueryHandler {
 	return &QueryHandler{repo: repo}
 }
 
-func (h *QueryHandler) List(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
-	return h.repo.FindAll(ctx, limit, offset)
+func (h *QueryHandler) List(ctx context.Context, filter ports.ListFilter) ([]domain.{{pascalName}}, int64, error) {
+	return h.repo.FindAll(ctx, filter)
 }
 
 func (h *QueryHandler) Get(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {

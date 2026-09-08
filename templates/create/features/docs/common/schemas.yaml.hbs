@@ -4,6 +4,7 @@ PageEnvelope:
   properties:
     limit: { type: integer }
     offset: { type: integer }
+    total: { type: integer, description: "rows the filter matched; present on endpoints that count them" }
 
 Error:
   type: object

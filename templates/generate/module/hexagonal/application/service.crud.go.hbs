@@ -13,7 +13,7 @@ import (
 
 type ServicePort interface {
 	Create(context.Context, CreateInput) (*domain.{{pascalName}}, error)
-	List(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	List(context.Context, ports.ListFilter) ([]domain.{{pascalName}}, int64, error)
 	Get(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
 	Update(context.Context, uuid.UUID, UpdateInput) (*domain.{{pascalName}}, error)
 	Delete(context.Context, uuid.UUID) error
@@ -38,8 +38,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*domain.{{pascalN
 	return m, nil
 }
 
-func (s *Service) List(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
-	return s.repo.FindAll(ctx, limit, offset)
+func (s *Service) List(ctx context.Context, filter ports.ListFilter) ([]domain.{{pascalName}}, int64, error) {
+	return s.repo.FindAll(ctx, filter)
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {

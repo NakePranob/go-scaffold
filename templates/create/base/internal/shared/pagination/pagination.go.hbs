@@ -2,6 +2,7 @@ package pagination
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -9,15 +10,23 @@ import (
 const (
 	defaultLimit = 20
 	maxLimit     = 100
+	// Long enough for any name or address anyone types into a search box, and
+	// short enough that the LIKE it becomes cannot be used to make the
+	// database do real work.
+	maxSearchRunes = 100
 )
 
-// Params is a validated limit/offset pair (default 20, capped at 100).
+// Params is a validated limit/offset pair (default 20, capped at 100) plus the
+// free-text search the list was asked for.
 type Params struct {
 	Limit  int
 	Offset int
+	// Search is ?q= trimmed, empty when the caller sent none — so a repository
+	// can pass it straight to dbq.Search, which no-ops on an empty term.
+	Search string
 }
 
-// Parse reads ?limit=&offset= off the request so every feature parses the
+// Parse reads ?limit=&offset=&q= off the request so every feature parses the
 // same way.
 func Parse(c *gin.Context) Params {
 	p := Params{Limit: defaultLimit}
@@ -29,6 +38,14 @@ func Parse(c *gin.Context) Params {
 	}
 	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v >= 0 {
 		p.Offset = v
+	}
+	// Runes, not bytes: one non-Latin character is often three bytes, and
+	// cutting one in half would send invalid UTF-8 into the query.
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		if r := []rune(q); len(r) > maxSearchRunes {
+			q = string(r[:maxSearchRunes])
+		}
+		p.Search = q
 	}
 	return p
 }

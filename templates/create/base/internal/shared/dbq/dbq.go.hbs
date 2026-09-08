@@ -1,0 +1,47 @@
+// Package dbq holds the SQL every list endpoint repeats, so a filter is not
+// re-derived — and re-broken — once per module.
+package dbq
+
+import (
+	"strings"
+
+	"gorm.io/gorm"
+)
+
+// likeEscaper protects the pattern's own metacharacters. Backslash first, or
+// it would escape the backslashes the other two just added.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// LikePattern turns a search term into a `contains` pattern with the wildcards
+// escaped, so searching for "50%" looks for the three characters "50%" rather
+// than for anything starting with 50.
+//
+// Postgres already treats backslash as LIKE's escape character, so the pattern
+// needs no trailing ESCAPE clause.
+func LikePattern(term string) string {
+	return "%" + likeEscaper.Replace(term) + "%"
+}
+
+// Search narrows db to rows where any of cols contains term, ignoring case.
+// An empty term returns db untouched, so a caller applies it unconditionally:
+//
+//	q = dbq.Search(q, filter.Search, "name", "code")
+//
+// cols are SQL identifiers written by the caller. Never pass one that came off
+// the request — they are interpolated; only the term is a bound parameter.
+func Search(db *gorm.DB, term string, cols ...string) *gorm.DB {
+	if term == "" || len(cols) == 0 {
+		return db
+	}
+	pattern := LikePattern(term)
+	conds := make([]string, len(cols))
+	args := make([]any, len(cols))
+	for i, col := range cols {
+		conds[i] = col + " ILIKE ?"
+		args[i] = pattern
+	}
+	// Parenthesised here rather than trusting the driver to group it: ANDed
+	// with a second filter, an unwrapped OR would widen the result instead of
+	// narrowing it.
+	return db.Where("("+strings.Join(conds, " OR ")+")", args...)
+}

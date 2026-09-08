@@ -15,7 +15,7 @@ import (
 type ServicePort interface {
 	PermissionsOf(context.Context, string) (map[string]struct{}, error)
 	CodeExists(context.Context, string) (bool, error)
-	List(context.Context, int, int) ([]RoleListItem, error)
+	List(context.Context, ports.ListFilter) ([]RoleListItem, int64, error)
 	Create(context.Context, CreateInput) (*RoleListItem, error)
 	SetPermissions(context.Context, string, []string) (*RoleListItem, error)
 	Delete(context.Context, string) error
@@ -50,20 +50,20 @@ func (s *Service) CodeExists(ctx context.Context, code string) (bool, error) {
 	return true, nil
 }
 
-func (s *Service) List(ctx context.Context, limit, offset int) ([]RoleListItem, error) {
-	roles, err := s.repo.FindAll(ctx, limit, offset)
+func (s *Service) List(ctx context.Context, filter ports.ListFilter) ([]RoleListItem, int64, error) {
+	roles, total, err := s.repo.FindAll(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]RoleListItem, len(roles))
 	for i, role := range roles {
 		perms, err := s.repo.PermissionCodes(ctx, role.Code)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out[i] = RoleListItem{Role: role, Permissions: perms}
 	}
-	return out, nil
+	return out, total, nil
 }
 
 var roleCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)

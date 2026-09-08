@@ -6,9 +6,10 @@ get:
   parameters:
     - $ref: '../common/parameters.yaml#/Limit'
     - $ref: '../common/parameters.yaml#/Offset'
+    - $ref: '../common/parameters.yaml#/Search'
   responses:
     "200":
-      description: paginated list
+      description: "paginated list; `q` matches name and primary email"
       content:
         application/json:
           schema:

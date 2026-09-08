@@ -597,10 +597,11 @@ my-api/
 │   │   ├── config/                 # environment configuration
 │   │   ├── apperror/               # consistent application errors
 │   │   ├── dberr/                  # database error classification
+│   │   ├── dbq/                    # escaped contains-search for list filters
 │   │   ├── httpx/                  # HTTP parsing and binding helpers
 │   │   ├── id/                     # UUID generation
 │   │   ├── middleware/             # request ID, logging, errors, CORS
-│   │   ├── pagination/             # pagination parsing and responses
+│   │   ├── pagination/             # pagination and ?q= parsing, responses
 │   │   └── tx/                     # transaction context helpers
 │   └── app/                        # empty until generate module is used
 ├── migrations/                     # embedded, versioned SQL migrations

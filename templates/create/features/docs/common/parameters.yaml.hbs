@@ -11,3 +11,8 @@ Offset:
   name: offset
   in: query
   schema: { type: integer, default: 0, minimum: 0 }
+Search:
+  name: q
+  in: query
+  description: "free-text search; which columns it matches is documented per endpoint"
+  schema: { type: string, maxLength: 100 }

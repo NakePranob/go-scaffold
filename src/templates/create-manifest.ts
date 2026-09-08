@@ -53,6 +53,14 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "internal/shared/pagination/pagination.go",
   },
   {
+    template: "create/base/internal/shared/dbq/dbq.go.hbs",
+    output: "internal/shared/dbq/dbq.go",
+  },
+  {
+    template: "create/base/internal/shared/dbq/dbq_test.go.hbs",
+    output: "internal/shared/dbq/dbq_test.go",
+  },
+  {
     template: "create/base/internal/shared/tx/tx.go.hbs",
     output: "internal/shared/tx/tx.go",
   },

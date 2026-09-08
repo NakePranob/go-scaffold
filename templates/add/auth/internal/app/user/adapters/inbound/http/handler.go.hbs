@@ -7,6 +7,7 @@ import (
 
 	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
 	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/httpx"
 	"{{goModule}}/internal/shared/middleware"
@@ -154,7 +155,10 @@ func (h *Handler) Register(rg gin.IRouter) {
 
 func (h *Handler) adminListUsers(c *gin.Context) {
 	p := pagination.Parse(c)
-	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+	// One struct all the way down, so a filter added later is a field on
+	// ports.ListFilter and not a new argument on the three signatures below.
+	filter := ports.ListFilter{Search: p.Search, Limit: p.Limit, Offset: p.Offset}
+	items, total, err := h.svc.List(c.Request.Context(), filter)
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return
@@ -163,7 +167,7 @@ func (h *Handler) adminListUsers(c *gin.Context) {
 	for i := range items {
 		out[i] = toMeResponse(&items[i])
 	}
-	c.JSON(http.StatusOK, p.Response(out))
+	c.JSON(http.StatusOK, p.ResponseWithTotal(out, total))
 }
 func (h *Handler) adminGetUser(c *gin.Context) {
 	id, ok := httpx.ParseID(c)

@@ -90,7 +90,7 @@ function applicationInterfaceMarker(paths: HexagonalMethodPatchPaths, type: Meth
 
 function methodSignature(naming: ModuleNaming, method: MethodNaming, opts: { type: MethodType; getMode?: GetMethodMode; field?: string }): string {
   if (opts.type === "get" && opts.getMode === "all") {
-    return `${method.pascalName}(context.Context, int, int) ([]domain.${naming.pascalName}, error)`;
+    return `${method.pascalName}(context.Context, ports.ListFilter) ([]domain.${naming.pascalName}, int64, error)`;
   }
   if (opts.type === "get") {
     return `${method.pascalName}(context.Context, string) (*domain.${naming.pascalName}, error)`;
@@ -105,8 +105,11 @@ function applicationMethod(naming: ModuleNaming, method: MethodNaming, opts: { t
   const target = receiver.startsWith("s ") ? "s" : "h";
   if (opts.type === "get" && opts.getMode === "all") {
     return [
-      `func (${receiver}) ${method.pascalName}(ctx context.Context, limit, offset int) ([]domain.${naming.pascalName}, error) {`,
-      `\treturn ${target}.repo.FindAll(ctx, limit, offset)`,
+      `// TODO: narrow this list. It reuses FindAll, so today it answers the`,
+      `// same rows as the module's own list — give ports.ListFilter the fields`,
+      `// this endpoint filters by and read them in the repository.`,
+      `func (${receiver}) ${method.pascalName}(ctx context.Context, filter ports.ListFilter) ([]domain.${naming.pascalName}, int64, error) {`,
+      `\treturn ${target}.repo.FindAll(ctx, filter)`,
       `}`,
       "",
     ].join("\n");
@@ -141,6 +144,14 @@ function applicationMethod(naming: ModuleNaming, method: MethodNaming, opts: { t
   ].join("\n");
 }
 
+// "ports" is the module's own package, not a shared one — every other token
+// in an imports list resolves under internal/shared.
+function handlerImportPath(need: string, goModule: string, naming: ModuleNaming): string {
+  if (need.startsWith("net/")) return need;
+  if (need === "ports") return `${goModule}/internal/app/${naming.pkg}/ports`;
+  return `${goModule}/internal/shared/${need}`;
+}
+
 function handlerMethod(
   naming: ModuleNaming,
   method: MethodNaming,
@@ -153,11 +164,12 @@ function handlerMethod(
   if (opts.type === "get" && opts.getMode === "all") {
     return {
       route: `${routeReceiver}.GET("/${method.pathSegment}", h.${method.handlerName})`,
-      imports: ["net/http", "pagination"],
+      imports: ["net/http", "pagination", "ports"],
       body: [
         `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
         `\tp := pagination.Parse(c)`,
-        `\titems, err := ${receiver}.${method.pascalName}(c.Request.Context(), p.Limit, p.Offset)`,
+        `\tfilter := ports.ListFilter{Search: p.Search, Limit: p.Limit, Offset: p.Offset}`,
+        `\titems, total, err := ${receiver}.${method.pascalName}(c.Request.Context(), filter)`,
         `\tif err != nil {`,
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
@@ -166,7 +178,7 @@ function handlerMethod(
         `\tfor i := range items {`,
         `\t\tout[i] = toResponse(application.ToResponse(&items[i]))`,
         `\t}`,
-        `\tc.JSON(http.StatusOK, p.Response(out))`,
+        `\tc.JSON(http.StatusOK, p.ResponseWithTotal(out, total))`,
         `}`,
         "",
       ].join("\n"),
@@ -307,7 +319,7 @@ export function patchHexagonalMethod(
   );
   handler = insert(handler, HANDLER_ROUTES_MARKER, handlerResult.route);
   handler = insert(handler, HANDLER_FUNCS_MARKER, handlerResult.body);
-  for (const need of handlerResult.imports) handler = addImport(handler, need.startsWith("net/") ? need : `${goModule}/internal/shared/${need}`);
+  for (const need of handlerResult.imports) handler = addImport(handler, handlerImportPath(need, goModule, naming));
   write(files, paths.handlerPath, handler);
 
   if (opts.type === "post") {
