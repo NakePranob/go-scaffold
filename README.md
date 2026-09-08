@@ -325,6 +325,14 @@ CRUD modules contain the starter list/get/create/update/delete methods. Lean
 modules keep the endpoint surface small so it can be extended with
 generate method.
 
+Every generated list endpoint reads `?limit=&offset=&q=`, passes one
+`ports.ListFilter` from handler to application to repository, and answers the
+page beside the total the filter matched. The lists `add auth` and `add rbac`
+own use the same contract. `FindAll` calls `dbq.Search` with no columns, so
+`?q=` is accepted and ignored until you name the columns to search in
+`adapters/outbound/postgres/repository.go`; add further filters as fields on
+`ListFilter` rather than as parameters.
+
 CQRS modules additionally contain:
 
 ~~~text
@@ -361,6 +369,13 @@ If the module, method name, or endpoint details are omitted, the wizard asks
 for them. The module selector lists modules that exist on disk, so the command
 does not require memorising the normalised Go package name.
 
+`generate method` extends the modules `generate module` created, and the one
+`add auth` owns. It refuses `add rbac`'s role module: that module builds its
+HTTP response from a role *together with its permissions* rather than from the
+entity alone, so no generated body fits it. Add an endpoint there by hand — a
+route in `internal/app/role/adapters/inbound/http/handler.go`, a method on the
+application service, and its OpenAPI entry.
+
 ### Method options
 
 | Option | Effect |
@@ -373,7 +388,7 @@ The generated route and code depend on the method type:
 
 | Input | Route shape | Result |
 |---|---|---|
-| get --get-mode all | GET /<plural>/<method> | Uses the module's list query; add real filtering yourself |
+| get --get-mode all | GET /<plural>/<method> | Reuses the module's list query, so it inherits ListFilter, ?q= and the total |
 | get --get-mode one --field <field> | GET /<plural>/<field>/:<field> | Adds a FindBy<Field> query and a column/index migration |
 | post | POST /<plural>/<method> | Adds a request body DTO and a TODO service method |
 | put / patch | <VERB> /<plural>/:id/<method> | Loads by ID and leaves the update behavior as a TODO |
