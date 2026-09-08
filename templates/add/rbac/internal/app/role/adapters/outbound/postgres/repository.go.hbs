@@ -6,6 +6,7 @@ import (
 
 	"{{goModule}}/internal/app/role/domain"
 	"{{goModule}}/internal/app/role/ports"
+	"{{goModule}}/internal/shared/dbq"
 	"{{goModule}}/internal/shared/dberr"
 	"{{goModule}}/internal/shared/tx"
 
@@ -27,17 +28,33 @@ func (r *Repository) PermissionCodes(ctx context.Context, roleCode string) ([]st
 	return codes, mapDatabaseError(err)
 }
 
-func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.Role, error) {
+// FindAll answers one page of the filter and how many roles it matched
+// altogether. Two queries, because a count over a LIMITed query would only
+// ever count the page.
+func (r *Repository) FindAll(ctx context.Context, filter ports.ListFilter) ([]domain.Role, int64, error) {
+	// A closure rather than one *gorm.DB reused twice: conditions accumulate
+	// on the value, so the count would silently inherit the page's LIMIT.
+	matching := func() *gorm.DB {
+		q := tx.From(ctx, r.db).WithContext(ctx).Model(&Role{})
+		return dbq.Search(q, filter.Search, "code", "name")
+	}
+
+	var total int64
+	if err := matching().Count(&total).Error; err != nil {
+		return nil, 0, mapDatabaseError(err)
+	}
+
 	var rows []Role
-	err := tx.From(ctx, r.db).WithContext(ctx).Order("code").Limit(limit).Offset(offset).Find(&rows).Error
+	// code is unique, so it needs no tiebreaker to page stably.
+	err := matching().Order("code").Limit(filter.Limit).Offset(filter.Offset).Find(&rows).Error
 	if err != nil {
-		return nil, mapDatabaseError(err)
+		return nil, 0, mapDatabaseError(err)
 	}
 	items := make([]domain.Role, len(rows))
 	for i := range rows {
 		items[i] = toDomainRole(&rows[i])
 	}
-	return items, nil
+	return items, total, nil
 }
 
 func (r *Repository) FindByCode(ctx context.Context, code string) (*domain.Role, error) {

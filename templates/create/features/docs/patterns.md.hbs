@@ -250,6 +250,66 @@ those markers** — they're where the next `generate method` call inserts. The
 method body is always left as a compiling `TODO` rather than guessing at
 business logic — same spirit as `generate module`'s placeholder fields.
 
+## Filtered Lists — one filter struct, a page and its total
+
+A `crud`-surface module is generated with this already wired; a module that
+grows a list later copies the same four steps. Nothing about it is magic.
+
+**1. Parse at the boundary.** `pagination.Parse(c)` returns `Limit`, `Offset`
+and `Search` (`?q=`, trimmed and capped at 100 runes). Read the filters this
+endpoint owns off the query string beside it. An unreadable filter value means
+*no* filter, not `400` — a list narrows on a best effort.
+
+**2. One filter struct, in `ports/`.** `ports.ListFilter` travels whole through
+handler → application → repository, so adding a filter later is one field and
+not a fourth positional argument on three signatures. It lives in `ports/`
+because that is the only package all three may import — `ports` importing
+`application` would be a cycle. Its zero value means "the first page of
+everything".
+
+```go
+type ListFilter struct {
+    Search string
+    Limit  int
+    Offset int
+    // Status, OwnerID, DateFrom … whatever this module actually filters by.
+}
+```
+
+**3. The repository returns the page *and* the total**, because a client that
+pages needs both and only SQL can answer either:
+
+```go
+FindAll(context.Context, ListFilter) ([]domain.Thing, int64, error)
+```
+
+Build the conditions in a closure and call it once per query — conditions
+accumulate on a `*gorm.DB` value, so a count reusing the page's query object
+silently inherits its `LIMIT`. Use `dbq.Search(q, term, cols...)` for a
+contains-search over columns on the same table, and `dbq.LikePattern(term)`
+when the search spans a subquery or a join. Both escape `%` and `_`, so
+someone typing `50%` searches for `50%` instead of matching every row. Always
+keep a tiebreaker in the sort (`ORDER BY created_at DESC, id`) or two rows
+written in the same instant can swap between page 1 and page 2 — showing one
+twice and hiding the other.
+
+The generated `FindAll` calls `dbq.Search` with no columns, which is a no-op:
+`?q=` is accepted and ignored until you name the columns this list is searched
+by. That TODO is the one line standing between the scaffold and a working
+search.
+
+**4. Respond with the shared envelope.** `p.ResponseWithTotal(out, total)` —
+`{ data, limit, offset, total }`, the same shape for every resource. Anything
+extra is a named key added to that map and documented in the endpoint's
+OpenAPI file. Reuse `common/parameters.yaml#/Search`, `#/Limit` and `#/Offset`
+for the query parameters.
+
+Counts that answer a *different* question from the page — "how many are open
+and how many are closed, whichever tab is showing" — belong beside the
+envelope, not in it, and are computed from the filter minus the field the tabs
+switch. A tab that recounted itself when clicked would always read the same
+number.
+
 ## Testing Conventions
 
 - Unit and integration tests live in the same directory as the code under

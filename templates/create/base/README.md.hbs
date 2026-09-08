@@ -50,10 +50,11 @@ internal/
 │   ├── config/                # loads config from env
 │   ├── apperror/              # central error type (status + payload)
 │   ├── dberr/                 # maps DB errors to constraint kind — shared by every domain
+│   ├── dbq/                   # the SQL every list repeats: escaped contains-search
 │   ├── httpx/                 # HTTP helpers shared by every domain
 │   ├── id/                    # UUID v7 generation (id.New)
 │   ├── middleware/            # RequestID, Logger, Error, CORS{{#if auth}}, auth{{/if}}{{#if rbac}}, RBAC{{/if}}{{#if observability}}, metrics, tracing{{/if}}
-│   ├── pagination/            # parses ?limit=&offset=, response envelope
+│   ├── pagination/            # parses ?limit=&offset=&q=, response envelope
 │   └── tx/                    # carries a transaction on the context
 └── app/                       # one package per domain, added with `generate module`
 ```

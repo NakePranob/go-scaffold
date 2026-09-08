@@ -47,7 +47,7 @@ internal/
 ├── platform/                # talks to real external systems
 │   └── database/             # PostgreSQL connection and pool
 ├── shared/                  # pure logic/framework glue, no I/O
-│   ├── config/  apperror/  dberr/  httpx/  id/
+│   ├── config/  apperror/  dberr/  dbq/  httpx/  id/
 │   └── middleware/  pagination/  tx/
 └── app/                     # domain packages (one per feature)
     └── <domain>/
@@ -129,12 +129,15 @@ call site, no error-shape drift between domains.
 - DB errors are classified once in `shared/dberr` (`IsDuplicate`,
   `IsForeignKey`) and mapped to the right HTTP status per domain
 
-## 6. Pagination
+## 6. Pagination and Filtering
 
-**Decision:** Shared `limit`/`offset` parsing and response envelope
-(`shared/pagination`), used by every list endpoint.
-**Rationale:** One implementation, one response shape (`{data, limit,
-offset}`) — no per-domain reinvention.
+**Decision:** Shared `limit`/`offset`/`q` parsing and response envelope
+(`shared/pagination`), used by every list endpoint, with the SQL a filter
+repeats in `shared/dbq`. A list takes one filter struct from `ports/` and
+answers a page plus its total.
+**Rationale:** One implementation, one response shape (`{data, limit, offset,
+total}`) — no per-domain reinvention, and no per-domain LIKE escaping to get
+wrong. See `patterns.md`, "Filtered Lists".
 
 ## 7. Persistence
 

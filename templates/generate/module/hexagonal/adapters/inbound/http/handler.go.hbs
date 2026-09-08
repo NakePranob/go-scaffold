@@ -7,6 +7,7 @@ import (
 
 	"{{goModule}}/internal/app/{{modulePath}}/application"
 	"{{goModule}}/internal/app/{{modulePath}}/domain"
+	"{{goModule}}/internal/app/{{modulePath}}/ports"
 	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/httpx"
 {{#if auth}}	"{{goModule}}/internal/shared/middleware"
@@ -107,10 +108,14 @@ func (h *Handler) create(c *gin.Context) {
 
 func (h *Handler) list(c *gin.Context) {
 	p := pagination.Parse(c)
+	// One struct all the way down, so this module's own filters are read off
+	// the query string here and added as fields on ports.ListFilter — never as
+	// extra arguments on the three signatures below.
+	filter := ports.ListFilter{Search: p.Search, Limit: p.Limit, Offset: p.Offset}
 {{#if cqrs}}
-	items, err := h.queries.List(c.Request.Context(), p.Limit, p.Offset)
+	items, total, err := h.queries.List(c.Request.Context(), filter)
 {{else}}
-	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+	items, total, err := h.svc.List(c.Request.Context(), filter)
 {{/if}}
 	if err != nil {
 		c.Error(appError(err))
@@ -120,7 +125,7 @@ func (h *Handler) list(c *gin.Context) {
 	for i := range items {
 		out[i] = toResponse(application.ToResponse(&items[i]))
 	}
-	c.JSON(http.StatusOK, p.Response(out))
+	c.JSON(http.StatusOK, p.ResponseWithTotal(out, total))
 }
 
 func (h *Handler) get(c *gin.Context) {

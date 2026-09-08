@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
 
 	"github.com/google/uuid"
 )
@@ -409,7 +410,9 @@ func (f *fakeRepo) UpdateUser(_ context.Context, u *domain.User) error {
 	f.user = u
 	return nil
 }
-func (f *fakeRepo) FindAll(context.Context, int, int) ([]domain.User, error) { return nil, nil }
+func (f *fakeRepo) FindAll(context.Context, ports.ListFilter) ([]domain.User, int64, error) {
+	return nil, 0, nil
+}
 
 func (f *fakeRepo) FindIdentity(_ context.Context, userID uuid.UUID, provider domain.Provider) (*domain.Identity, error) {
 	for i := range f.identities {

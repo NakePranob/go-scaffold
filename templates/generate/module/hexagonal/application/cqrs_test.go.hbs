@@ -15,7 +15,7 @@ import (
 // which side of the CQRS boundary was called.
 type repositoryStub struct {
 	createFn   func(context.Context, *domain.{{pascalName}}) error
-	findAllFn  func(context.Context, int, int) ([]domain.{{pascalName}}, error)
+	findAllFn  func(context.Context, ports.ListFilter) ([]domain.{{pascalName}}, int64, error)
 	findByIDFn func(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
 	updateFn   func(context.Context, *domain.{{pascalName}}) error
 	deleteFn   func(context.Context, uuid.UUID) error
@@ -28,11 +28,11 @@ func (s *repositoryStub) Create(ctx context.Context, m *domain.{{pascalName}}) e
 	}
 	return s.createFn(ctx, m)
 }
-func (s *repositoryStub) FindAll(ctx context.Context, limit, offset int) ([]domain.{{pascalName}}, error) {
+func (s *repositoryStub) FindAll(ctx context.Context, filter ports.ListFilter) ([]domain.{{pascalName}}, int64, error) {
 	if s.findAllFn == nil {
 		panic("unexpected repository.FindAll call")
 	}
-	return s.findAllFn(ctx, limit, offset)
+	return s.findAllFn(ctx, filter)
 }
 func (s *repositoryStub) FindByID(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}, error) {
 	if s.findByIDFn == nil {

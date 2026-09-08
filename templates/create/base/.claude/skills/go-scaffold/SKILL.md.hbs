@@ -172,7 +172,7 @@ method:
 
 | Type | Shape | Generated behavior |
 |---|---|---|
-| get --get-mode all | GET /<plural>/<name> | Reuses FindAll; add real filtering |
+| get --get-mode all | GET /<plural>/<name> | Reuses FindAll (page + total, `?q=` parsed); add fields to ports.ListFilter |
 | get --get-mode one --field <f> | GET /<plural>/<f>/:<f> | Adds a repository lookup and test seam |
 | post | POST /<plural>/<name> | Body DTO plus internal-error TODO |
 | put / patch | <VERB> /<plural>/:id/<name> | Safe 501 Not Implemented; no repository read/write |

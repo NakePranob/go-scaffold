@@ -142,7 +142,8 @@ These remain deliberate engineering work:
 - any work in a repository that lacks `go-scaffold.config.json`.
 
 Generated methods are explicit stubs. `generate method` GET-all reuses
-`FindAll` until real filtering is added; POST and DELETE return an internal
+`FindAll`, so it answers the same rows as the module's own list until
+`ports.ListFilter` grows the fields that endpoint narrows by; POST and DELETE return an internal
 error until implemented; PUT/PATCH intentionally return `501 Not Implemented`
 and must not read or write a record before their behavior is designed. Treat
 the generated OpenAPI TODO contract as incomplete, not as a promise that the

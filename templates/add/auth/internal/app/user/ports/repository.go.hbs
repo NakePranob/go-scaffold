@@ -10,11 +10,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// ListFilter is the whole question the admin user list asks. The zero value is
+// "the first page of everything", so a caller only sets what it narrows by.
+//
+// Put new filters here as fields rather than as arguments: one struct travels
+// handler -> application -> repository, so adding a filter later is a field
+// and not a fourth parameter on three signatures. See
+// docs/architect/patterns.md.
+type ListFilter struct {
+	// Search is ?q= as shared/pagination parsed it, matched against the name
+	// and the primary email address.
+	Search string
+	Limit  int
+	Offset int
+}
+
 type UserRepository interface {
 	FindByEmail(context.Context, string) (*domain.User, error)
 	FindByID(context.Context, uuid.UUID) (*domain.User, error)
 	UpdateUser(context.Context, *domain.User) error
-	FindAll(context.Context, int, int) ([]domain.User, error)
+	// FindAll answers one page and the total the filter matched, which is what
+	// a client needs to draw "page 3 of 12".
+	FindAll(context.Context, ListFilter) ([]domain.User, int64, error)
 	FindIdentity(context.Context, uuid.UUID, domain.Provider) (*domain.Identity, error)
 	ListIdentities(context.Context, uuid.UUID) ([]domain.Identity, error)
 	FindIdentityByProviderUID(context.Context, string, string) (*domain.Identity, error)
