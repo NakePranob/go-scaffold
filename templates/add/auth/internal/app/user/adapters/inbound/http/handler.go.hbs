@@ -230,6 +230,12 @@ func toHTTPError(err error) error {
 		}
 		return apperror.New(status, ruleErr.Code, ruleErr.Message)
 	}
+	// Before the catch-all: a stub `generate method` wrote has no body yet and
+	// 501 says so, where NewInternal would report a server fault for a route
+	// nobody has written.
+	if errors.Is(err, domain.ErrNotImplemented) {
+		return apperror.New(http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+	}
 	if errors.Is(err, domain.ErrNotFound) {
 		return apperror.NewNotFound("user not found")
 	}

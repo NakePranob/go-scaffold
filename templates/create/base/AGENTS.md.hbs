@@ -102,6 +102,13 @@ go-scaffold generate module <name> --defaults
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete>
 ```
 
+`generate method` extends the modules `generate module` created, and the one
+`add auth` owns. It refuses `add rbac`'s: that module builds its response from
+a role *together with its permissions* rather than from the entity, and the
+generator has no shape to write against there. Add an endpoint to it by hand —
+a route in `internal/app/role/adapters/inbound/http/handler.go`, a method on
+the application service, and its entry in `docs/`.
+
 Pass every value as a flag in CI. In an interactive shell, omitted values use
 the project defaults as the initial wizard choices. In a non-interactive
 shell, omitted values prompt and the command exits without writing.
