@@ -23,7 +23,7 @@ type UserRepository interface {
 	UpdateIdentity(context.Context, *domain.Identity) error
 	DeleteIdentity(context.Context, uuid.UUID, domain.Provider) error
 	LoginLockedUntil(context.Context, string) (time.Time, error)
-	RecordLoginFailure(context.Context, string, int, time.Duration) error
+	RecordLoginFailure(context.Context, string, string, int, time.Duration) error
 	ClearLoginFailures(context.Context, string) error
 	// go-scaffold:repository-interface
 }

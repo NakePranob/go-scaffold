@@ -482,7 +482,9 @@ Auth adds:
   `password_credentials`, and `external_identities`; a Google-only user can
   add a password through `POST /users/me/identities/local` without creating a
   second account
-- failed-login lockout and user-session management
+- failed-login lockout — per-account exponential backoff that ignores a
+  repeated wrong password, so a stale saved credential cannot lock the owner
+  out — and user-session management
 - MFA endpoints and configuration hooks
 - internal/app/user, auth middleware, cmd/seed, migrations, and OpenAPI
   documents when OpenAPI is enabled

@@ -2,9 +2,19 @@
 -- so it works for addresses that have no account (otherwise throttling itself
 -- leaks which addresses are registered) and so this table is not a user list.
 -- See adapters/outbound/postgres/model.go for why this exists separately from the rate limiter.
+-- last_attempt fingerprints the most recent wrong password so replaying the
+-- same one does not count again (see RecordLoginFailure). It is an HMAC, not a
+-- plain hash: a leaked table must not become a dictionary of near-miss
+-- passwords for known accounts.
 CREATE TABLE user_svc.login_throttle (
     email_hash   TEXT PRIMARY KEY,
     failures     INTEGER NOT NULL DEFAULT 0,
+    last_attempt TEXT,
     locked_until TIMESTAMPTZ,
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The table sweeps itself: every failed login deletes the rows nothing has
+-- touched for a day (see RecordLoginFailure). This index is what keeps that
+-- delete from scanning the table each time.
+CREATE INDEX login_throttle_updated_at_idx ON user_svc.login_throttle (updated_at);
