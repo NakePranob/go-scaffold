@@ -76,6 +76,7 @@ func (AuthToken) TableName() string { return "user_svc.auth_tokens" }
 type LoginThrottle struct {
 	EmailHash   string `gorm:"primaryKey;type:text"`
 	Failures    int    `gorm:"not null;default:0"`
+	LastAttempt *string `gorm:"type:text"`
 	LockedUntil *time.Time
 	UpdatedAt   time.Time
 }

@@ -2,6 +2,9 @@ package application
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +27,22 @@ const (
 // the counter must also work for addresses that have no account.
 func throttleKey(purpose, email string) string {
 	return hashToken(purpose + ":" + normalizeEmail(email))
+}
+
+// attemptFingerprint identifies the password that was submitted so the counter
+// can ignore a repeat of one it has already punished. A saved password that
+// went stale gets replayed by the browser on every visit and would otherwise
+// lock the account out on its own, while an attacker gains nothing: guessing
+// means sending something new each time.
+//
+// It is an HMAC under the signing secret rather than a bare hash. The value
+// is derived from a real password — often the user's password somewhere else,
+// or one character away from the right one — so a leak of this table alone
+// must not be crackable offline.
+func (s *Service) attemptFingerprint(password string) string {
+	mac := hmac.New(sha256.New, []byte(s.config.JWTSecret))
+	mac.Write([]byte(password))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // throttled treats a counter read failure as not-throttled: this is a brake,
@@ -73,8 +92,9 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error)
 
 	// Every failure records the same key and returns the same error whether or
 	// not the account exists, preventing account enumeration through the counter.
+	attempt := s.attemptFingerprint(in.Password)
 	fail := func() (*AuthResult, error) {
-		if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
+		if err := s.repo.RecordLoginFailure(ctx, key, attempt, loginFreeAttempts, loginMaxLock); err != nil {
 			slog.Error("record login failure", "error", err)
 		}
 		return nil, errInvalidCredentials()

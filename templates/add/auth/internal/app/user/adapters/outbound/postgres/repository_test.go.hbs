@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"errors"
 	"os"
 	"testing"
@@ -130,7 +131,7 @@ func TestRepository_LoginThrottle_BacksOffThenClears(t *testing.T) {
 
 	// the free attempts leave no lock behind
 	for i := 0; i < 3; i++ {
-		if err := repo.RecordLoginFailure(ctx, key, 3, 15*time.Minute); err != nil {
+		if err := repo.RecordLoginFailure(ctx, key, fmt.Sprintf("attempt-%d", i), 3, 15*time.Minute); err != nil {
 			t.Fatalf("record failure %d: %v", i+1, err)
 		}
 		until, err := repo.LoginLockedUntil(ctx, key)
@@ -143,14 +144,14 @@ func TestRepository_LoginThrottle_BacksOffThenClears(t *testing.T) {
 	}
 
 	// the next one locks, and the one after that locks for longer
-	if err := repo.RecordLoginFailure(ctx, key, 3, 15*time.Minute); err != nil {
+	if err := repo.RecordLoginFailure(ctx, key, "attempt-4", 3, 15*time.Minute); err != nil {
 		t.Fatalf("record failure 4: %v", err)
 	}
 	first, err := repo.LoginLockedUntil(ctx, key)
 	if err != nil || first.IsZero() {
 		t.Fatalf("expected a lock after exceeding the free allowance, got %s (err %v)", first, err)
 	}
-	if err := repo.RecordLoginFailure(ctx, key, 3, 15*time.Minute); err != nil {
+	if err := repo.RecordLoginFailure(ctx, key, "attempt-5", 3, 15*time.Minute); err != nil {
 		t.Fatalf("record failure 5: %v", err)
 	}
 	second, err := repo.LoginLockedUntil(ctx, key)
@@ -180,7 +181,7 @@ func TestRepository_LoginThrottle_RespectsTheCeiling(t *testing.T) {
 	key := "throttle-cap-" + uuid.NewString()
 
 	for i := 0; i < 12; i++ {
-		if err := repo.RecordLoginFailure(ctx, key, 0, 5*time.Second); err != nil {
+		if err := repo.RecordLoginFailure(ctx, key, fmt.Sprintf("attempt-%d", i), 0, 5*time.Second); err != nil {
 			t.Fatalf("record failure %d: %v", i+1, err)
 		}
 	}
@@ -190,5 +191,84 @@ func TestRepository_LoginThrottle_RespectsTheCeiling(t *testing.T) {
 	}
 	if remaining := time.Until(until); remaining > 30*time.Second {
 		t.Fatalf("lock ran past its 5s ceiling: %s remaining", remaining)
+	}
+}
+
+// The repeat rule lives in SQL, so only the database can prove it. This is the
+// browser-with-a-saved-password case: one wrong password sent over and over
+// costs one attempt, no matter how many times it arrives.
+func TestRepository_LoginThrottle_CountsARepeatedAttemptOnce(t *testing.T) {
+	db := repositoryDBForTest(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	key := "throttle-repeat-" + uuid.NewString()
+
+	for i := 0; i < 8; i++ {
+		if err := repo.RecordLoginFailure(ctx, key, "one-stale-password", 3, 15*time.Minute); err != nil {
+			t.Fatalf("record failure %d: %v", i+1, err)
+		}
+	}
+	until, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if !until.IsZero() {
+		t.Fatalf("the same wrong password locked the account (%s); it should count once", until)
+	}
+
+	// an empty fingerprint is "no password to compare" — those callers, like
+	// the password reset counter, must keep counting every attempt.
+	blank := "throttle-blank-" + uuid.NewString()
+	for i := 0; i < 8; i++ {
+		if err := repo.RecordLoginFailure(ctx, blank, "", 3, 15*time.Minute); err != nil {
+			t.Fatalf("record blank failure %d: %v", i+1, err)
+		}
+	}
+	locked, err := repo.LoginLockedUntil(ctx, blank)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if locked.IsZero() {
+		t.Fatal("attempts without a fingerprint never locked; they must not be treated as repeats of each other")
+	}
+}
+
+// Retention with no scheduler: the sweep rides along with the next failure,
+// whoever it belongs to. Without it a row for a handle that never logs in
+// successfully — a mistyped address is enough — keeps a fingerprint of a real
+// password for good.
+func TestRepository_LoginThrottle_SweepsRowsNothingTouchesAnyMore(t *testing.T) {
+	db := repositoryDBForTest(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	stale := "throttle-stale-" + uuid.NewString()
+	fresh := "throttle-fresh-" + uuid.NewString()
+
+	for _, key := range []string{stale, fresh} {
+		if err := repo.RecordLoginFailure(ctx, key, "some-password", 3, 15*time.Minute); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Exec(`UPDATE user_svc.login_throttle SET updated_at = now() - interval '2 days' WHERE email_hash = ?`, stale).Error; err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
+
+	// somebody else's failed login, later that week
+	if err := repo.RecordLoginFailure(ctx, "throttle-other-"+uuid.NewString(), "another-password", 3, 15*time.Minute); err != nil {
+		t.Fatalf("record unrelated failure: %v", err)
+	}
+
+	count := func(key string) int64 {
+		var n int64
+		if err := db.Raw(`SELECT count(*) FROM user_svc.login_throttle WHERE email_hash = ?`, key).Scan(&n).Error; err != nil {
+			t.Fatalf("count %s: %v", key, err)
+		}
+		return n
+	}
+	if count(stale) != 0 {
+		t.Fatal("a row nothing has touched for two days survived the sweep")
+	}
+	if count(fresh) != 1 {
+		t.Fatal("the sweep took a row that is still counting")
 	}
 }
