@@ -1,5 +1,5 @@
 import { select } from "./interactive";
-import { AuthStore, BrowserTopology } from "../types";
+import { AuthStore, BrowserTopology, LockoutPolicy } from "../types";
 
 // The one decision `add auth` cannot make for you: where refresh tokens and
 // rate-limit counters live. Recovery tokens always use the durable Postgres
@@ -61,5 +61,41 @@ export async function promptBrowserTopology(): Promise<BrowserTopology> {
     message: "How are the browser frontend and API deployed?",
     default: DEFAULT_BROWSER_TOPOLOGY,
     choices: TOPOLOGIES,
+  });
+}
+
+export const DEFAULT_LOCKOUT_POLICY: LockoutPolicy = "progressive";
+
+// The numbers in these descriptions are what the generated policy allows a
+// patient attacker per account, once the free attempts are gone. Both refuse
+// on their own and heal on their own; neither needs an admin to unlock.
+const LOCKOUT_POLICIES: { name: string; value: LockoutPolicy; description: string }[] = [
+  {
+    name: "Progressive delay",
+    value: "progressive",
+    description: "3 free attempts, then the wait doubles from 2s to a 15 minute ceiling — about 4 guesses an hour, but someone who forgot their password starts waiting early",
+  },
+  {
+    name: "Fixed lockout with a memory window",
+    value: "fixed",
+    description: "10 attempts, then locked for 5 minutes; the count clears after 15 quiet minutes — about 12 guesses an hour, and the shape AD/Entra admins already expect",
+  },
+];
+
+export function validateLockoutPolicy(raw: string): LockoutPolicy {
+  const value = raw.trim().toLowerCase();
+  if (!LOCKOUT_POLICIES.some((policy) => policy.value === value)) {
+    throw new Error(
+      `Lockout policy must be one of: ${LOCKOUT_POLICIES.map((policy) => policy.value).join(", ")} (got "${raw}")`
+    );
+  }
+  return value as LockoutPolicy;
+}
+
+export async function promptLockoutPolicy(): Promise<LockoutPolicy> {
+  return select<LockoutPolicy>({
+    message: "How should repeated failed logins be refused?",
+    default: DEFAULT_LOCKOUT_POLICY,
+    choices: LOCKOUT_POLICIES,
   });
 }

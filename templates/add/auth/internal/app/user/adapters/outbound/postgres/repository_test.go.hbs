@@ -120,7 +120,91 @@ func TestRepository_CreateUserWithIdentity_DuplicateEmailIsDetectable(t *testing
 	}
 }
 
-// The backoff is computed by Postgres inside one UPSERT, so this is the only
+// throttle records one failed attempt, hiding this project's lockout
+// parameters from the tests that do not care about them. lockAt is the
+// attempt number that should set a lock.
+{{#if fixedLockout}}func throttle(ctx context.Context, repo *Repository, key, attempt string, lockAt int) error {
+	return repo.RecordLoginFailure(ctx, key, attempt, lockAt, 5*time.Minute, 15*time.Minute)
+}
+{{else}}func throttle(ctx context.Context, repo *Repository, key, attempt string, lockAt int) error {
+	return repo.RecordLoginFailure(ctx, key, attempt, lockAt-1, 15*time.Minute)
+}
+{{/if}}
+{{#if fixedLockout}}// The counter is computed by Postgres inside one UPSERT, so this is the only
+// place it can be checked — a fake can agree with itself about arithmetic the
+// database would reject.
+func TestRepository_LoginThrottle_LocksAtTheThresholdThenClears(t *testing.T) {
+	db := repositoryDBForTest(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	key := "throttle-test-" + uuid.NewString()
+
+	// everything below the threshold leaves no lock behind
+	for i := 0; i < 2; i++ {
+		if err := throttle(ctx, repo, key, fmt.Sprintf("attempt-%d", i), 3); err != nil {
+			t.Fatalf("record failure %d: %v", i+1, err)
+		}
+		until, err := repo.LoginLockedUntil(ctx, key)
+		if err != nil {
+			t.Fatalf("read lock: %v", err)
+		}
+		if !until.IsZero() {
+			t.Fatalf("attempt %d is below the threshold but set a lock (%s)", i+1, until)
+		}
+	}
+
+	// the attempt that reaches it locks, for the configured span
+	if err := throttle(ctx, repo, key, "attempt-3", 3); err != nil {
+		t.Fatalf("record failure 3: %v", err)
+	}
+	until, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if remaining := time.Until(until); remaining < 4*time.Minute || remaining > 5*time.Minute {
+		t.Fatalf("expected a ~5 minute lock, got %s remaining", remaining)
+	}
+
+	// a successful login wipes the slate
+	if err := repo.ClearLoginFailures(ctx, key); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	cleared, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil || !cleared.IsZero() {
+		t.Fatalf("expected no lock after clearing, got %s (err %v)", cleared, err)
+	}
+}
+
+// The third knob: without it the count would only ever be cleared by a
+// successful login, so a typo from last week would still count towards today's
+// lock. now() is frozen inside this test's transaction, so the wait is
+// simulated by backdating the row rather than by sleeping.
+func TestRepository_LoginThrottle_CountExpiresAfterAQuietWindow(t *testing.T) {
+	db := repositoryDBForTest(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	key := "throttle-window-" + uuid.NewString()
+
+	if err := throttle(ctx, repo, key, "first-attempt", 2); err != nil {
+		t.Fatalf("record first failure: %v", err)
+	}
+	if err := db.Exec(`UPDATE user_svc.login_throttle SET updated_at = now() - interval '16 minutes' WHERE email_hash = ?`, key).Error; err != nil {
+		t.Fatalf("backdate the row: %v", err)
+	}
+	if err := throttle(ctx, repo, key, "second-attempt", 2); err != nil {
+		t.Fatalf("record second failure: %v", err)
+	}
+
+	until, err := repo.LoginLockedUntil(ctx, key)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if !until.IsZero() {
+		t.Fatalf("the failure after a quiet window counted as the second, not the first: locked until %s", until)
+	}
+}
+
+{{else}}// The backoff is computed by Postgres inside one UPSERT, so this is the only
 // place it can be checked — a fake can agree with itself about arithmetic the
 // database would reject.
 func TestRepository_LoginThrottle_BacksOffThenClears(t *testing.T) {
@@ -194,7 +278,7 @@ func TestRepository_LoginThrottle_RespectsTheCeiling(t *testing.T) {
 	}
 }
 
-// The repeat rule lives in SQL, so only the database can prove it. This is the
+{{/if}}// The repeat rule lives in SQL, so only the database can prove it. This is the
 // browser-with-a-saved-password case: one wrong password sent over and over
 // costs one attempt, no matter how many times it arrives.
 func TestRepository_LoginThrottle_CountsARepeatedAttemptOnce(t *testing.T) {
@@ -204,7 +288,7 @@ func TestRepository_LoginThrottle_CountsARepeatedAttemptOnce(t *testing.T) {
 	key := "throttle-repeat-" + uuid.NewString()
 
 	for i := 0; i < 8; i++ {
-		if err := repo.RecordLoginFailure(ctx, key, "one-stale-password", 3, 15*time.Minute); err != nil {
+		if err := throttle(ctx, repo, key, "one-stale-password", 3); err != nil {
 			t.Fatalf("record failure %d: %v", i+1, err)
 		}
 	}
@@ -220,7 +304,7 @@ func TestRepository_LoginThrottle_CountsARepeatedAttemptOnce(t *testing.T) {
 	// the password reset counter, must keep counting every attempt.
 	blank := "throttle-blank-" + uuid.NewString()
 	for i := 0; i < 8; i++ {
-		if err := repo.RecordLoginFailure(ctx, blank, "", 3, 15*time.Minute); err != nil {
+		if err := throttle(ctx, repo, blank, "", 3); err != nil {
 			t.Fatalf("record blank failure %d: %v", i+1, err)
 		}
 	}
@@ -245,7 +329,7 @@ func TestRepository_LoginThrottle_SweepsRowsNothingTouchesAnyMore(t *testing.T) 
 	fresh := "throttle-fresh-" + uuid.NewString()
 
 	for _, key := range []string{stale, fresh} {
-		if err := repo.RecordLoginFailure(ctx, key, "some-password", 3, 15*time.Minute); err != nil {
+		if err := throttle(ctx, repo, key, "some-password", 3); err != nil {
 			t.Fatalf("seed %s: %v", key, err)
 		}
 	}
@@ -254,7 +338,7 @@ func TestRepository_LoginThrottle_SweepsRowsNothingTouchesAnyMore(t *testing.T) 
 	}
 
 	// somebody else's failed login, later that week
-	if err := repo.RecordLoginFailure(ctx, "throttle-other-"+uuid.NewString(), "another-password", 3, 15*time.Minute); err != nil {
+	if err := throttle(ctx, repo, "throttle-other-"+uuid.NewString(), "another-password", 3); err != nil {
 		t.Fatalf("record unrelated failure: %v", err)
 	}
 

@@ -254,7 +254,7 @@ func (r *Repository) LoginLockedUntil(ctx context.Context, key string) (time.Tim
 }
 
 // RecordLoginFailure uses one SQL statement so concurrent attempts cannot
-// both read and write the same backoff value.
+// both read and write the same counter.
 //
 // attempt is an opaque fingerprint of the password that was submitted, or ""
 // for callers that have no password to fingerprint. Repeating the fingerprint
@@ -274,7 +274,38 @@ func (r *Repository) LoginLockedUntil(ctx context.Context, key string) (time.Tim
 // The current key is excluded from the sweep on purpose: the DELETE and the
 // UPSERT run on the same snapshot and cannot see each other, so letting them
 // meet on one row makes the outcome depend on which one wins.
-func (r *Repository) RecordLoginFailure(ctx context.Context, key, attempt string, freeAttempts int, maxLock time.Duration) error {
+{{#if fixedLockout}}//
+// A failure inside window continues the count, one after it starts over. With
+// window longer than the lock, sitting out a lock resets nothing: the next
+// wrong password trips it again.
+func (r *Repository) RecordLoginFailure(ctx context.Context, key, attempt string, maxAttempts int, lockFor, window time.Duration) error {
+	stale := window.Seconds()
+	err := tx.From(ctx, r.db).WithContext(ctx).Exec(`
+		WITH gc AS (
+			DELETE FROM user_svc.login_throttle
+			WHERE email_hash <> ? AND updated_at < now() - interval '1 day'
+		)
+		INSERT INTO user_svc.login_throttle AS t (email_hash, failures, last_attempt, locked_until, updated_at)
+		VALUES (?, 1, NULLIF(?, ''), NULL, now())
+		ON CONFLICT (email_hash) DO UPDATE SET
+			failures = CASE
+				WHEN t.last_attempt = ? THEN t.failures
+				WHEN t.updated_at < now() - make_interval(secs => ?) THEN 1
+				ELSE t.failures + 1
+			END,
+			locked_until = CASE
+				WHEN t.last_attempt = ? THEN t.locked_until
+				WHEN t.updated_at < now() - make_interval(secs => ?) THEN NULL
+				WHEN t.failures + 1 >= ? THEN now() + make_interval(secs => ?)
+				ELSE NULL
+			END,
+			last_attempt = NULLIF(?, ''),
+			updated_at = now()`,
+		key, key, attempt, attempt, stale, attempt, stale, maxAttempts, lockFor.Seconds(), attempt).Error
+	return persistenceError(err)
+}
+
+{{else}}func (r *Repository) RecordLoginFailure(ctx context.Context, key, attempt string, freeAttempts int, maxLock time.Duration) error {
 	err := tx.From(ctx, r.db).WithContext(ctx).Exec(`
 		WITH gc AS (
 			DELETE FROM user_svc.login_throttle
@@ -295,7 +326,7 @@ func (r *Repository) RecordLoginFailure(ctx context.Context, key, attempt string
 	return persistenceError(err)
 }
 
-func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
+{{/if}}func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
 	err := tx.From(ctx, r.db).WithContext(ctx).
 		Where("email_hash = ?", key).
 		Delete(&LoginThrottle{}).Error

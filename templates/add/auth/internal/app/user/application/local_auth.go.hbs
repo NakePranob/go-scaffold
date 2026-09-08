@@ -14,13 +14,35 @@ import (
 	"{{goModule}}/internal/shared/id"
 )
 
-// Failed-attempt policy. These values are security posture rather than
+{{#if fixedLockout}}// Failed-attempt policy, the shape enterprise directories use: a threshold, a
+// lock duration, and a window after which the count expires. These values are
+// security posture rather than per-environment tuning knobs.
+//
+// The window is longer than the lock on purpose. Sitting out a lock is not the
+// same as walking away: the count survives it, so the eleventh wrong password
+// locks again instead of buying another ten tries. Only fifteen quiet minutes
+// clear the slate, which also means yesterday's typos never shorten today's
+// allowance.
+const (
+	loginMaxAttempts = 10
+	loginLockFor     = 5 * time.Minute
+	loginCountWindow = 15 * time.Minute
+)
+{{else}}// Failed-attempt policy. These values are security posture rather than
 // per-environment tuning knobs. The first few failures cost nothing, then the
 // wait doubles up to a bounded maximum.
 const (
 	loginFreeAttempts = 3
 	loginMaxLock      = 15 * time.Minute
 )
+{{/if}}
+// recordFailure is where the policy above meets the counter. Callers hand it
+// one failed attempt and never repeat the parameter list.
+func (s *Service) recordFailure(ctx context.Context, key, attempt string) error {
+{{#if fixedLockout}}	return s.repo.RecordLoginFailure(ctx, key, attempt, loginMaxAttempts, loginLockFor, loginCountWindow)
+{{else}}	return s.repo.RecordLoginFailure(ctx, key, attempt, loginFreeAttempts, loginMaxLock)
+{{/if}}
+}
 
 // throttleKey namespaces the counter by purpose, so a locked login never
 // blocks the password reset that would fix it. The address is hashed because
@@ -94,7 +116,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error)
 	// not the account exists, preventing account enumeration through the counter.
 	attempt := s.attemptFingerprint(in.Password)
 	fail := func() (*AuthResult, error) {
-		if err := s.repo.RecordLoginFailure(ctx, key, attempt, loginFreeAttempts, loginMaxLock); err != nil {
+		if err := s.recordFailure(ctx, key, attempt); err != nil {
 			slog.Error("record login failure", "error", err)
 		}
 		return nil, errInvalidCredentials()

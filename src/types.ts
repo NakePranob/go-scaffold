@@ -28,6 +28,10 @@ export type AuthStore = "postgres" | "redis";
  */
 export type BrowserTopology = "same-origin" | "same-site" | "cross-site";
 
+// How a failed-login counter turns into a refusal. Both are per-account and
+// temporary; they differ in when the waiting starts and how it ends.
+export type LockoutPolicy = "progressive" | "fixed";
+
 /**
  * The architecture choices the generator can currently emit. Keep this
  * deliberately small: a config value is a promise that the templates and
