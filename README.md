@@ -482,10 +482,23 @@ Auth adds:
   `password_credentials`, and `external_identities`; a Google-only user can
   add a password through `POST /users/me/identities/local` without creating a
   second account
-- failed-login lockout and user-session management
+- failed-login lockout in either of two shapes (`--lockout`), both ignoring a
+  repeated wrong password so a stale saved credential cannot lock the owner
+  out — and user-session management
 - MFA endpoints and configuration hooks
 - internal/app/user, auth middleware, cmd/seed, migrations, and OpenAPI
   documents when OpenAPI is enabled
+
+The --lockout choice controls what repeated failed logins cost:
+
+| --lockout | Policy | A patient attacker gets |
+|---|---|---|
+| progressive (default) | 3 free attempts, then the wait doubles from 2s to a 15 minute ceiling | ~4 guesses/hour |
+| fixed | 10 attempts, then a 5 minute lock; the count clears after 15 quiet minutes | ~12 guesses/hour |
+
+Both are per-account, temporary, and need no admin to unlock. `fixed` is the
+shape AD/Entra administrators expect and is kinder to someone who simply
+forgot their password; `progressive` starts costing time sooner.
 
 The --store choice controls refresh-token storage and rate-limit counters:
 

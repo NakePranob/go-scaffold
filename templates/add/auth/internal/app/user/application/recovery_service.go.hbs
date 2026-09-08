@@ -19,7 +19,8 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	if s.throttled(ctx, key) {
 		return nil
 	}
-	if err := s.repo.RecordLoginFailure(ctx, key, loginFreeAttempts, loginMaxLock); err != nil {
+	// no password to fingerprint here, so every request counts
+	if err := s.recordFailure(ctx, key, ""); err != nil {
 		slog.Error("record password reset attempt", "error", err)
 	}
 
