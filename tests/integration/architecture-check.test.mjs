@@ -221,3 +221,28 @@ test("check rejects feature adapters left in cmd/api", () => {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("check accepts an external test package beside composition.go, and still rejects implementation", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-root-test-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "generate", "module", "orders", "--full", "--defaults");
+    const moduleDir = path.join(project, "internal", "app", "order");
+
+    // The only place Go lets you test a composition root end to end. It is
+    // imported by nothing and adds no dependency edge.
+    writeFileSync(
+      path.join(moduleDir, "composition_test.go"),
+      'package order_test\n\nimport (\n\t"testing"\n\n\t_ "example.com/sample/internal/app/order"\n)\n\nfunc TestComposes(t *testing.T) {}\n'
+    );
+    assert.doesNotThrow(() => run(project, "check"));
+
+    // A second implementation file in the same package is still a breach —
+    // that is what the rule is for.
+    writeFileSync(path.join(moduleDir, "helpers.go"), "package order\n");
+    assert.throws(() => run(project, "check"), /root module package may only contain composition\.go/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

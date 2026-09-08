@@ -208,7 +208,11 @@ function checkModule(projectDir: string, config: ProjectConfig, name: string, mo
   const rootGoFiles = fs.existsSync(moduleDir)
     ? fs
         .readdirSync(moduleDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".go"))
+        // `_test.go` excluded: the rule is about where implementation lives,
+        // and `package <mod>_test` beside composition.go is the only place Go
+        // lets you test the composition root end to end. It is imported by
+        // nothing and adds no dependency edge, so it is not a layout breach.
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".go") && !entry.name.endsWith("_test.go"))
         .map((entry) => path.join(moduleDir, entry.name))
     : [];
   for (const file of rootGoFiles) {
