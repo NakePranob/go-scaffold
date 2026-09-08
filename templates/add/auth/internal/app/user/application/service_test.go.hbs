@@ -351,8 +351,14 @@ func (f *fakeRepo) LoginLockedUntil(_ context.Context, key string) (time.Time, e
 	return f.lockedUntil[key], nil
 }
 
-func (f *fakeRepo) RecordLoginFailure(_ context.Context, key, attempt string, freeAttempts int, maxLock time.Duration) error {
-	if f.lockedUntil == nil {
+// lockoutAfter is how many distinct wrong passwords it takes to be locked out
+// under this project's policy, so the tests below read the same either way.
+{{#if fixedLockout}}const lockoutAfter = loginMaxAttempts
+{{else}}const lockoutAfter = loginFreeAttempts + 1
+{{/if}}
+{{#if fixedLockout}}func (f *fakeRepo) RecordLoginFailure(_ context.Context, key, attempt string, maxAttempts int, lockFor, _ time.Duration) error {
+{{else}}func (f *fakeRepo) RecordLoginFailure(_ context.Context, key, attempt string, freeAttempts int, maxLock time.Duration) error {
+{{/if}}	if f.lockedUntil == nil {
 		f.lockedUntil = map[string]time.Time{}
 	}
 	if f.lastAttempt == nil {
@@ -365,14 +371,19 @@ func (f *fakeRepo) RecordLoginFailure(_ context.Context, key, attempt string, fr
 	}
 	f.lastAttempt[key] = attempt
 	f.failures[key]++
-	if f.failures[key] > freeAttempts {
+{{#if fixedLockout}}	// the expiry window is left to the repository test: nothing here waits
+	// fifteen minutes, and Postgres is what computes it
+	if f.failures[key] >= maxAttempts {
+		f.lockedUntil[key] = time.Now().Add(lockFor)
+	}
+{{else}}	if f.failures[key] > freeAttempts {
 		lock := time.Duration(1<<uint(f.failures[key]-freeAttempts-1)) * time.Second
 		if lock > maxLock {
 			lock = maxLock
 		}
 		f.lockedUntil[key] = time.Now().Add(lock)
 	}
-	return nil
+{{/if}}	return nil
 }
 
 func (f *fakeRepo) ClearLoginFailures(_ context.Context, key string) error {
@@ -969,8 +980,8 @@ func TestService_Login_LocksTheAccountAfterRepeatedFailures(t *testing.T) {
 		return LoginInput{Email: "a@example.com", Password: fmt.Sprintf("wrong-%d", n)}
 	}
 
-	// the free attempts answer "wrong password", not "locked"
-	for i := 0; i < loginFreeAttempts; i++ {
+	// everything below the limit answers "wrong password", not "locked"
+	for i := 0; i < lockoutAfter-1; i++ {
 		if _, err := svc.Login(context.Background(), guess(i)); err == nil {
 			t.Fatalf("attempt %d: expected a failure", i+1)
 		} else if code(err) != "AUTH_INVALID_CREDENTIALS" {
@@ -979,11 +990,11 @@ func TestService_Login_LocksTheAccountAfterRepeatedFailures(t *testing.T) {
 	}
 
 	// the next one trips the lock...
-	if _, err := svc.Login(context.Background(), guess(loginFreeAttempts)); code(err) != "AUTH_INVALID_CREDENTIALS" {
+	if _, err := svc.Login(context.Background(), guess(lockoutAfter)); code(err) != "AUTH_INVALID_CREDENTIALS" {
 		t.Fatalf("the attempt that trips the lock still answers as a bad password, got %s", code(err))
 	}
 	// ...and everything after it is refused before any password is checked
-	if _, err := svc.Login(context.Background(), guess(loginFreeAttempts+1)); code(err) != "AUTH_TOO_MANY_ATTEMPTS" {
+	if _, err := svc.Login(context.Background(), guess(lockoutAfter+1)); code(err) != "AUTH_TOO_MANY_ATTEMPTS" {
 		t.Fatalf("expected AUTH_TOO_MANY_ATTEMPTS once locked, got %s", code(err))
 	}
 }
@@ -999,7 +1010,7 @@ func TestService_Login_CountsOneWrongPasswordOnce(t *testing.T) {
 	svc := newTestService(repo, newFakeTokenStore())
 	saved := LoginInput{Email: "a@example.com", Password: "last-years-password"}
 
-	for i := 0; i < loginFreeAttempts*4; i++ {
+	for i := 0; i < lockoutAfter*4; i++ {
 		if _, err := svc.Login(context.Background(), saved); code(err) != "AUTH_INVALID_CREDENTIALS" {
 			t.Fatalf("replay %d: one stale password should never lock, got %s", i+1, code(err))
 		}
@@ -1007,7 +1018,7 @@ func TestService_Login_CountsOneWrongPasswordOnce(t *testing.T) {
 
 	// passwords it has not seen are new material: enough of those still lock,
 	// and the lock then covers the replayed one too
-	for i := 0; i < loginFreeAttempts; i++ {
+	for i := 0; i < lockoutAfter; i++ {
 		if _, err := svc.Login(context.Background(), LoginInput{
 			Email: "a@example.com", Password: fmt.Sprintf("guess-%d", i),
 		}); err == nil {

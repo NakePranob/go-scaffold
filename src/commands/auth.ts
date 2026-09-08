@@ -5,7 +5,7 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { authFiles } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
-import { AuthStore, BrowserTopology } from "../types";
+import { AuthStore, BrowserTopology, LockoutPolicy } from "../types";
 import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchConfigForSMTP, patchMainGoForWorker } from "../utils/platform-patcher";
 import { MAIL_CLIENT_ONLY } from "../templates/worker-manifest";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
@@ -13,7 +13,7 @@ import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
-import { DEFAULT_BROWSER_TOPOLOGY, validateBrowserTopology } from "../prompts/auth-wizard";
+import { DEFAULT_BROWSER_TOPOLOGY, DEFAULT_LOCKOUT_POLICY, validateBrowserTopology, validateLockoutPolicy } from "../prompts/auth-wizard";
 import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
@@ -56,10 +56,12 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 export async function addAuth(
   store: AuthStore = "postgres",
   projectDir: string = process.cwd(),
-  browserTopology: BrowserTopology = DEFAULT_BROWSER_TOPOLOGY
+  browserTopology: BrowserTopology = DEFAULT_BROWSER_TOPOLOGY,
+  lockout: LockoutPolicy = DEFAULT_LOCKOUT_POLICY
 ): Promise<void> {
   const config = readConfig(projectDir);
   const browser = validateBrowserTopology(browserTopology);
+  const lockoutPolicy = validateLockoutPolicy(lockout);
 
   // No longer a prerequisite. Without a worker the verification and reset mail
   // goes out inline instead of through a queue — a real trade (those two
@@ -89,6 +91,10 @@ export async function addAuth(
     goModule: config.goModule,
     redis: store === "redis",
     worker,
+    // one flag rather than the policy name: the templates only ever ask
+    // "which shape", and a second policy name in Handlebars would need an
+    // equality helper the renderer does not have
+    fixedLockout: lockoutPolicy === "fixed",
   });
 
   const migrationsDir = path.join(projectDir, "migrations");
