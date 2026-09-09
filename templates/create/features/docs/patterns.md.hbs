@@ -255,9 +255,10 @@ business logic — same spirit as `generate module`'s placeholder fields.
 A `crud`-surface module is generated with this already wired; a module that
 grows a list later copies the same four steps. Nothing about it is magic.
 
-**1. Parse at the boundary.** `pagination.Parse(c)` returns `Limit`, `Offset`
-and `Search` (`?q=`, trimmed and capped at 100 runes). Read the filters this
-endpoint owns off the query string beside it. An unreadable filter value means
+**1. Parse at the boundary.** `pagination.Parse(c)` returns `Limit`, `Offset`,
+`Search` (`?q=`, trimmed and capped at 100 runes) and the requested order —
+`Sort` (`?sort=`) and `Desc` (`?order=desc`). Read the filters this endpoint
+owns off the query string beside them. An unreadable filter value means
 *no* filter, not `400` — a list narrows on a best effort.
 
 **2. One filter struct, in `ports/`.** `ports.ListFilter` travels whole through
@@ -270,6 +271,8 @@ everything".
 ```go
 type ListFilter struct {
     Search string
+    Sort   string
+    Desc   bool
     Limit  int
     Offset int
     // Status, OwnerID, DateFrom … whatever this module actually filters by.
@@ -288,21 +291,47 @@ accumulate on a `*gorm.DB` value, so a count reusing the page's query object
 silently inherits its `LIMIT`. Use `dbq.Search(q, term, cols...)` for a
 contains-search over columns on the same table, and `dbq.LikePattern(term)`
 when the search spans a subquery or a join. Both escape `%` and `_`, so
-someone typing `50%` searches for `50%` instead of matching every row. Always
-keep a tiebreaker in the sort (`ORDER BY created_at DESC, id`) or two rows
-written in the same instant can swap between page 1 and page 2 — showing one
-twice and hiding the other.
+someone typing `50%` searches for `50%` instead of matching every row.
 
-The generated `FindAll` calls `dbq.Search` with no columns, which is a no-op:
-`?q=` is accepted and ignored until you name the columns this list is searched
-by. That TODO is the one line standing between the scaffold and a working
-search.
+The order is a `dbq.Sort` declared beside `FindAll`, not an `Order` string
+written per query:
+
+```go
+var sortable = dbq.Sort{
+    Columns:  map[string]string{"name": "name", "created_at": "created_at"},
+    Default:  "created_at desc",
+    Tiebreak: "id",
+}
+...
+q = q.Order(sortable.OrderBy(filter.Sort, filter.Desc))
+```
+
+`Columns` maps the names the API accepts to the SQL each one means and is the
+whole of what can reach the clause — `ORDER BY` takes no bound parameter, so a
+`?sort=` that is not one of its keys falls back to `Default` rather than being
+interpolated. `OrderBy` adds what every list needs and nobody should have to
+remember: `Tiebreak` on the end (without it two rows equal on the sorted column
+swap between page 1 and page 2, showing one twice and hiding the other) and
+`NULLS LAST` in both directions (a row with no value is missing an answer, not
+holding the largest one). A table already unique on its order — roles, keyed by
+`code` — sets `Tiebreak` to that column and leaves `Default` empty.
+
+A column the client sees but this table does not hold, such as a primary email
+one table over, belongs in `Columns` as a subquery rather than a join: a join
+would need its own `SELECT` list to keep `Find` scanning the right row.
+
+The generated `FindAll` calls `dbq.Search` with no columns and carries an empty
+`Columns` map, both no-ops: `?q=` and `?sort=` are accepted and ignored until
+you name the columns this list is searched and ordered by. Those two TODOs are
+the lines standing between the scaffold and a working list.
 
 **4. Respond with the shared envelope.** `p.ResponseWithTotal(out, total)` —
 `{ data, limit, offset, total }`, the same shape for every resource. Anything
 extra is a named key added to that map and documented in the endpoint's
-OpenAPI file. Reuse `common/parameters.yaml#/Search`, `#/Limit` and `#/Offset`
-for the query parameters.
+OpenAPI file. Reuse `common/parameters.yaml#/Search`, `#/Limit`, `#/Offset`,
+`#/Sort` and `#/Order` for the query parameters. `#/Sort` carries no enum —
+which columns an endpoint accepts is a sentence in its own response
+description, the same way `q` says what it matches.
 
 Counts that answer a *different* question from the page — "how many are open
 and how many are closed, whichever tab is showing" — belong beside the

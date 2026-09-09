@@ -22,9 +22,11 @@ get:
     - $ref: '../common/parameters.yaml#/Limit'
     - $ref: '../common/parameters.yaml#/Offset'
     - $ref: '../common/parameters.yaml#/Search'
+    - $ref: '../common/parameters.yaml#/Sort'
+    - $ref: '../common/parameters.yaml#/Order'
   responses:
     "200":
-      description: "paginated list; narrow it with ?q= and whatever filters this module adds"
+      description: "paginated list; narrow it with ?q= and whatever filters this module adds, and order it with ?sort= once the repository's dbq.Sort names a column"
       content:
         application/json:
           schema:

@@ -157,7 +157,13 @@ func (h *Handler) adminListUsers(c *gin.Context) {
 	p := pagination.Parse(c)
 	// One struct all the way down, so a filter added later is a field on
 	// ports.ListFilter and not a new argument on the three signatures below.
-	filter := ports.ListFilter{Search: p.Search, Limit: p.Limit, Offset: p.Offset}
+	filter := ports.ListFilter{
+		Search: p.Search,
+		Sort:   p.Sort,
+		Desc:   p.Desc,
+		Limit:  p.Limit,
+		Offset: p.Offset,
+	}
 	items, total, err := h.svc.List(c.Request.Context(), filter)
 	if err != nil {
 		c.Error(toHTTPError(err))

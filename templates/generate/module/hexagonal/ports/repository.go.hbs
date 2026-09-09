@@ -21,6 +21,11 @@ type ListFilter struct {
 	// Search is ?q= as shared/pagination parsed it, empty when the caller
 	// sent none.
 	Search string
+	// Sort is ?sort= and Desc is ?order=desc, both as shared/pagination parsed
+	// them. Which column names are accepted is the repository's to say — see
+	// the dbq.Sort beside its FindAll.
+	Sort   string
+	Desc   bool
 	Limit  int
 	Offset int
 }

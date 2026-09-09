@@ -35,6 +35,16 @@ test("create ships the search helper and its own test", (t) => {
   const pagination = read(project, "internal", "shared", "pagination", "pagination.go");
   assert.match(pagination, /Search string/);
   assert.match(pagination, /c\.Query\("q"\)/);
+  // The order is parsed in the same place as the page, so every list spells
+  // it the same way.
+  assert.match(pagination, /c\.Query\("sort"\)/);
+  assert.match(pagination, /c\.Query\("order"\) == "desc"/);
+
+  // ORDER BY takes no bound parameter, so the name off the request is resolved
+  // against a whitelist instead of being interpolated.
+  const dbq = read(project, "internal", "shared", "dbq", "dbq.go");
+  assert.match(dbq, /type Sort struct/);
+  assert.match(dbq, /func \(s Sort\) OrderBy\(sort string, desc bool\) string/);
 
   // dbq_test.go builds SQL with a dry-run session, so it needs no database and
   // runs wherever `go test ./...` does.
@@ -54,11 +64,17 @@ test("a crud module lists through one filter struct and answers a total", (t) =>
   assert.match(repository, /dbq\.Search\(q, filter\.Search/);
   // The count must not be taken from the query that carries the page's LIMIT.
   assert.match(repository, /matching\(\)\.Count\(&total\)/);
-  // A page without a tiebreaker can show one row twice and hide another.
-  assert.match(repository, /Order\("created_at desc, id"\)/);
+  // A page without a tiebreaker can show one row twice and hide another, and
+  // the default order is the one dbq.Sort falls back to.
+  assert.match(repository, /var sortable = dbq\.Sort\{/);
+  assert.match(repository, /Default:\s+"created_at desc"/);
+  assert.match(repository, /Tiebreak:\s+"id"/);
+  assert.match(repository, /sortable\.OrderBy\(filter\.Sort, filter\.Desc\)/);
 
   const handler = read(project, "internal", "app", "invoice", "adapters", "inbound", "http", "handler.go");
-  assert.match(handler, /ports\.ListFilter\{Search: p\.Search/);
+  assert.match(handler, /ports\.ListFilter\{[\s\S]*Search: p\.Search/);
+  assert.match(handler, /Sort:\s+p\.Sort/);
+  assert.match(handler, /Desc:\s+p\.Desc/);
   assert.match(handler, /p\.ResponseWithTotal\(out, total\)/);
 
   go(project, "mod", "tidy");
@@ -73,7 +89,7 @@ test("generate method --get-mode all patches in the same filter contract", (t) =
   runCLI(project, "generate", "method", "invoice", "overdue", "--type", "get", "--get-mode", "all");
 
   const handler = read(project, "internal", "app", "invoice", "adapters", "inbound", "http", "handler.go");
-  assert.match(handler, /func \(h \*Handler\) overdue\(c \*gin\.Context\) \{[\s\S]*ports\.ListFilter\{Search: p\.Search/);
+  assert.match(handler, /func \(h \*Handler\) overdue\(c \*gin\.Context\) \{[\s\S]*ports\.ListFilter\{[\s\S]*Sort:\s+p\.Sort/);
   assert.match(handler, /items, total, err := h\.svc\.Overdue\(c\.Request\.Context\(\), filter\)/);
 
   const service = read(project, "internal", "app", "invoice", "application", "service.go");
@@ -96,6 +112,15 @@ test("the auth and rbac lists use the same filter contract", (t) => {
   assert.match(rolePorts, /FindAll\(context\.Context, ListFilter\) \(\[\]domain\.Role, int64, error\)/);
   const roleRepository = read(project, "internal", "app", "role", "adapters", "outbound", "postgres", "repository.go");
   assert.match(roleRepository, /dbq\.Search\(q, filter\.Search, "code", "name"\)/);
+
+  // The admin user list is the one generated screen that sorts, so it names
+  // the columns it accepts rather than leaving the map for an engineer.
+  const userRepository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "repository.go");
+  assert.match(userRepository, /var sortable = dbq\.Sort\{/);
+  assert.match(userRepository, /"name":\s+"name"/);
+  assert.match(userRepository, /sortable\.OrderBy\(filter\.Sort, filter\.Desc\)/);
+  const userHandler = read(project, "internal", "app", "user", "adapters", "inbound", "http", "handler.go");
+  assert.match(userHandler, /Sort:\s+p\.Sort/);
 
   go(project, "mod", "tidy");
   go(project, "test", "./...");
