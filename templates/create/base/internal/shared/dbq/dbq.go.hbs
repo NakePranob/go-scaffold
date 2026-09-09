@@ -45,3 +45,51 @@ func Search(db *gorm.DB, term string, cols ...string) *gorm.DB {
 	// narrowing it.
 	return db.Where("("+strings.Join(conds, " OR ")+")", args...)
 }
+
+// Sort is a list endpoint's ordering contract: the columns it accepts, the
+// order it has before anyone asks for one, and the column that breaks ties.
+// Declare it once per repository, beside the FindAll that uses it.
+type Sort struct {
+	// Columns maps the names the API accepts to the SQL each one means, and is
+	// the whole of what can reach the clause: ORDER BY takes no bound
+	// parameter, so a ?sort= that is not a key here is never interpolated. A
+	// value the table does not hold — an address one table over — is a
+	// subquery rather than a join, which would need its own SELECT list to
+	// keep Find scanning the right row.
+	Columns map[string]string
+	// Default is the order for a request that asked for nothing Columns knows,
+	// written without the tiebreaker: OrderBy adds it.
+	Default string
+	// Tiebreak is a column unique enough to page by, usually the primary key.
+	// Without it two rows equal on the sorted column can swap places between
+	// page 1 and page 2, showing one twice and hiding the other. Leave it empty
+	// only when Columns and Default are unique on their own.
+	Tiebreak string
+}
+
+// OrderBy resolves what the request asked for into an ORDER BY clause:
+//
+//	q = q.Order(thingSort.OrderBy(filter.Sort, filter.Desc))
+//
+// Sorted columns get NULLS LAST in both directions, because a row with no
+// value is missing an answer rather than holding the largest one — the account
+// that has never signed in belongs at the bottom whichever way the column is
+// pointed. It is a no-op on a column that cannot be null.
+func (s Sort) OrderBy(sort string, desc bool) string {
+	clause := s.Default
+	if col, ok := s.Columns[sort]; ok {
+		dir := "asc"
+		if desc {
+			dir = "desc"
+		}
+		clause = col + " " + dir + " NULLS LAST"
+	}
+	switch {
+	case s.Tiebreak == "":
+		return clause
+	case clause == "":
+		return s.Tiebreak
+	default:
+		return clause + ", " + s.Tiebreak
+	}
+}

@@ -325,13 +325,19 @@ CRUD modules contain the starter list/get/create/update/delete methods. Lean
 modules keep the endpoint surface small so it can be extended with
 generate method.
 
-Every generated list endpoint reads `?limit=&offset=&q=`, passes one
-`ports.ListFilter` from handler to application to repository, and answers the
-page beside the total the filter matched. The lists `add auth` and `add rbac`
-own use the same contract. `FindAll` calls `dbq.Search` with no columns, so
-`?q=` is accepted and ignored until you name the columns to search in
+Every generated list endpoint reads `?limit=&offset=&q=&sort=&order=`, passes
+one `ports.ListFilter` from handler to application to repository, and answers
+the page beside the total the filter matched. The lists `add auth` and
+`add rbac` own use the same contract. `FindAll` calls `dbq.Search` with no
+columns and carries a `dbq.Sort` with no columns either, so `?q=` and `?sort=`
+are accepted and ignored until you name them in
 `adapters/outbound/postgres/repository.go`; add further filters as fields on
 `ListFilter` rather than as parameters.
+
+`dbq.Sort` is why a sort name off the request never reaches the SQL — `ORDER
+BY` takes no bound parameter, so only a key of its `Columns` map is ever
+interpolated — and it adds the tiebreaker and `NULLS LAST` that every stable
+paged list needs.
 
 CQRS modules additionally contain:
 
@@ -612,11 +618,11 @@ my-api/
 │   │   ├── config/                 # environment configuration
 │   │   ├── apperror/               # consistent application errors
 │   │   ├── dberr/                  # database error classification
-│   │   ├── dbq/                    # escaped contains-search for list filters
+│   │   ├── dbq/                    # escaped contains-search and whitelisted sort
 │   │   ├── httpx/                  # HTTP parsing and binding helpers
 │   │   ├── id/                     # UUID generation
 │   │   ├── middleware/             # request ID, logging, errors, CORS
-│   │   ├── pagination/             # pagination and ?q= parsing, responses
+│   │   ├── pagination/             # ?limit/offset/q/sort/order parsing, responses
 │   │   └── tx/                     # transaction context helpers
 │   └── app/                        # empty until generate module is used
 ├── migrations/                     # embedded, versioned SQL migrations

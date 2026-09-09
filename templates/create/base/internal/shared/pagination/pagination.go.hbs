@@ -24,10 +24,17 @@ type Params struct {
 	// Search is ?q= trimmed, empty when the caller sent none — so a repository
 	// can pass it straight to dbq.Search, which no-ops on an empty term.
 	Search string
+	// Sort is ?sort=, the column the client asked to be ordered by, and Desc
+	// is ?order=desc. Nothing is validated here on purpose: which names an
+	// endpoint accepts is its repository's to say, and dbq.Sort is where that
+	// whitelist is applied — a name it does not know falls back to the list's
+	// own order rather than failing the request.
+	Sort string
+	Desc bool
 }
 
-// Parse reads ?limit=&offset=&q= off the request so every feature parses the
-// same way.
+// Parse reads ?limit=&offset=&q=&sort=&order= off the request so every feature
+// parses the same way.
 func Parse(c *gin.Context) Params {
 	p := Params{Limit: defaultLimit}
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
@@ -47,6 +54,10 @@ func Parse(c *gin.Context) Params {
 		}
 		p.Search = q
 	}
+	p.Sort = strings.TrimSpace(c.Query("sort"))
+	// Ascending unless asked otherwise: one spelling of "the other way", and
+	// anything else read as the default rather than refused.
+	p.Desc = c.Query("order") == "desc"
 	return p
 }
 

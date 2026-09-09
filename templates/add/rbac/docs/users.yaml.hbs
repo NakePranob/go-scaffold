@@ -7,9 +7,14 @@ get:
     - $ref: '../common/parameters.yaml#/Limit'
     - $ref: '../common/parameters.yaml#/Offset'
     - $ref: '../common/parameters.yaml#/Search'
+    - $ref: '../common/parameters.yaml#/Sort'
+    - $ref: '../common/parameters.yaml#/Order'
   responses:
     "200":
-      description: "paginated list; `q` matches name and primary email"
+      description: >-
+        paginated list; `q` matches name and primary email, and `sort` takes
+        name, email, role or created_at — anything else is the default order,
+        newest account first
       content:
         application/json:
           schema:

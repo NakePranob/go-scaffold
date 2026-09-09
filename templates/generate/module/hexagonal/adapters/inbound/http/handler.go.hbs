@@ -111,7 +111,13 @@ func (h *Handler) list(c *gin.Context) {
 	// One struct all the way down, so this module's own filters are read off
 	// the query string here and added as fields on ports.ListFilter — never as
 	// extra arguments on the three signatures below.
-	filter := ports.ListFilter{Search: p.Search, Limit: p.Limit, Offset: p.Offset}
+	filter := ports.ListFilter{
+		Search: p.Search,
+		Sort:   p.Sort,
+		Desc:   p.Desc,
+		Limit:  p.Limit,
+		Offset: p.Offset,
+	}
 {{#if cqrs}}
 	items, total, err := h.queries.List(c.Request.Context(), filter)
 {{else}}

@@ -16,3 +16,13 @@ Search:
   in: query
   description: "free-text search; which columns it matches is documented per endpoint"
   schema: { type: string, maxLength: 100 }
+Sort:
+  name: sort
+  in: query
+  description: "column to order by; which columns are accepted is documented per endpoint, and anything else is read as that list's own default order"
+  schema: { type: string }
+Order:
+  name: order
+  in: query
+  description: "direction for `sort`; ascending unless this is `desc`. Rows with no value sort last either way"
+  schema: { type: string, enum: [asc, desc], default: asc }
