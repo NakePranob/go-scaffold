@@ -39,7 +39,12 @@ ENV_FILE ?= .env
 
 .PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
-run:
+# migrate-up first, because cmd/api refuses to boot against a database that is
+# behind the migrations it embeds. The schema is the migrations' in every
+# environment — this is the step that would otherwise be a db.AutoMigrate
+# bootstrap, except it applies the same SQL production gets, constraints and
+# seeded rows and all.
+run: migrate-up
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/api
 
 build:

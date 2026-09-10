@@ -2067,16 +2067,44 @@ step(
     if (sharedRedisUrl) envContent = envContent.replace(/REDIS_URL=.*/, `REDIS_URL=${sharedRedisUrl}`);
     writeFileSync(path.join(fullApp, ".env"), envContent);
 
-    const beforeApi = startMakeRun(fullApp, "migration-before", false);
-    execFileSync("sleep", ["3"]);
-    const beforeReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
-    stopApi(beforeApi);
-    if (beforeReady !== "000") {
-      throw new Error(`expected the server to refuse to boot (READYZ=000), got: ${beforeReady}`);
+    // The binary directly, not `make run`: that target depends on migrate-up
+    // now, which is the point of it — a developer cannot start the app against
+    // a database they forgot to migrate. What is under test here is the
+    // binary's own guard, so this launches it the way a deployment does, past
+    // the Makefile.
+    // The binary directly, not `make run`: that target depends on migrate-up
+    // now, which is the whole point of it — a developer cannot start the app
+    // against a database they forgot to migrate. What is under test here is
+    // the binary's own guard, so this launches it the way a deployment does,
+    // past the Makefile.
+    //
+    // spawnSync, not a background process: refusing to boot means exiting, so
+    // there is nothing to poll for and nothing to stop afterwards.
+    const beforeBinary = path.join(fullApp, `.smoke-api-${smoke.runID}-migration-before`);
+    run("go", ["build", "-o", beforeBinary, "./cmd/api"], fullApp);
+    const before = spawnSync(beforeBinary, [], {
+      cwd: fullApp,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...runtimeEnv(fullDb, {
+          APP_ENV: "production",
+          JWT_SECRET: "smoke-test-secret-01234567890123456789",
+          SMTP_HOST: "localhost",
+          COOKIE_SECURE: "true",
+          CORS_ALLOWED_ORIGINS: "https://frontend.example",
+          GOOGLE_OAUTH_REDIRECT_URI: "https://frontend.example/oauth/callback/google",
+          ...(sharedRedisUrl ? { REDIS_URL: sharedRedisUrl } : {}),
+        }),
+      },
+    });
+    rmSync(beforeBinary, { force: true });
+    if (before.status === 0) {
+      throw new Error(`expected the server to refuse to boot on an unmigrated database, it exited 0:\n${before.stdout}${before.stderr}`);
     }
-    const beforeLog = readFileSync(logPath("migration-before"), "utf8");
+    const beforeLog = `${before.stdout}${before.stderr}`;
     if (!beforeLog.includes("migration version check")) {
-      throw new Error(`expected a "migration version check" error in the boot log, got:\n${beforeLog}`);
+      throw new Error(`expected a "migration version check" error, got:\n${beforeLog}`);
     }
 
     const migratedDSN = fullDb.dbDsn;
