@@ -81,7 +81,7 @@ export function patchConfigForAuth(configGoPath: string): void {
 
 // patchMainGoForAuth wires the user domain into cmd/api: its import, a
 // queue.Client (needed for the forgot-password email — cmd/api itself never
-// enqueued anything before this), its models in the development bootstrap, a
+// enqueued anything before this), its models in a legacy development bootstrap, a
 // prod guard against the still-default JWT secret, and its route
 // registration (the domain's own Handler.Register splits /auth public vs
 // /users protected — main.go doesn't need to know that split, same

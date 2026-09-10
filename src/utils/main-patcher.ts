@@ -43,10 +43,11 @@ function mainGoLines(patch: RoutePatch) {
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
     modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/adapters/outbound/postgres"`,
-    // Development schema bootstrap creates tables but not the schema they live in — see
-    // the comment on go-scaffold:schemas in main.go.hbs. One Exec per schema,
+    // Legacy only: projects generated before the development AutoMigrate
+    // bootstrap was removed still have the schema marker, and their tables are
+    // created by GORM rather than by the migration. One Exec per schema,
     // guarded by its own sentinel so two modules sharing a schema name only
-    // ever produce one line (not expected today, but cheap to keep safe).
+    // ever produce one line.
     schemaLines: [
       `if err := db.Exec("CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}").Error; err != nil {`,
       `\treturn fmt.Errorf("create schema ${patch.schemaName}: %w", err)`,

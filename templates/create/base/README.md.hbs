@@ -83,7 +83,7 @@ go mod tidy
 {{#if worker}}{{#if (eq queue "river")}}make river-migrate                 # create River's job tables before queued mail
 {{else}}# start Redis and set REDIS_URL before running the worker
 {{/if}}{{/if}}
-make run                           # APP_ENV=development enables the convenience schema bootstrap
+make run                           # needs `make migrate-up` first — the schema is the migrations'
 ```
 
 `make run`/`make test`/`make migrate-up`/`make migrate-down` load `.env` if
@@ -154,9 +154,9 @@ migrate -path migrations -database "$DB_DSN" down 1
 migrate create -ext sql -dir migrations -seq=false add_something   # same as `go-scaffold generate migration`, if you'd rather not use the CLI
 ```
 
-**dev:** `APP_ENV=development` enables the convenience table bootstrap.
-**prod:** `APP_ENV=production` never bootstraps or mutates the schema; run
-`migrate up` as a separate deploy step — versioned and rollback-capable.
+**Every environment:** the schema comes from `migrations/`. Nothing
+bootstraps or mutates it at startup; run `migrate up` as its own step —
+versioned and rollback-capable — and the app refuses to boot until you have.
 
 In production, the app checks the DB's applied migration version
 against the migration files baked into the binary (embedded at build time)
@@ -306,7 +306,7 @@ Before the first deploy of a release:
 
 | | |
 |---|---|
-| `APP_ENV` | `production` | production disables schema bootstrap and requires the applied migration version |
+| `APP_ENV` | `production` | production hides internal error details; the applied migration version is required in every environment |
 | migrations | `migrate -path migrations -database "$DB_DSN" up` as its own step, before the new binaries roll |
 | `TRUSTED_PROXIES` | the CIDRs of your ingress, or the auth rate limiter keys on a header anyone can send |
 | `COOKIE_SECURE` | `true` · `COOKIE_SAMESITE=none` as well if your frontend is on a different site |

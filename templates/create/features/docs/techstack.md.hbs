@@ -40,8 +40,9 @@
 {{/if}}{{#if worker}}{{#if (eq queue "river")}}- Run `make river-migrate` before relying on queued jobs in a fresh database;
   run `make river-migrate-test` as well when `REQUIRE_TEST_DB=true` runs the
   River worker round-trip test.{{/if}}{{/if}}
-- `APP_ENV=development` enables the convenience table bootstrap;
-  `APP_ENV=production` requires `migrate up` as a deploy step instead
+- The schema is the migrations', in every environment: `migrate up` applies
+  it and the startup version check refuses to boot without it. There is no
+  development table bootstrap
 {{#if worker}}{{#if (eq queue "river")}}- River uses the database/sql driver and polls for jobs instead of receiving
   PostgreSQL LISTEN/NOTIFY wakeups; this is deliberate for a shared GORM pool.
 {{/if}}{{/if}}
