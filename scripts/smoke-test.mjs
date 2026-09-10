@@ -1580,7 +1580,7 @@ step(
       throw new Error(`expected schema_migrations to land on the 14-digit timestamped migration, got: "${version}"`);
     }
 
-    run("bash", ["-c", `DB_DSN="${dsn}" make migrate-verify`], fullApp);
+    run("bash", ["-c", `TEST_DB_DSN="${dsn}" make migrate-verify`], fullApp);
 
     // migrate-verify's whole point: catch a down.sql that's stopped reversing
     // cleanly. A check that only exercises the happy path above would still
@@ -1591,7 +1591,7 @@ step(
     writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.down.sql"), "DROP TABLE this_table_does_not_exist;\n");
     let verifyCaughtTheBreak = false;
     try {
-      run("bash", ["-c", `DB_DSN="${dsn}" make migrate-verify`], fullApp);
+      run("bash", ["-c", `TEST_DB_DSN="${dsn}" make migrate-verify`], fullApp);
     } catch {
       verifyCaughtTheBreak = true;
     }

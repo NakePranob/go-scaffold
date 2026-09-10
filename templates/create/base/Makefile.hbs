@@ -132,14 +132,20 @@ migrate-up-test:
 migrate-down:
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" down 1
 
-# runs up -> down-to-zero -> up against $DB_DSN to catch a bit-rotted down.sql
-# (one that no longer reverses cleanly) before you actually need a rollback.
-# point DB_DSN at a throwaway/test database first — this drops every table.
+# runs up -> down-to-zero -> up to catch a bit-rotted down.sql (one that no
+# longer reverses cleanly) before you actually need a rollback.
+#
+# TEST_DB_DSN, not DB_DSN: this drops every table, and it used to say "point
+# DB_DSN at a throwaway database first" — advice its own recipe made impossible
+# to follow, because the .env sourced on the line below overwrites whatever
+# DB_DSN the caller set on the way in. The test database is the one that is
+# meant to be destroyed, so it is the one named here.
 migrate-verify:
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
-	migrate -path migrations -database "$$DB_DSN" up && \
-	migrate -path migrations -database "$$DB_DSN" down -all && \
-	migrate -path migrations -database "$$DB_DSN" up
+	: "$${TEST_DB_DSN:?TEST_DB_DSN is required — migrate-verify drops every table and will not guess a database}"; \
+	migrate -path migrations -database "$$TEST_DB_DSN" up && \
+	migrate -path migrations -database "$$TEST_DB_DSN" down -all && \
+	migrate -path migrations -database "$$TEST_DB_DSN" up
 {{#if openapiDocs}}
 
 # docs/openapi.yaml is hand-written and split across sibling files via relative
