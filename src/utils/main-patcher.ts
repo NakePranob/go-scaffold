@@ -78,7 +78,9 @@ export function assertMainGoPatchable(mainGoPath: string): void {
     throw new Error(`${mainGoPath} not found — this doesn't look like a go-scaffold project`);
   }
   const content = fs.readFileSync(mainGoPath, "utf8");
-  const missing = [IMPORT_MARKER, SCHEMA_MARKER, MODEL_MARKER, ROUTE_MARKER].filter((m) => !hasMarker(content, m));
+  // Not SCHEMA_MARKER/MODEL_MARKER: those belong to the development
+  // AutoMigrate bootstrap, which newer projects do not have.
+  const missing = [IMPORT_MARKER, ROUTE_MARKER].filter((m) => !hasMarker(content, m));
   if (missing.length) {
     throw new Error(
       `cmd/api/wiring.go is missing the marker comment${missing.length > 1 ? "s" : ""} this command patches at:\n` +
@@ -104,9 +106,17 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   // folder was deleted (main.go still wired) is a no-op, not a dup that
   // panics gin at startup.
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
-  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
-  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
-  content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
+  // The development AutoMigrate bootstrap is gone from the template, and with
+  // it the schema/model markers. A project scaffolded before that still has
+  // them, and still wants its tables registered there — so these stay, guarded
+  // by the marker's presence rather than deleted. New projects skip them.
+  if (hasMarker(content, MODEL_MARKER)) {
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+    content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
+  }
+  if (hasMarker(content, SCHEMA_MARKER)) {
+    content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
+  }
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = removeLines(content, [UNUSED_API_LINE]);
 

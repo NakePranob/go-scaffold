@@ -54,19 +54,21 @@ func run() error {
 	}()
 	// go-scaffold:platform-init
 
-	if !cfg.IsProd() {
-		// Development boot creates tables but never the schema they live in — each
-		// domain gets its own (see the outbound postgres model's TableName), so it has to exist
-		// before the bootstrap runs. Production runs the versioned SQL migrations
-		// instead, so this entire branch is skipped there.
-		// go-scaffold:schemas
-
-		if err := db.AutoMigrate(
-			// go-scaffold:models
-		); err != nil {
-			return fmt.Errorf("migrate: %w", err)
-		}
-	} else if err := database.CheckMigrationVersion(db); err != nil {
+	// The schema comes from migrations/ in every environment, development
+	// included: `make migrate-up` applies it, and this refuses to boot when the
+	// database is behind or dirty.
+	//
+	// There is deliberately no db.AutoMigrate bootstrap for development. GORM
+	// builds tables from the Go structs, so it writes none of the CHECK
+	// constraints, none of the foreign keys and none of the seeded rows a
+	// migration carries — a schema that only looks like production's, on which
+	// a seeded catalogue is simply empty. It is also additive over an
+	// already-migrated database, so a column a model has and a migration does
+	// not appears on the developer's machine and nowhere else.
+	//
+	// Every migration creates the schema its tables live in, so nothing here
+	// needs to.
+	if err := database.CheckMigrationVersion(db); err != nil {
 		return fmt.Errorf("migration version check: %w", err)
 	}
 
