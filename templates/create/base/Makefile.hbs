@@ -120,14 +120,22 @@ db-drop:
 		exit 1; \
 	fi
 
+# A project has no migrations until its first `generate module` or `add auth`,
+# and `migrate up` treats an empty directory as an error rather than as nothing
+# to do. `run` depends on this target, so without the guard the very first
+# `make run` of a fresh scaffold fails on a database that is already correct.
 migrate-up:
-	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" up
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
+	migrate -path migrations -database "$$DB_DSN" up
 
 # same migration files, applied to TEST_DB_DSN instead of DB_DSN — run this
 # once after `make db-create DB_NAME=..._test` so repository_test.go files
 # see real tables instead of skipping (or failing, if REQUIRE_TEST_DB=true).
 migrate-up-test:
-	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$TEST_DB_DSN" up
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
+	migrate -path migrations -database "$$TEST_DB_DSN" up
 
 migrate-down:
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" down 1
@@ -142,6 +150,7 @@ migrate-down:
 # meant to be destroyed, so it is the one named here.
 migrate-verify:
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
 	: "$${TEST_DB_DSN:?TEST_DB_DSN is required — migrate-verify drops every table and will not guess a database}"; \
 	migrate -path migrations -database "$$TEST_DB_DSN" up && \
 	migrate -path migrations -database "$$TEST_DB_DSN" down -all && \
