@@ -143,9 +143,12 @@ wrong. See `patterns.md`, "Filtered Lists".
 
 **Decision:** PostgreSQL + GORM, schema managed by
 [golang-migrate](https://github.com/golang-migrate/migrate).
-**Rationale:** `APP_ENV=development` allows a convenience table bootstrap;
-`APP_ENV=production` runs only after `migrate up` has applied the separate,
-versioned, rollback-capable SQL migrations.
+**Rationale:** one source of schema in every environment — the separate,
+versioned, rollback-capable SQL migrations, applied by `migrate up` before the
+binary starts. A development-only `db.AutoMigrate` convenience would build
+tables from the Go structs instead, dropping the CHECK constraints, foreign
+keys and seeded rows the SQL carries, and adding columns to an
+already-migrated database where no test would see the difference.
 
 {{#if docker}}- `docker-compose.yml` provides the local Postgres instance
 {{/if}}

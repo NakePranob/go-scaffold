@@ -64,6 +64,15 @@ jobs:
             migrate -path migrations -database "$DB_DSN" up
           fi
 
+      # up -> down -all -> up. The only check that catches a down.sql that has
+      # stopped reversing its up.sql, which is otherwise discovered during a
+      # rollback — the worst moment to find out. Runs against the test database
+      # and leaves it migrated up for the steps below.
+      - name: Verify migrations reverse cleanly
+        env:
+          TEST_DB_DSN: postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable
+        run: make migrate-verify
+
       - name: Test (required PostgreSQL integration tests cannot skip)
         env:
           TEST_DB_DSN: postgres://postgres:postgres@localhost:5432/{{dbName}}_test?sslmode=disable

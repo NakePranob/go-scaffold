@@ -39,7 +39,12 @@ ENV_FILE ?= .env
 
 .PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
-run:
+# migrate-up first, because cmd/api refuses to boot against a database that is
+# behind the migrations it embeds. The schema is the migrations' in every
+# environment — this is the step that would otherwise be a db.AutoMigrate
+# bootstrap, except it applies the same SQL production gets, constraints and
+# seeded rows and all.
+run: migrate-up
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/api
 
 build:
@@ -115,26 +120,41 @@ db-drop:
 		exit 1; \
 	fi
 
+# A project has no migrations until its first `generate module` or `add auth`,
+# and `migrate up` treats an empty directory as an error rather than as nothing
+# to do. `run` depends on this target, so without the guard the very first
+# `make run` of a fresh scaffold fails on a database that is already correct.
 migrate-up:
-	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" up
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
+	migrate -path migrations -database "$$DB_DSN" up
 
 # same migration files, applied to TEST_DB_DSN instead of DB_DSN — run this
 # once after `make db-create DB_NAME=..._test` so repository_test.go files
 # see real tables instead of skipping (or failing, if REQUIRE_TEST_DB=true).
 migrate-up-test:
-	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$TEST_DB_DSN" up
+	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
+	migrate -path migrations -database "$$TEST_DB_DSN" up
 
 migrate-down:
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" down 1
 
-# runs up -> down-to-zero -> up against $DB_DSN to catch a bit-rotted down.sql
-# (one that no longer reverses cleanly) before you actually need a rollback.
-# point DB_DSN at a throwaway/test database first — this drops every table.
+# runs up -> down-to-zero -> up to catch a bit-rotted down.sql (one that no
+# longer reverses cleanly) before you actually need a rollback.
+#
+# TEST_DB_DSN, not DB_DSN: this drops every table, and it used to say "point
+# DB_DSN at a throwaway database first" — advice its own recipe made impossible
+# to follow, because the .env sourced on the line below overwrites whatever
+# DB_DSN the caller set on the way in. The test database is the one that is
+# meant to be destroyed, so it is the one named here.
 migrate-verify:
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
-	migrate -path migrations -database "$$DB_DSN" up && \
-	migrate -path migrations -database "$$DB_DSN" down -all && \
-	migrate -path migrations -database "$$DB_DSN" up
+	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
+	: "$${TEST_DB_DSN:?TEST_DB_DSN is required — migrate-verify drops every table and will not guess a database}"; \
+	migrate -path migrations -database "$$TEST_DB_DSN" up && \
+	migrate -path migrations -database "$$TEST_DB_DSN" down -all && \
+	migrate -path migrations -database "$$TEST_DB_DSN" up
 {{#if openapiDocs}}
 
 # docs/openapi.yaml is hand-written and split across sibling files via relative

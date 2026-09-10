@@ -857,6 +857,34 @@ function waitForPort(port, attempts = 30) {
 // default 6379 — so it can't collide with a Redis someone already has
 // running (this dev machine's own has auth enabled, which would otherwise
 // make the readyz check fail for a reason that has nothing to do with the
+let hasMigrate = true;
+try {
+  run("migrate", ["-version"]);
+} catch {
+  hasMigrate = false;
+}
+
+/**
+ * Apply the project's migrations to a freshly created database.
+ *
+ * Generated projects take their schema from migrations/ in every environment —
+ * there is no development db.AutoMigrate bootstrap to lean on — so cmd/api
+ * refuses to boot against a database `make db-create` has only just made, and
+ * an integration test would find no tables. This is what a developer runs as
+ * `make migrate-up`; the smoke test does the same thing for the same reason.
+ */
+function migrateUp(app, db = fullDb) {
+  if (!hasMigrate) {
+    throw new Error("the migrate CLI is required: generated projects have no schema bootstrap, so a fresh database stays empty without it");
+  }
+  // A project before its first module or `add auth` has an empty migrations/
+  // — nothing to apply, and the version check treats that as no schema rather
+  // than a schema that is behind.
+  const files = readdirSync(path.join(app, "migrations")).filter((f) => f.endsWith(".up.sql"));
+  if (files.length === 0) return;
+  run("migrate", ["-path", "migrations", "-database", db.dbDsn, "up"], app);
+}
+
 // scaffold's own correctness).
 step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires readyz, processes a real task" : "add worker: skipped (needs Docker for an isolated Redis)", () => {
   if (!hasDocker) return;
@@ -877,6 +905,7 @@ step(hasDocker ? "add worker: scaffolds cache/queue/mail/cmd/worker, wires ready
   // this test cannot silently depend on state left by an earlier smoke run.
   runMake(["db-drop"], fullApp);
   const dbCreateOutput = runMake(["db-create"], fullApp);
+  migrateUp(fullApp);
   const postgresContainer = sharedPostgresContainerId;
   const createdDatabase = run(
     "docker",
@@ -1001,6 +1030,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
 
   runMake(["db-drop"], fullApp);
   runMake(["db-create"], fullApp);
+  migrateUp(fullApp);
 
   // held in a ref because the rate-limit assertions below restart it
   const mfaRuntimeOverrides = {
@@ -1439,6 +1469,7 @@ step(
     runMake(["db-drop"], fullApp); // start from a clean slate in case a prior run left it
     runMake(["db-create"], fullApp);
     runMake(["db-create"], fullApp); // must not error the second time
+    migrateUp(fullApp);
     const list = listDatabases();
     if (!list.includes(fullDb.dbName)) throw new Error(`expected database "${fullDb.dbName}" to exist, got:\n${list}`);
     runMake(["db-drop"], fullApp);
@@ -1457,6 +1488,7 @@ step(
     if (!hasPsql && !dockerPgContainer) return;
     runMake(["db-drop"], fullApp); // clean slate
     runMake(["db-create"], fullApp);
+    migrateUp(fullApp);
 
     const corsApi = startApi(fullApp, "cors-api", fullDb, { REDIS_URL: sharedRedisUrl });
     execFileSync("sleep", ["3"]);
@@ -1516,13 +1548,6 @@ step("generate migration reserves a timestamped up/down pair, TODO-stubbed", () 
   if (!upContent.includes("TODO")) throw new Error(`expected a TODO stub in the up migration, got:\n${upContent}`);
 });
 
-let hasMigrate = true;
-try {
-  run("migrate", ["-version"]);
-} catch {
-  hasMigrate = false;
-}
-
 // Two things at once: (1) a project with old-style sequential migrations
 // (0000NN_*, from before this convention) still applies cleanly alongside a
 // newly generated timestamped one, in the right order — proven against the
@@ -1540,6 +1565,7 @@ step(
 
     runMake(["db-drop"], fullApp);
     runMake(["db-create"], fullApp);
+    // No migrateUp here: applying them is what this step is measuring.
     const dsn = fullDb.dbDsn;
 
     // migrate logs each applied step to stderr, not stdout — merge via bash so
@@ -1554,7 +1580,7 @@ step(
       throw new Error(`expected schema_migrations to land on the 14-digit timestamped migration, got: "${version}"`);
     }
 
-    run("bash", ["-c", `DB_DSN="${dsn}" make migrate-verify`], fullApp);
+    run("bash", ["-c", `TEST_DB_DSN="${dsn}" make migrate-verify`], fullApp);
 
     // migrate-verify's whole point: catch a down.sql that's stopped reversing
     // cleanly. A check that only exercises the happy path above would still
@@ -1565,7 +1591,7 @@ step(
     writeFileSync(path.join(fullApp, "migrations", "000001_create_legacy.down.sql"), "DROP TABLE this_table_does_not_exist;\n");
     let verifyCaughtTheBreak = false;
     try {
-      run("bash", ["-c", `DB_DSN="${dsn}" make migrate-verify`], fullApp);
+      run("bash", ["-c", `TEST_DB_DSN="${dsn}" make migrate-verify`], fullApp);
     } catch {
       verifyCaughtTheBreak = true;
     }
@@ -1600,8 +1626,7 @@ step(
 
     runMake(["db-drop"], fullApp);
     runMake(["db-create"], fullApp);
-    const dsn = fullDb.dbDsn;
-    run("migrate", ["-path", "migrations", "-database", dsn, "up"], fullApp);
+    migrateUp(fullApp);
 
     // also proves SetRole works standalone (not just reachable via HTTP)
     run("go", ["run", "./cmd/seed"], fullApp, {
@@ -1800,6 +1825,7 @@ step(
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer) && hasMigrate)) return;
     runMake(["db-create"], fullApp, fullTestDb);
+    migrateUp(fullApp, fullTestDb);
     run("migrate", ["-path", "migrations", "-database", fullTestDb.dbDsn, "up"], fullApp);
     run("go", ["test", "-run", "TestRepository", "./internal/app/user/...", "./internal/app/role/..."], fullApp, {
       TEST_DB_DSN: fullTestDb.dbDsn,
@@ -1846,8 +1872,7 @@ step(
 
     runMake(["db-drop"], fullApp);
     runMake(["db-create"], fullApp);
-    const dsn = fullDb.dbDsn;
-    run("migrate", ["-path", "migrations", "-database", dsn, "up"], fullApp);
+    migrateUp(fullApp);
 
     run("go", ["run", "./cmd/seed"], fullApp, {
       SEED_ADMIN_EMAIL: "genmod-admin@example.com",
@@ -1980,8 +2005,10 @@ step(
     // stand up a "dev database" that looks like one `make migrate-up` produced,
     // holding a row the test run must not be allowed to destroy
     runMake(["db-create"], fullApp);
+    migrateUp(fullApp);
     psqlExec(fullDb.dbName, "CREATE TABLE orders (id uuid PRIMARY KEY); INSERT INTO orders VALUES (gen_random_uuid());");
     runMake(["db-create"], fullApp, fullTestDb);
+    migrateUp(fullApp, fullTestDb);
     // Repository integration tests use generated modules too (cart, secret,
     // order, ...), so the dedicated test DB must receive the complete
     // migration schema before packages exercise their repositories.
@@ -2016,6 +2043,8 @@ step(
     stopAllApis(); // in case a prior assertion left one of this run's APIs behind
     runMake(["db-drop"], fullApp);
     runMake(["db-create"], fullApp);
+    // No migrateUp here: refusing to boot on an unmigrated database is the
+    // thing being measured.
 
     // fullApp already has Redis wired into readyz once "add worker" has run
     // earlier in this suite (same shared scratch project) — .env.example's
@@ -2038,16 +2067,44 @@ step(
     if (sharedRedisUrl) envContent = envContent.replace(/REDIS_URL=.*/, `REDIS_URL=${sharedRedisUrl}`);
     writeFileSync(path.join(fullApp, ".env"), envContent);
 
-    const beforeApi = startMakeRun(fullApp, "migration-before", false);
-    execFileSync("sleep", ["3"]);
-    const beforeReady = httpStatus([`${smoke.baseURL}/readyz`], fullApp);
-    stopApi(beforeApi);
-    if (beforeReady !== "000") {
-      throw new Error(`expected the server to refuse to boot (READYZ=000), got: ${beforeReady}`);
+    // The binary directly, not `make run`: that target depends on migrate-up
+    // now, which is the point of it — a developer cannot start the app against
+    // a database they forgot to migrate. What is under test here is the
+    // binary's own guard, so this launches it the way a deployment does, past
+    // the Makefile.
+    // The binary directly, not `make run`: that target depends on migrate-up
+    // now, which is the whole point of it — a developer cannot start the app
+    // against a database they forgot to migrate. What is under test here is
+    // the binary's own guard, so this launches it the way a deployment does,
+    // past the Makefile.
+    //
+    // spawnSync, not a background process: refusing to boot means exiting, so
+    // there is nothing to poll for and nothing to stop afterwards.
+    const beforeBinary = path.join(fullApp, `.smoke-api-${smoke.runID}-migration-before`);
+    run("go", ["build", "-o", beforeBinary, "./cmd/api"], fullApp);
+    const before = spawnSync(beforeBinary, [], {
+      cwd: fullApp,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...runtimeEnv(fullDb, {
+          APP_ENV: "production",
+          JWT_SECRET: "smoke-test-secret-01234567890123456789",
+          SMTP_HOST: "localhost",
+          COOKIE_SECURE: "true",
+          CORS_ALLOWED_ORIGINS: "https://frontend.example",
+          GOOGLE_OAUTH_REDIRECT_URI: "https://frontend.example/oauth/callback/google",
+          ...(sharedRedisUrl ? { REDIS_URL: sharedRedisUrl } : {}),
+        }),
+      },
+    });
+    rmSync(beforeBinary, { force: true });
+    if (before.status === 0) {
+      throw new Error(`expected the server to refuse to boot on an unmigrated database, it exited 0:\n${before.stdout}${before.stderr}`);
     }
-    const beforeLog = readFileSync(logPath("migration-before"), "utf8");
+    const beforeLog = `${before.stdout}${before.stderr}`;
     if (!beforeLog.includes("migration version check")) {
-      throw new Error(`expected a "migration version check" error in the boot log, got:\n${beforeLog}`);
+      throw new Error(`expected a "migration version check" error, got:\n${beforeLog}`);
     }
 
     const migratedDSN = fullDb.dbDsn;
@@ -2154,6 +2211,7 @@ step(
 
     stopAllApis();
     runMake(["db-create"], fullApp);
+    migrateUp(fullApp);
     let api = null;
     try {
       api = startApi(fullApp, "generated-method-501", fullDb, {
@@ -2342,6 +2400,7 @@ step(
     run("go", ["build", "./..."], obsApp);
 
     runMake(["db-create"], obsApp, obsDb);
+    migrateUp(obsApp, obsDb);
     const obsApi = startApi(obsApp, "obs-api", obsDb);
     execFileSync("sleep", ["3"]);
 
@@ -2429,6 +2488,7 @@ step(
     }
 
     runMake(["db-create"], retrofitApp, fullTestDb);
+    migrateUp(retrofitApp, fullTestDb);
     const retrofitApi = startApi(retrofitApp, "retrofit-api", fullTestDb);
     execFileSync("sleep", ["3"]);
     // A CounterVec only appears in /metrics once one of its label

@@ -151,8 +151,11 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
   const loadEnv = "@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a;";
 
   const targets =
-    "\n# run both API + worker in one terminal — Ctrl+C kills both\n" +
-    "dev:\n" +
+    "\n# run both API + worker in one terminal — Ctrl+C kills both.\n" +
+    "#\n" +
+    "# migrate-up first, for the same reason `run` does it: cmd/api refuses to\n" +
+    "# boot against a database behind the migrations it embeds.\n" +
+    "dev: migrate-up\n" +
     `\t${loadEnv} \\\n` +
     "\t(trap 'kill 0' SIGINT SIGTERM; \\\n" +
     "\t go run ./cmd/api & \\\n" +

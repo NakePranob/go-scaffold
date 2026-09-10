@@ -50,8 +50,8 @@ must import the specific boundary package it belongs to.
   kept in `domain/`.
 - `TableName()` returns a schema-qualified name (`order_svc.orders`, not
   `orders`) — every domain gets its own Postgres schema, created by its own
-  migration (`CREATE SCHEMA IF NOT EXISTS`) and by `cmd/api/wiring.go` before
-  the development table bootstrap runs. A cross-domain FK is still fine — see
+  migration (`CREATE SCHEMA IF NOT EXISTS`), which is the only thing that
+  creates it. A cross-domain FK is still fine — see
   the FK rules below — this only stops one domain's table from silently
   colliding with another's.
 
@@ -159,8 +159,8 @@ if this project has one):
    associations / belongs-to — that's what keeps one domain package from
    importing another.
 2. **Declare the FK constraint in migration SQL**
-   (`REFERENCES ... ON DELETE ...`), not a GORM tag — the development bootstrap
-   doesn't create the constraint, which would make dev and prod schemas diverge.
+   (`REFERENCES ... ON DELETE ...`), not a GORM tag — a GORM tag describes the
+   constraint to Go and to nothing that runs, so the database would not have it.
 3. **Map the FK error to the right status** in the outbound adapter with
    `dberr.IsForeignKey`, then let the inbound adapter render it — inserting a
    reference to a missing parent, or deleting a parent that still has children,

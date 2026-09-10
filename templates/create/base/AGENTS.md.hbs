@@ -160,14 +160,46 @@ endpoint is production-ready.
 
 - `APP_ENV` is the single environment gate and accepts only `development` or
   `production`. Do not add a parallel flag such as `AUTO_MIGRATE`.
-- Development may use the convenience `db.AutoMigrate(...)` path for the
-  models registered by the generator. Production must never bootstrap or
-  mutate schema at API startup: apply versioned SQL with
-  `make migrate-up`, then let the startup migration-version check fail fast if
-  the database is behind or dirty.
+- **The schema comes from `migrations/` in every environment, development
+  included.** `cmd/api/wiring.go` runs the migration-version check and nothing
+  else: apply versioned SQL with `make migrate-up`, and let the check fail
+  fast when the database is behind or dirty. Never bootstrap or mutate schema
+  at API startup, and do not reintroduce a `db.AutoMigrate(...)` convenience
+  for development — GORM builds tables from the Go structs, so it writes none
+  of the CHECK constraints, none of the foreign keys and none of the seeded
+  rows a migration carries, and it is additive over an already-migrated
+  database, so a column a model has and a migration does not shows up on one
+  developer's machine and nowhere else.
 - Any schema change is a reviewed pair of versioned files in `migrations/`.
   Use `go-scaffold generate migration <name>` for changes outside a new
   module, write both directions, and test them against a disposable database.
+  Write the SQL first and the Go struct second: the SQL is what exists, the
+  struct is Go's view of it, and doing it the other way round feels finished
+  while the database still has nothing.
+- **A destructive change takes two deploys, never one.** During a rolling
+  deploy the old binary and the new one serve traffic at the same time, so a
+  migration has to be readable by the version of the code still running.
+  `CheckMigrationVersion` is built for that order — a database ahead of the
+  binary is a warning, behind it is fatal — which only works if migrations go
+  out first and stay backward compatible.
+
+  | change | deploys |
+  |---|---|
+  | add a nullable column, add a table, add an index | 1 |
+  | add `NOT NULL` with a `DEFAULT` | 1 — but it rewrites the table, so check its size first |
+  | rename a column | **2** |
+  | drop a column or a table | **2** |
+  | change a column's type | **2** |
+
+  The two are *expand* then *contract*: add the new shape and have the code
+  write both and prefer the new one; deploy that everywhere; only then drop the
+  old shape. `DROP COLUMN` in one round pulls the floor out from under the pods
+  still serving requests.
+- `make migrate-verify` (up → down -all → up) runs in CI and is the only thing
+  that catches a `down.sql` which has quietly stopped reversing its `up.sql`.
+  Without it that is found during a rollback, which is the worst moment to find
+  out. Never run it against a database whose data matters — `down -all` means
+  it.
 - Keep `*sql.DB`, Redis, queue, mail, and other external resources owned by
   their composition root. Close them on every exit path and preserve the
   signal-driven graceful shutdown; do not call `os.Exit` from a goroutine or

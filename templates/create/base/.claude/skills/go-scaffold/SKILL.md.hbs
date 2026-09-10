@@ -329,10 +329,13 @@ go-scaffold add auth --store postgres --browser-topology same-site --defaults --
 
 - APP_ENV is the only environment gate and accepts development or production.
   Do not reintroduce an AUTO_MIGRATE setting.
-- Development may use the convenience db.AutoMigrate(...) bootstrap.
-  Production must never bootstrap or mutate schema at API startup. Apply
-  versioned SQL with make migrate-up; the startup version check must fail
-  fast for a behind or dirty database.
+- The schema comes from migrations/ in every environment, development
+  included. Apply it with make migrate-up; the startup version check fails
+  fast for a behind or dirty database. Never bootstrap or mutate schema at API
+  startup, and do not add a db.AutoMigrate(...) convenience for development:
+  GORM builds tables from the Go structs, so it produces none of the CHECK
+  constraints, foreign keys or seeded rows the SQL carries, and it silently
+  adds columns to an already-migrated database.
 - Use generate migration for schema changes outside a new module, write and
   review both migration directions, and test them against a disposable DB.
 - Keep SQL, Redis, queue, mail, and other external resources under the

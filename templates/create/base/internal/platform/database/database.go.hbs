@@ -76,6 +76,14 @@ func CheckMigrationVersion(db *gorm.DB) error {
 		}
 	}
 
+	// A scaffold that has not generated a module or added auth yet embeds no
+	// migrations, so there is no schema_migrations table to read and nothing
+	// to compare against. That is a project with no schema, not a project
+	// whose schema is behind.
+	if latest == 0 {
+		return nil
+	}
+
 	var version int
 	var dirty bool
 	row := db.Raw("SELECT version, dirty FROM schema_migrations").Row()

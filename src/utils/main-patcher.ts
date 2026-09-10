@@ -43,10 +43,11 @@ function mainGoLines(patch: RoutePatch) {
   return {
     importLine: `"${patch.goModule}/internal/app/${patch.modulePath}"`,
     modelImportLine: `${modelAlias} "${patch.goModule}/internal/app/${patch.modulePath}/adapters/outbound/postgres"`,
-    // Development schema bootstrap creates tables but not the schema they live in — see
-    // the comment on go-scaffold:schemas in main.go.hbs. One Exec per schema,
+    // Legacy only: projects generated before the development AutoMigrate
+    // bootstrap was removed still have the schema marker, and their tables are
+    // created by GORM rather than by the migration. One Exec per schema,
     // guarded by its own sentinel so two modules sharing a schema name only
-    // ever produce one line (not expected today, but cheap to keep safe).
+    // ever produce one line.
     schemaLines: [
       `if err := db.Exec("CREATE SCHEMA IF NOT EXISTS ${patch.schemaName}").Error; err != nil {`,
       `\treturn fmt.Errorf("create schema ${patch.schemaName}: %w", err)`,
@@ -78,7 +79,9 @@ export function assertMainGoPatchable(mainGoPath: string): void {
     throw new Error(`${mainGoPath} not found — this doesn't look like a go-scaffold project`);
   }
   const content = fs.readFileSync(mainGoPath, "utf8");
-  const missing = [IMPORT_MARKER, SCHEMA_MARKER, MODEL_MARKER, ROUTE_MARKER].filter((m) => !hasMarker(content, m));
+  // Not SCHEMA_MARKER/MODEL_MARKER: those belong to the development
+  // AutoMigrate bootstrap, which newer projects do not have.
+  const missing = [IMPORT_MARKER, ROUTE_MARKER].filter((m) => !hasMarker(content, m));
   if (missing.length) {
     throw new Error(
       `cmd/api/wiring.go is missing the marker comment${missing.length > 1 ? "s" : ""} this command patches at:\n` +
@@ -104,9 +107,17 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   // folder was deleted (main.go still wired) is a no-op, not a dup that
   // panics gin at startup.
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
-  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
-  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
-  content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
+  // The development AutoMigrate bootstrap is gone from the template, and with
+  // it the schema/model markers. A project scaffolded before that still has
+  // them, and still wants its tables registered there — so these stay, guarded
+  // by the marker's presence rather than deleted. New projects skip them.
+  if (hasMarker(content, MODEL_MARKER)) {
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+    content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
+  }
+  if (hasMarker(content, SCHEMA_MARKER)) {
+    content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
+  }
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = removeLines(content, [UNUSED_API_LINE]);
 
