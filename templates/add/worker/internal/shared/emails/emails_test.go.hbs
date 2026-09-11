@@ -1,0 +1,64 @@
+package emails
+
+import (
+	"io/fs"
+	"path"
+	"strings"
+	"testing"
+)
+
+// Every template is rendered with the data its call site passes. A missing or
+// misspelled key renders "<no value>" rather than failing, so that string —
+// not an error — is what this has to look for. It is also the check that the
+// layout/partial wiring holds: an undefined block is an execution error here
+// long before it is a mail nobody received.
+func TestRenderEveryTemplate(t *testing.T) {
+	data := map[string]any{
+		"Name": "Sam",
+		"Link": "https://example.com/reset-password?token=abc123",
+	}
+	files, err := fs.Glob(files, "templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		name := strings.TrimSuffix(path.Base(file), ".html")
+		if name == "layout" {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			msg, err := Render(name, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for part, body := range map[string]string{"subject": msg.Subject, "html": msg.HTML, "text": msg.Text} {
+				if body == "" {
+					t.Fatalf("%s is empty", part)
+				}
+				if strings.Contains(body, "<no value>") {
+					t.Fatalf("%s reads from a key the caller does not pass: %s", part, body)
+				}
+			}
+			if !strings.Contains(msg.HTML, "</html>") {
+				t.Fatal("html body is not a whole document")
+			}
+			// A key the caller does not pass renders "<no value>" in text, but
+			// html/template drops it in a URL context instead — the anchor
+			// still renders, pointing nowhere, and nothing above would notice.
+			if strings.Contains(msg.HTML, `href=""`) {
+				t.Fatal("a link renders empty: its URL reads a key the caller does not pass")
+			}
+			// The one thing each mail exists to deliver has to reach both bodies.
+			link := data["Link"].(string)
+			if !strings.Contains(msg.HTML, link) || !strings.Contains(msg.Text, link) {
+				t.Fatal("the link is missing from one of the bodies")
+			}
+		})
+	}
+}
+
+func TestRenderUnknownTemplate(t *testing.T) {
+	if _, err := Render("nope", nil); err == nil {
+		t.Fatal("an unknown template name should not render silently")
+	}
+}

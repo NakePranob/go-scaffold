@@ -1,0 +1,112 @@
+package mail
+
+import (
+	"bufio"
+	"fmt"
+	"net"
+	stdmail "net/mail"
+	"net/textproto"
+	"strings"
+	"testing"
+	"time"
+
+	"{{goModule}}/internal/shared/emails"
+)
+
+// SMTP_FROM is allowed a display name, and the envelope is the one place it
+// must not appear: a relay handed `MAIL FROM:<Name <a@b.com>>` rejects the
+// whole message. The header keeps the name, the envelope gets the address.
+func TestSendDisplayNameUsesBareSMTPEnvelope(t *testing.T) {
+	for _, name := range []string{"", "Acme", "Ünïcode Náme"} {
+		t.Run(name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = listener.Close() }()
+			result := make(chan error, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					result <- err
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				wire := textproto.NewConn(conn)
+				_ = wire.PrintfLine("220 localhost SMTP")
+				for {
+					line, err := wire.ReadLine()
+					if err != nil {
+						result <- err
+						return
+					}
+					switch {
+					case strings.HasPrefix(line, "MAIL FROM:"):
+						if line != "MAIL FROM:<no-reply@example.com>" {
+							result <- fmt.Errorf("unexpected SMTP envelope: %s", line)
+							return
+						}
+					case line == "DATA":
+						_ = wire.PrintfLine("354 send message")
+						data, err := wire.ReadDotBytes()
+						if err != nil {
+							result <- err
+							return
+						}
+						message, err := stdmail.ReadMessage(bufio.NewReader(strings.NewReader(string(data))))
+						if err != nil {
+							result <- err
+							return
+						}
+						from, err := message.Header.AddressList("From")
+						if err != nil || len(from) != 1 || from[0].Name != name || from[0].Address != "no-reply@example.com" {
+							result <- fmt.Errorf("incorrect sender header: %s (%v)", message.Header.Get("From"), err)
+							return
+						}
+						// RFC 5322 requires a Date, and a missing one is a
+						// spam signal on its own.
+						if message.Header.Get("Date") == "" {
+							result <- fmt.Errorf("no Date header")
+							return
+						}
+						if !strings.HasPrefix(message.Header.Get("Content-Type"), "multipart/alternative") {
+							result <- fmt.Errorf("unexpected Content-Type: %s", message.Header.Get("Content-Type"))
+							return
+						}
+					case line == "QUIT":
+						_ = wire.PrintfLine("221 bye")
+						result <- nil
+						return
+					}
+					_ = wire.PrintfLine("250 OK")
+				}
+			}()
+			host, port, err := net.SplitHostPort(listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			from := "no-reply@example.com"
+			if name != "" {
+				from = name + " <" + from + ">"
+			}
+			client := &Client{host: host, port: port, from: from}
+			if err := client.Send("recipient@example.com", emails.Message{Subject: "SMTP test", Text: "Test body", HTML: "<p>Test body</p>"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-result; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// A Message with neither half used to go out as a multipart/alternative with
+// no parts in it — accepted by the relay, delivered, and blank in every
+// client. It has to fail loudly instead.
+func TestSendRefusesEmptyBody(t *testing.T) {
+	client := &Client{host: "127.0.0.1", port: "1", from: "no-reply@example.com"}
+	if err := client.Send("recipient@example.com", emails.Message{Subject: "empty"}); err == nil {
+		t.Fatal("an email with no text and no html should not be sent")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"time"
 
 	"{{goModule}}/internal/shared/tx"
 
@@ -82,6 +83,22 @@ func NewRiverWorker(db *gorm.DB, concurrency int) (*River, error) {
 		Logger:  slog.Default(),
 		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrency}},
 		Workers: workers,
+		// River keeps finished jobs for 24 hours, and discarded ones for a
+		// week, so you can go and look at them. A job's payload is whatever
+		// the caller enqueued, and for the mail job that ships with this
+		// scaffold it is a rendered password-reset link — the raw token, in a
+		// column, in the same database whose auth_tokens table deliberately
+		// holds only its hash. A day of that undoes the hashing; an
+		// email-verification token lives 24 hours itself, so the two windows
+		// overlap completely.
+		//
+		// The cleaner runs every 30s, so a delivered job is gone within about
+		// a minute and a half of being written. The trade is forensics: a job
+		// that failed for good is kept an hour rather than a week. Raise these
+		// once your queue carries something whose payload is not a credential.
+		CompletedJobRetentionPeriod: time.Minute,
+		CancelledJobRetentionPeriod: time.Minute,
+		DiscardedJobRetentionPeriod: time.Hour,
 	})
 	if err != nil {
 		return nil, err

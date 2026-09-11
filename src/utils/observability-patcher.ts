@@ -49,15 +49,29 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   const newUseLine = `${USE_LINE.slice(0, -1)}, middleware.Metrics(), middleware.Tracing("${projectName}"))`;
   content = content.replace(USE_LINE, () => newUseLine);
 
-  // Unlike docs/, which is never served at all: production is exactly where
-  // you want a scrape target, and Prometheus reaches it in-cluster. It is still
-  // unauthenticated and does disclose your route list and traffic shape, so
-  // block /metrics at the ingress rather than publishing it to the internet.
+  // This used to be registered in every environment, on the reasoning that
+  // production is exactly where you want a scrape target and Prometheus
+  // reaches it in-cluster — with a comment telling you to block it at the
+  // ingress. That comment is the whole problem: an ingress rule is the kind of
+  // thing that is missing precisely when it matters, and a dev host published
+  // straight to the internet hands out every route, its traffic shape and the
+  // Go version to anyone who guesses the path. Not registering the route is a
+  // real 404 rather than a 403 that confirms it exists.
+  //
+  // Collection (middleware.Metrics) runs either way, so the numbers are still
+  // being kept. If production grows an in-cluster Prometheus, put the route
+  // back — behind that ingress rule, this time deliberately.
   const metricsRoute = 'r.GET("/metrics", gin.WrapH(promhttp.Handler()))';
   const metricsBlock = [
-    "// Unauthenticated on purpose (Prometheus scrapes it in-cluster) — block",
-    "// /metrics at your ingress so it isn't reachable from the internet.",
-    metricsRoute,
+    "// Unauthenticated, so it is off in production: /metrics hands out every",
+    "// route, its traffic and the Go version to anyone who asks, and an ingress",
+    "// rule is the kind of thing that is missing exactly when it matters. Not",
+    "// registering the route is a real 404, not a 403 that confirms it exists.",
+    "// Collection (middleware.Metrics) runs either way — if prod ever gets an",
+    "// in-cluster Prometheus, put the route back behind that ingress rule.",
+    "if !cfg.IsProd() {",
+    `\t${metricsRoute}`,
+    "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, EXTRA_ROUTES_MARKER, metricsBlock, metricsRoute);
 

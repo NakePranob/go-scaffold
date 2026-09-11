@@ -1,0 +1,22 @@
+{{{{raw}}}}{{define "subject"}}Verify your email{{end}}
+{{define "preview"}}Confirm this address to finish setting up your account.{{end}}
+{{define "action"}}Verify email{{end}}
+
+{{define "content"}}
+<p style="margin:0 0 16px;font-size:28px;line-height:1.35;font-weight:700;color:#18181b;">Verify your email</p>
+<p style="margin:0 0 16px;font-size:16px;line-height:1.7;color:#52525b;">{{template "greeting" .}} confirm this is your address to finish setting up your account.</p>
+{{template "button" .}}
+{{end}}
+
+{{define "note"}}The link can be used once and expires shortly. If you didn't sign up, you can ignore this message.{{end}}
+
+{{define "text"}}
+Verify your email
+
+{{template "greeting" .}} confirm this is your address to finish setting up your account:
+
+{{.Link}}
+
+The link can be used once and expires shortly. If you didn't sign up, you can ignore this message.
+{{end}}
+{{{{/raw}}}}
