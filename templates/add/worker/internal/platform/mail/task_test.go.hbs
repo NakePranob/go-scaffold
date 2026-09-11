@@ -1,0 +1,55 @@
+package mail
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"{{goModule}}/internal/shared/emails"
+)
+
+// A job enqueued before the templates landed carries "body" and no html/text.
+// The worker has to keep delivering those across a rollout rather than send
+// the blank mail an empty Message would produce — Send refuses that outright,
+// so a handler that dropped the fallback would fail this rather than pass it
+// quietly.
+func TestHandleFallsBackToLegacyBody(t *testing.T) {
+	raw, err := json.Marshal(map[string]string{
+		"to":      "recipient@example.com",
+		"subject": "Reset your password",
+		"body":    "Reset your password: https://example.com/reset?token=abc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// host unset: Send logs instead of dialling, so this exercises the handler
+	// without a mail server.
+	if err := Handle(&Client{})(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The shape an up-to-date caller enqueues still has to work unchanged.
+func TestHandleCurrentPayload(t *testing.T) {
+	raw, err := json.Marshal(SendEmail{
+		To:      "recipient@example.com",
+		Message: emails.Message{Subject: "Hello", Text: "Hi", HTML: "<p>Hi</p>"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(&Client{})(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// And a job carrying neither shape must fail rather than deliver a blank mail.
+func TestHandleRejectsBodylessPayload(t *testing.T) {
+	raw, err := json.Marshal(map[string]string{"to": "recipient@example.com", "subject": "empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(&Client{})(context.Background(), raw); err == nil {
+		t.Fatal("a job carrying no body at all should fail, not deliver a blank mail")
+	}
+}

@@ -39,12 +39,36 @@ ENV_FILE ?= .env
 
 .PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
+# A command started here acts on whatever database DB_DSN names. Pointed at a
+# deployed one — which .env is a single edit away from — a laptop stops being a
+# development machine and becomes a participant in that system: `make dev`
+# joins its job queue and starts taking its work, `make migrate-up` changes its
+# schema. Neither logs anything unusual, so the result reads as an intermittent
+# bug in whatever the jobs do rather than as a second consumer.
+#
+# Targets that write to, or consume from, DB_DSN carry this guard. Point one at
+# a real database on purpose with ALLOW_REMOTE_DB=1.
+define refuse_remote_db
+@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+host=$$(printf '%s' "$$DB_DSN" | sed -E 's|^[^@]*@||; s|[/?].*$$||'); \
+case "$$host" in \
+  localhost:*|127.0.0.1:*|\[::1\]:*|localhost|127.0.0.1) ;; \
+  *) [ "$$ALLOW_REMOTE_DB" = "1" ] || { \
+       echo "make $@: DB_DSN points at $$host, not this machine."; \
+       echo "Targets here act on it: migrations change its schema, a worker takes its jobs."; \
+       echo "Use the local database (see .env.example), or ALLOW_REMOTE_DB=1 make $@."; \
+       exit 1; }; \
+     echo "warning: running against $$host — this machine is now part of that system." ;; \
+esac
+endef
+
 # migrate-up first, because cmd/api refuses to boot against a database that is
 # behind the migrations it embeds. The schema is the migrations' in every
 # environment — this is the step that would otherwise be a db.AutoMigrate
 # bootstrap, except it applies the same SQL production gets, constraints and
 # seeded rows and all.
 run: migrate-up
+	$(refuse_remote_db)
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/api
 
 build:
@@ -125,6 +149,7 @@ db-drop:
 # to do. `run` depends on this target, so without the guard the very first
 # `make run` of a fresh scaffold fails on a database that is already correct.
 migrate-up:
+	$(refuse_remote_db)
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
 	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
 	migrate -path migrations -database "$$DB_DSN" up
@@ -138,6 +163,7 @@ migrate-up-test:
 	migrate -path migrations -database "$$TEST_DB_DSN" up
 
 migrate-down:
+	$(refuse_remote_db)
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; migrate -path migrations -database "$$DB_DSN" down 1
 
 # runs up -> down-to-zero -> up to catch a bit-rotted down.sql (one that no

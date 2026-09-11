@@ -5,15 +5,20 @@ import (
 	"encoding/json"
 
 	"{{goModule}}/internal/platform/queue"
+	"{{goModule}}/internal/shared/emails"
 )
 
 // SendEmail is the job cmd/api enqueues and cmd/worker runs. It is a plain
 // JSON struct on purpose — no queue backend's types appear here, so moving
 // between backends never touches this file.
 type SendEmail struct {
-	To      string `json:"to"`
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
+	To string `json:"to"`
+	emails.Message
+	// Body is the payload shape from before the templates existed. A job
+	// written by an older binary — one left in the queue across a rollout, or
+	// an instance that has not been redeployed yet — carries this and no
+	// html/text, and delivering it as plain text beats delivering nothing.
+	Body string `json:"body,omitempty"`
 }
 
 // KindSendEmail is registered by cmd/worker and used when enqueueing.
@@ -31,7 +36,10 @@ func Handle(c *Client) queue.Handler {
 			// into a wall.
 			return err
 		}
-		return c.Send(p.To, p.Subject, p.Body)
+		if p.Text == "" && p.HTML == "" {
+			p.Text = p.Body
+		}
+		return c.Send(p.To, p.Message)
 	}
 }
 
@@ -44,6 +52,6 @@ func NewAsyncClient(q queue.Enqueuer) *AsyncClient { return &AsyncClient{q: q} }
 // Send takes a ctx so the enqueue can join the caller's transaction: with a
 // Postgres-backed queue the mail is only ever sent if the write that asked
 // for it committed.
-func (c *AsyncClient) Send(ctx context.Context, to, subject, body string) error {
-	return c.q.Enqueue(ctx, SendEmail{To: to, Subject: subject, Body: body}, &queue.Options{MaxRetry: 5})
+func (c *AsyncClient) Send(ctx context.Context, to string, m emails.Message) error {
+	return c.q.Enqueue(ctx, SendEmail{To: to, Message: m}, &queue.Options{MaxRetry: 5})
 }

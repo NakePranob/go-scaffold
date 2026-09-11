@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/shared/emails"
 	"{{goModule}}/internal/app/user/ports"
 
 	"github.com/google/uuid"
@@ -510,7 +511,7 @@ func (f *fakeRepo) DeleteIdentity(_ context.Context, userID uuid.UUID, provider 
 
 type fakeMailer struct{}
 
-func (fakeMailer) Send(context.Context, string, string, string) error { return nil }
+func (fakeMailer) Send(context.Context, string, emails.Message) error { return nil }
 
 type fakePasswordHasher struct{}
 

@@ -285,6 +285,7 @@ function patchMakefile(makefilePath: string): void {
     "# environment, not .env, so a real secret never sits in a checked-in file.\n" +
     "# --fixtures adds throwaway dev sample users, never use it outside dev.\n" +
     "seed:\n" +
+    "\t$(refuse_remote_db)\n" +
     // `$$` throughout: make expands a single `$` as a variable reference, so
     // `$//` became `//` and left sed an unterminated s/// expression — the
     // recipe then failed, `.env` never loaded, and a bare `export` dumped the

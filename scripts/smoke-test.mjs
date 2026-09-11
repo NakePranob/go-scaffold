@@ -980,6 +980,7 @@ import (
 
 	"full-app/internal/platform/mail"
 	"full-app/internal/platform/queue"
+	"full-app/internal/shared/emails"
 )
 
 func main() {
@@ -988,7 +989,8 @@ func main() {
 		panic(err)
 	}
 	ac := mail.NewAsyncClient(q)
-	if err := ac.Send(context.Background(), "someone@example.com", "smoke test", "processed by cmd/worker"); err != nil {
+	msg := emails.Message{Subject: "smoke test", Text: "processed by cmd/worker", HTML: "<p>processed by cmd/worker</p>"}
+	if err := ac.Send(context.Background(), "someone@example.com", msg); err != nil {
 		panic(err)
 	}
 }

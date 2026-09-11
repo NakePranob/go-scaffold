@@ -1,0 +1,92 @@
+// Package emails turns a template name and its data into the three things a
+// mail needs: a subject, an HTML body, and a plain-text fallback. Every piece
+// of copy the system sends lives in templates/, one file per mail, so changing
+// wording or design never means touching a service.
+package emails
+
+import (
+	"embed"
+	"fmt"
+	"html/template"
+	"io/fs"
+	"path"
+	"strings"
+	texttemplate "text/template"
+)
+
+// Template names. Constants rather than bare strings so a typo at a call site
+// is a compile error instead of a mail that silently never renders.
+const (
+	ResetPassword = "reset_password"
+	VerifyEmail   = "verify_email"
+)
+
+// Message is one rendered mail. It crosses the mailer port, so the service
+// that asks for a mail never handles markup and the transport never handles
+// copy.
+type Message struct {
+	Subject string `json:"subject"`
+	HTML    string `json:"html"`
+	Text    string `json:"text"`
+}
+
+//go:embed templates
+var files embed.FS
+
+// Each mail is parsed as its own set of layout.html + its own file. That is
+// what lets every mail define "content", "action" and "text" under the same
+// names without colliding — the alternative is a dynamic template lookup,
+// which text/template has no syntax for.
+var (
+	htmlSets = map[string]*template.Template{}
+	textSets = map[string]*texttemplate.Template{}
+)
+
+func init() {
+	names, err := fs.Glob(files, "templates/*.html")
+	if err != nil {
+		panic(err)
+	}
+	for _, file := range names {
+		name := strings.TrimSuffix(path.Base(file), ".html")
+		if name == "layout" {
+			continue
+		}
+		htmlSets[name] = template.Must(template.ParseFS(files, "templates/layout.html", file))
+		// The subject and the text part are not HTML, and html/template would
+		// escape an & in either of them. Same files, parsed a second time by
+		// the package that does no escaping.
+		textSets[name] = texttemplate.Must(texttemplate.ParseFS(files, "templates/layout.html", file))
+	}
+}
+
+// Render builds the mail named by one of this package's template constants.
+// data is whatever the template reads — in practice a map of the handful of
+// values that vary, such as {"Name": …, "Link": …}.
+func Render(name string, data any) (Message, error) {
+	set, ok := htmlSets[name]
+	if !ok {
+		return Message{}, fmt.Errorf("unknown email template %q", name)
+	}
+	subject, err := execText(name, "subject", data)
+	if err != nil {
+		return Message{}, err
+	}
+	text, err := execText(name, "text", data)
+	if err != nil {
+		return Message{}, err
+	}
+	var body strings.Builder
+	if err := set.ExecuteTemplate(&body, "layout", data); err != nil {
+		return Message{}, fmt.Errorf("render email %q: %w", name, err)
+	}
+	return Message{Subject: subject, HTML: body.String(), Text: text}, nil
+}
+
+func execText(name, block string, data any) (string, error) {
+	var out strings.Builder
+	if err := textSets[name].ExecuteTemplate(&out, block, data); err != nil {
+		return "", fmt.Errorf("render email %q %s: %w", name, block, err)
+	}
+	return strings.TrimSpace(out.String()), nil
+}

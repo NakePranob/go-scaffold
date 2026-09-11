@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/shared/emails"
 
 	"github.com/google/uuid"
 )
@@ -52,7 +53,7 @@ type UserRepository interface {
 }
 
 type AuthMailer interface {
-	Send(context.Context, string, string, string) error
+	Send(context.Context, string, emails.Message) error
 }
 
 type RoleChecker interface {

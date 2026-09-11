@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/shared/emails"
 
 	"github.com/google/uuid"
 )
@@ -42,7 +43,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	}
 
 	link := s.config.PasswordResetURL + "?token=" + raw
-	if err := s.mailer.Send(ctx, u.Email, "Reset your password", "Reset your password: "+link); err != nil {
+	if err := s.sendMail(ctx, u, emails.ResetPassword, map[string]any{"Link": link}); err != nil {
 		// The token is stored already. Log the delivery failure so it is visible
 		// operationally while preserving the anti-enumeration response.
 		slog.Error("send password reset email", "error", err)
@@ -84,9 +85,22 @@ func (s *Service) sendVerificationEmail(ctx context.Context, u *domain.User) {
 		return
 	}
 	link := s.config.EmailVerifyURL + "?token=" + raw
-	if err := s.mailer.Send(ctx, u.Email, "Verify your email", "Verify your email: "+link); err != nil {
+	if err := s.sendMail(ctx, u, emails.VerifyEmail, map[string]any{"Link": link}); err != nil {
 		slog.Error("send email verification email", "error", err)
 	}
+}
+
+// sendMail is the one door from this service to the mail system: it renders
+// the named template in shared/emails and hands the result to the mailer, so
+// no copy or markup is written here. Every mail knows the recipient's name,
+// which is the only field the layout asks for beyond the template's own data.
+func (s *Service) sendMail(ctx context.Context, u *domain.User, template string, data map[string]any) error {
+	data["Name"] = u.Name
+	msg, err := emails.Render(template, data)
+	if err != nil {
+		return err
+	}
+	return s.mailer.Send(ctx, u.Email, msg)
 }
 
 func (s *Service) ResendVerificationEmail(ctx context.Context, userID uuid.UUID) error {
