@@ -78,6 +78,21 @@ test("add worker brings the queue job and its own test along", (t) => {
   assert.match(river, /CompletedJobRetentionPeriod: time\.Minute/);
 });
 
+// /metrics is unauthenticated and lists every route, its traffic shape and the
+// Go version. It used to be registered everywhere with a comment saying to
+// block it at the ingress — which is the kind of rule that is missing exactly
+// when it matters.
+test("observability leaves /metrics unregistered in production", (t) => {
+  const app = project(t, "metrics");
+  cli(app, "add", "observability", "--yes");
+
+  const wiring = read(app, "cmd", "api", "wiring.go");
+  assert.match(wiring, /if !cfg\.IsProd\(\) \{\s*\n\s*r\.GET\("\/metrics"/);
+  // The middleware that collects the numbers is not gated — only the route
+  // that hands them out.
+  assert.match(wiring, /middleware\.Metrics\(\)/);
+});
+
 test("every target that acts on DB_DSN refuses a database on another machine", (t) => {
   const app = project(t, "guard");
   cli(app, "add", "auth", "--defaults");

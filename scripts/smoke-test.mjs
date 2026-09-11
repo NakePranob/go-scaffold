@@ -2371,7 +2371,7 @@ step("custom prefix: generate module + method, routes land under /beta", () => {
 
 step(
   hasDocker && (hasPsql || dockerPgContainer)
-    ? "create --observability: /metrics is real Prometheus output, tracing no-ops with no OTEL endpoint configured, go.mod stays free of quic-go/mysql/clickhouse/mongo"
+    ? "create --observability: /metrics is real Prometheus output outside production and a 404 in it, tracing no-ops with no OTEL endpoint configured, go.mod stays free of quic-go/mysql/clickhouse/mongo"
     : "create --observability: skipped (needs Docker, psql/a Postgres container)",
   () => {
     if (!(hasDocker && (hasPsql || dockerPgContainer))) return;
@@ -2432,6 +2432,19 @@ step(
     if (!/^# (HELP|TYPE) http_request_duration_seconds/m.test(metricsOut)) {
       throw new Error(`expected real Prometheus HELP/TYPE headers for the duration histogram, got:\n${metricsOut}`);
     }
+
+    // Same binary, APP_ENV=production: the route is not registered at all, so
+    // this is a real 404 rather than a 403 that confirms it exists. Collection
+    // still runs — what changes is whether anyone can read it off the
+    // internet, which is exactly what an ingress rule is trusted to do and
+    // exactly what is missing when a dev host is published directly.
+    const prodApi = startApi(obsApp, "obs-api-prod", obsDb, { APP_ENV: "production" });
+    execFileSync("sleep", ["3"]);
+    const prodMetrics = run("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", `${smoke.baseURL}/metrics`]);
+    const prodHealth = run("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", `${smoke.baseURL}/livez`]);
+    stopApi(prodApi);
+    if (prodHealth !== "200") throw new Error(`expected the prod server to be up (livez), got ${prodHealth}`);
+    if (prodMetrics !== "404") throw new Error(`expected /metrics to be unregistered under APP_ENV=production, got ${prodMetrics}`);
 
     const bootLog = readFileSync(logPath("obs-api"), "utf8");
     if (bootLog.toLowerCase().includes("panic")) throw new Error(`server panicked with tracing enabled but no OTEL endpoint configured:\n${bootLog}`);
