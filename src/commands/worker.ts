@@ -136,6 +136,7 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
   const riverTarget = opts.river
     ? "\n# create River's job tables (run once per database, and after upgrading River)\n" +
       "river-migrate:\n" +
+      "\t$(refuse_remote_db)\n" +
       "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \\\n" +
       '\tgo run github.com/riverqueue/river/cmd/river@v0.43.0 migrate-up --line main --database-url "$$DB_DSN"\n' +
       "\n# apply River's own schema to TEST_DB_DSN for the real worker test\n" +
@@ -156,6 +157,7 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
     "# migrate-up first, for the same reason `run` does it: cmd/api refuses to\n" +
     "# boot against a database behind the migrations it embeds.\n" +
     "dev: migrate-up\n" +
+    "\t$(refuse_remote_db)\n" +
     `\t${loadEnv} \\\n` +
     "\t(trap 'kill 0' SIGINT SIGTERM; \\\n" +
     "\t go run ./cmd/api & \\\n" +
@@ -165,6 +167,7 @@ function patchMakefile(makefilePath: string, opts: { river: boolean }): void {
     `# background worker for async job processing (email, ...) — requires ${opts.river ? "Postgres (make river-migrate first)" : "Redis"}.\n` +
     "# Use `make dev` to run both in one terminal, or run this in a separate one.\n" +
     "worker:\n" +
+    "\t$(refuse_remote_db)\n" +
     `\t${loadEnv} go run ./cmd/worker\n` +
     riverTarget;
 
