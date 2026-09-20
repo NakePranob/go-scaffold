@@ -7,6 +7,7 @@ import (
 	"errors"
 	"regexp"
 	"slices"
+	"strings"
 
 	"{{goModule}}/internal/app/role/domain"
 	"{{goModule}}/internal/app/role/ports"
@@ -84,7 +85,8 @@ func (s *Service) SetPermissions(ctx context.Context, code string, permissionCod
 	if err != nil {
 		return nil, wrapFindErr(err)
 	}
-	if err := s.validatePermissionCodes(ctx, permissionCodes); err != nil {
+	permissionCodes, err = s.checkedPermissionCodes(ctx, permissionCodes)
+	if err != nil {
 		return nil, err
 	}
 	if !slices.Contains(permissionCodes, PermRoleManage) {
@@ -102,21 +104,45 @@ func (s *Service) SetPermissions(ctx context.Context, code string, permissionCod
 	return &RoleListItem{Role: *role, Permissions: permissionCodes}, nil
 }
 
-func (s *Service) validatePermissionCodes(ctx context.Context, codes []string) error {
+// checkedPermissionCodes refuses a code that does not exist, and adds the read
+// a write cannot do without.
+//
+// Authz matches one exact code and nothing is implied at check time, so a role
+// granted user:manage-role and not user:read may change what other people are
+// while having no screen to see them on. Nobody ticking the write has ever
+// meant that, and the roles screen is exactly where it gets typed by hand.
+//
+// Keyed on the part of the code before the colon, which is the resource in
+// this project's <resource>:<action> convention, and only when that read
+// exists: role:manage has none to imply and is left alone.
+//
+// Added on the way in rather than implied on the way out, so what a role holds
+// is still only what is stored: the session's permission list, Authz and any
+// menu the frontend gates keep reading the rows, and no second place has to
+// know this rule.
+func (s *Service) checkedPermissionCodes(ctx context.Context, codes []string) ([]string, error) {
 	all, err := s.repo.AllPermissionCodes(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	valid := make(map[string]struct{}, len(all))
 	for _, code := range all {
 		valid[code] = struct{}{}
 	}
+	out := slices.Clone(codes)
 	for _, code := range codes {
 		if _, ok := valid[code]; !ok {
-			return errUnknownPermission()
+			return nil, errUnknownPermission()
+		}
+		read := strings.SplitN(code, ":", 2)[0] + ":read"
+		if read == code {
+			continue
+		}
+		if _, ok := valid[read]; ok && !slices.Contains(out, read) {
+			out = append(out, read)
 		}
 	}
-	return nil
+	return out, nil
 }
 
 func (s *Service) Delete(ctx context.Context, code string) error {
