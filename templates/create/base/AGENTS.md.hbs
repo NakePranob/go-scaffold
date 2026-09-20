@@ -91,6 +91,13 @@ and ports; RBAC owns role policy and authorization adapters. Their public
 module roots compose those pieces, and one canonical implementation tree is
 generated.
 
+`Authz.Require` matches one exact permission code and implies nothing, so a
+screen guarded by `<resource>:read` stays shut to a role holding only
+`<resource>:manage`. `SetPermissions` closes that on the way in instead: any
+code that is not a `:read` is stored with its own resource's `:read` beside it,
+when that read exists in the catalogue. Grant a permission and its read comes
+with it; what a role holds is still exactly the rows stored for it.
+
 ## Hard rule: use the CLI for generated surface
 
 If you are creating a **new domain** (`internal/app/<name>/` with its own

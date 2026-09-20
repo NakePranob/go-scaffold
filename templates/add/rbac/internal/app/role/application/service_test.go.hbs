@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ type fakeRepo struct {
 	role                *domain.Role
 	findErr             error
 	allPermissionCodes  []string
+	setPermissions      []string
 	countWithPermission int64
 	setPermissionsErr   error
 	deleteErr           error
@@ -36,7 +38,8 @@ func (f *fakeRepo) FindByCode(context.Context, string) (*domain.Role, error) {
 	return f.role, nil
 }
 func (f *fakeRepo) Create(context.Context, *domain.Role) error { return nil }
-func (f *fakeRepo) SetPermissions(context.Context, string, []string) error {
+func (f *fakeRepo) SetPermissions(_ context.Context, _ string, codes []string) error {
+	f.setPermissions = codes
 	return f.setPermissionsErr
 }
 func (f *fakeRepo) Delete(context.Context, string) error { return f.deleteErr }
@@ -101,6 +104,39 @@ func TestService_SetPermissions_KeepingRoleManageNeverLocksOut(t *testing.T) {
 	// the guard only fires when PermRoleManage is being dropped — keeping it never trips it
 	if _, err := svc.SetPermissions(context.Background(), "ops", []string{PermRoleManage}); err != nil {
 		t.Fatalf("keeping %s in the new set should never trigger the lockout guard, got %v", PermRoleManage, err)
+	}
+}
+
+func TestService_SetPermissions_AWriteDragsItsReadIn(t *testing.T) {
+	repo := &fakeRepo{
+		role:                &domain.Role{Code: "ops", Name: "Ops"},
+		allPermissionCodes:  []string{PermRoleManage, "user:manage-role", "user:read"},
+		countWithPermission: 1, // another role still grants PermRoleManage
+	}
+	svc := NewService(repo)
+	// user:manage-role on its own is a role that may change what other people
+	// are with no screen to see them on — the user list is user:read.
+	// PermRoleManage has no read to imply and is left alone.
+	out, err := svc.SetPermissions(context.Background(), "ops", []string{"user:manage-role", PermRoleManage})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"user:manage-role", PermRoleManage, "user:read"}
+	if !slices.Equal(repo.setPermissions, want) {
+		t.Fatalf("stored %v, want %v", repo.setPermissions, want)
+	}
+	// The answer is what was stored, or a roles screen redraws the boxes that
+	// were ticked rather than the ones the role now holds.
+	if !slices.Equal(out.Permissions, want) {
+		t.Fatalf("answered %v, want %v", out.Permissions, want)
+	}
+	// Saving the expanded set back adds nothing a second time — the matrix
+	// sends the whole set on every tick.
+	if _, err := svc.SetPermissions(context.Background(), "ops", want); err != nil {
+		t.Fatalf("unexpected error on the second save: %v", err)
+	}
+	if !slices.Equal(repo.setPermissions, want) {
+		t.Fatalf("stored %v on the second save, want %v", repo.setPermissions, want)
 	}
 }
 
