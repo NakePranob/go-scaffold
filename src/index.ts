@@ -12,13 +12,16 @@ import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
-import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile } from "./types";
+import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile, AsvsLevel } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
 import {
   DEFAULT_BROWSER_TOPOLOGY,
   promptAuthStore,
   promptBrowserTopology,
   validateBrowserTopology,
+  DEFAULT_ASVS_LEVEL,
+  parseAsvsLevel,
+  promptAsvsLevel,
 } from "./prompts/auth-wizard";
 import {
   promptAdvancedModuleArchitecture,
@@ -433,7 +436,7 @@ async function runAddWizard(): Promise<void> {
     // all), so the menu has to ask it the same way the worker menu asks for
     // its queue backend — a choice only reachable by knowing the flag name
     // isn't a choice for anyone driving this from the menu.
-    await runAddAuth(await promptAuthStore(), await promptBrowserTopology(), {});
+    await runAddAuth(await promptAuthStore(), await promptBrowserTopology(), await promptAsvsLevel(), {});
   } else if (target === "rbac") {
     await runAddRbac({});
   } else {
@@ -466,12 +469,13 @@ async function runAddWorker(backend: QueueBackend, opts: AddOpts): Promise<void>
   await addWorker(backend);
 }
 
-async function runAddAuth(store: AuthStore, browserTopology: BrowserTopology, opts: AddOpts): Promise<void> {
+async function runAddAuth(store: AuthStore, browserTopology: BrowserTopology, asvsLevel: AsvsLevel, opts: AddOpts): Promise<void> {
   const config = readConfig(process.cwd());
   await confirmAdd(
     [
       "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
       `browser OAuth: frontend-owned callback with server-side provider redirect URI (${browserTopology})`,
+      `OWASP ASVS 5.0.0 L${asvsLevel}: verification target and assessment worksheet (not a compliance claim)`,
       store === "postgres"
         ? "refresh + recovery tokens: Postgres (user_svc.auth_tokens), rate-limit counters in-process — no extra service"
         : pc.yellow("refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres — requires Redis"),
@@ -481,7 +485,7 @@ async function runAddAuth(store: AuthStore, browserTopology: BrowserTopology, op
     ],
     opts
   );
-  await addAuth(store, process.cwd(), browserTopology);
+  await addAuth(store, process.cwd(), browserTopology, asvsLevel);
 }
 
 type BrowserAuthFlagOpts = {
@@ -498,6 +502,12 @@ async function resolveBrowserTopology(opts: BrowserAuthFlagOpts): Promise<Browse
   if (opts.browserTopology !== undefined) return validateBrowserTopology(opts.browserTopology);
   if (opts.defaults || opts.yes) return DEFAULT_BROWSER_TOPOLOGY;
   return promptBrowserTopology();
+}
+
+async function resolveAsvsLevel(opts: { asvsLevel?: string; defaults?: boolean; yes?: boolean }): Promise<AsvsLevel> {
+  if (opts.asvsLevel !== undefined) return parseAsvsLevel(opts.asvsLevel);
+  if (opts.defaults || opts.yes) return DEFAULT_ASVS_LEVEL;
+  return promptAsvsLevel();
 }
 
 async function runAddRbac(opts: AddOpts): Promise<void> {
@@ -585,12 +595,14 @@ add
     "--browser-topology <topology>",
     "browser deployment topology for cookie/CORS policy: same-origin, same-site (different origin), or cross-site (requires HTTPS deployment)"
   )
-  .option("--defaults", "skip store, browser-topology, and confirmation prompts; use Postgres plus local same-site defaults")
-  .option("-y, --yes", "skip confirmation; omitted store/topology use local Postgres and same-site defaults")
+  .option("--asvs-level <level>", "OWASP ASVS 5.0.0 verification target: 1, 2, or 3; does not certify the generated app")
+  .option("--defaults", "skip store, browser-topology, ASVS-level, and confirmation prompts; use Postgres, same-site, and L2")
+  .option("-y, --yes", "skip confirmation; omitted browser topology and ASVS level use same-site and L2")
   .action(
     async (opts: {
       store?: string;
       browserTopology?: string;
+      asvsLevel?: string;
       defaults?: boolean;
       yes?: boolean;
     }) => {
@@ -611,7 +623,8 @@ add
           store = await promptAuthStore();
         }
         const browserTopology = await resolveBrowserTopology(opts);
-        await runAddAuth(store, browserTopology, { yes: opts.yes || opts.defaults });
+        const asvsLevel = await resolveAsvsLevel(opts);
+        await runAddAuth(store, browserTopology, asvsLevel, { yes: opts.yes || opts.defaults });
       } catch (err) {
         fail(err);
       }

@@ -28,6 +28,13 @@ export type AuthStore = "postgres" | "redis";
  */
 export type BrowserTopology = "same-origin" | "same-site" | "cross-site";
 
+/** An assessment target, not a claim that the generated application passes ASVS. */
+export type AsvsLevel = 1 | 2 | 3;
+export interface AsvsTarget {
+  version: "5.0.0";
+  level: AsvsLevel;
+}
+
 /**
  * The architecture choices the generator can currently emit. Keep this
  * deliberately small: a config value is a promise that the templates and
@@ -95,6 +102,8 @@ export interface ProjectConfig {
   /** URL prefix every route is grouped under, e.g. "v1" -> /v1/orders. "" means no prefix. */
   apiPrefix: string;
   features: ProjectFeatures;
+  /** Optional security verification target selected when auth was installed. */
+  asvs?: AsvsTarget;
   architecture: ArchitectureConfig;
   /** Resolved choices recorded for each generated module, keyed by Go package name. */
   modules: Record<string, ModuleConfig>;

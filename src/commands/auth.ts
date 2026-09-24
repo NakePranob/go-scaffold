@@ -5,7 +5,7 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { authFiles } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
-import { AuthStore, BrowserTopology } from "../types";
+import { AsvsLevel, AuthStore, BrowserTopology } from "../types";
 import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchConfigForSMTP, patchMainGoForWorker } from "../utils/platform-patcher";
 import { MAIL_CLIENT_ONLY } from "../templates/worker-manifest";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
@@ -13,7 +13,7 @@ import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
-import { DEFAULT_BROWSER_TOPOLOGY, validateBrowserTopology } from "../prompts/auth-wizard";
+import { DEFAULT_ASVS_LEVEL, DEFAULT_BROWSER_TOPOLOGY, validateBrowserTopology } from "../prompts/auth-wizard";
 import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
@@ -56,10 +56,12 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
 export async function addAuth(
   store: AuthStore = "postgres",
   projectDir: string = process.cwd(),
-  browserTopology: BrowserTopology = DEFAULT_BROWSER_TOPOLOGY
+  browserTopology: BrowserTopology = DEFAULT_BROWSER_TOPOLOGY,
+  asvsLevel: AsvsLevel = DEFAULT_ASVS_LEVEL
 ): Promise<void> {
   const config = readConfig(projectDir);
   const browser = validateBrowserTopology(browserTopology);
+  if (![1, 2, 3].includes(asvsLevel)) throw new Error("ASVS level must be 1, 2, or 3");
 
   // No longer a prerequisite. Without a worker the verification and reset mail
   // goes out inline instead of through a queue — a real trade (those two
@@ -90,6 +92,9 @@ export async function addAuth(
     redis: store === "redis",
     worker,
   });
+  await applyTemplateEntries(projectDir, [
+    { template: "add/auth/docs/asvs-auth.md.hbs", output: "docs/security/asvs-auth.md" },
+  ], { asvsLevel, asvsL2: asvsLevel >= 2, asvsL3: asvsLevel >= 3 });
 
   const migrationsDir = path.join(projectDir, "migrations");
   fs.ensureDirSync(migrationsDir);
@@ -222,6 +227,7 @@ export async function addAuth(
 
   writeConfig(projectDir, {
     ...config,
+    asvs: { version: "5.0.0", level: asvsLevel },
     features: { ...config.features, auth: true, authStore: store },
     modules: {
       ...config.modules,
@@ -230,6 +236,7 @@ export async function addAuth(
   });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
+  console.log(`OWASP ASVS 5.0.0 L${asvsLevel} verification target recorded; review docs/security/asvs-auth.md before making any compliance claim`);
   console.log(
     worker
       ? "verification + password-reset mail goes through the queue"

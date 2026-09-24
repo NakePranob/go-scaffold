@@ -119,10 +119,19 @@ function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string)
     goModule,
     apiPrefix,
     features: features as ProjectFeatures,
+    ...(raw.asvs !== undefined ? { asvs: normalizeAsvsTarget(raw.asvs, features.auth) } : {}),
     architecture,
     modules,
     ...(raw.scaffoldVersion ? { scaffoldVersion: raw.scaffoldVersion } : {}),
   };
+}
+
+function normalizeAsvsTarget(raw: unknown, auth: boolean | undefined): ProjectConfig["asvs"] {
+  if (!isRecord(raw) || raw.version !== "5.0.0" || ![1, 2, 3].includes(raw.level)) {
+    throw new Error(`${CONFIG_FILE}.asvs must contain version "5.0.0" and level 1, 2, or 3`);
+  }
+  if (!auth) throw new Error(`${CONFIG_FILE}.asvs requires features.auth=true`);
+  return { version: "5.0.0", level: raw.level as 1 | 2 | 3 };
 }
 
 function normalizeArchitecture(raw: unknown): ArchitectureConfig {

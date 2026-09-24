@@ -110,8 +110,9 @@ for a named per-module preset, or add `--full`, `--cqrs`, `--auth`, and
 `--permission <code>` deliberately.
 `--get-mode`
 is required for `--type get`, and `undo module` needs `-y`. For `add auth`,
-choose the backing store and browser topology with `--defaults` or explicit
-flags (`--store`, `--browser-topology`) as well as the confirmation flag.
+choose the backing store, browser topology, and ASVS verification target with
+`--defaults` or explicit flags (`--store`, `--browser-topology`,
+`--asvs-level`) as well as the confirmation flag. `--defaults` selects L2.
 For `add worker`, choose the backing queue with `--defaults` or an explicit
 flag.
 
@@ -169,6 +170,10 @@ endpoint is production-ready.
   process restart.
 
 ## Auth and error boundaries
+
+The optional `asvs` config records an OWASP ASVS 5.0.0 verification target,
+not a compliance result. `docs/security/asvs-auth.md` lists known generated
+auth gaps. Review the complete deployed application before claiming a level.
 
 Treat auth and security changes as high-risk and get the required owner
 approval before changing their contract.
