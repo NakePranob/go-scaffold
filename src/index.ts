@@ -12,9 +12,20 @@ import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
-import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile, LockoutPolicy } from "./types";
+import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile, AsvsLevel, LockoutPolicy } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
-import { DEFAULT_BROWSER_TOPOLOGY, DEFAULT_LOCKOUT_POLICY, promptAuthStore, promptBrowserTopology, promptLockoutPolicy, validateBrowserTopology, validateLockoutPolicy } from "./prompts/auth-wizard";
+import {
+  DEFAULT_BROWSER_TOPOLOGY,
+  DEFAULT_LOCKOUT_POLICY,
+  promptAuthStore,
+  promptBrowserTopology,
+  promptLockoutPolicy,
+  validateBrowserTopology,
+  validateLockoutPolicy,
+  DEFAULT_ASVS_LEVEL,
+  parseAsvsLevel,
+  promptAsvsLevel,
+} from "./prompts/auth-wizard";
 import {
   promptAdvancedModuleArchitecture,
   promptApplicationStyle,
@@ -428,7 +439,13 @@ async function runAddWizard(): Promise<void> {
     // all), so the menu has to ask it the same way the worker menu asks for
     // its queue backend — a choice only reachable by knowing the flag name
     // isn't a choice for anyone driving this from the menu.
-    await runAddAuth(await promptAuthStore(), await promptBrowserTopology(), await promptLockoutPolicy(), {});
+    await runAddAuth(
+      await promptAuthStore(),
+      await promptBrowserTopology(),
+      await promptAsvsLevel(),
+      await promptLockoutPolicy(),
+      {}
+    );
   } else if (target === "rbac") {
     await runAddRbac({});
   } else {
@@ -461,12 +478,19 @@ async function runAddWorker(backend: QueueBackend, opts: AddOpts): Promise<void>
   await addWorker(backend);
 }
 
-async function runAddAuth(store: AuthStore, browserTopology: BrowserTopology, lockout: LockoutPolicy, opts: AddOpts): Promise<void> {
+async function runAddAuth(
+  store: AuthStore,
+  browserTopology: BrowserTopology,
+  asvsLevel: AsvsLevel,
+  lockout: LockoutPolicy,
+  opts: AddOpts
+): Promise<void> {
   const config = readConfig(process.cwd());
   await confirmAdd(
     [
       "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
       `browser OAuth: frontend-owned callback with server-side provider redirect URI (${browserTopology})`,
+      `OWASP ASVS 5.0.0 L${asvsLevel}: verification target and assessment worksheet (not a compliance claim)`,
       store === "postgres"
         ? "refresh + recovery tokens: Postgres (user_svc.auth_tokens), rate-limit counters in-process — no extra service"
         : pc.yellow("refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres — requires Redis"),
@@ -479,11 +503,12 @@ async function runAddAuth(store: AuthStore, browserTopology: BrowserTopology, lo
     ],
     opts
   );
-  await addAuth(store, process.cwd(), browserTopology, lockout);
+  await addAuth(store, process.cwd(), browserTopology, asvsLevel, lockout);
 }
 
 type BrowserAuthFlagOpts = {
   browserTopology?: string;
+  asvsLevel?: string;
   lockout?: string;
   defaults?: boolean;
   yes?: boolean;
@@ -497,6 +522,12 @@ async function resolveBrowserTopology(opts: BrowserAuthFlagOpts): Promise<Browse
   if (opts.browserTopology !== undefined) return validateBrowserTopology(opts.browserTopology);
   if (opts.defaults || opts.yes) return DEFAULT_BROWSER_TOPOLOGY;
   return promptBrowserTopology();
+}
+
+async function resolveAsvsLevel(opts: { asvsLevel?: string; defaults?: boolean; yes?: boolean }): Promise<AsvsLevel> {
+  if (opts.asvsLevel !== undefined) return parseAsvsLevel(opts.asvsLevel);
+  if (opts.defaults || opts.yes) return DEFAULT_ASVS_LEVEL;
+  return promptAsvsLevel();
 }
 
 // Same shape again: the lockout shape is a real fork in the generated code, so
@@ -592,16 +623,18 @@ add
     "--browser-topology <topology>",
     "browser deployment topology for cookie/CORS policy: same-origin, same-site (different origin), or cross-site (requires HTTPS deployment)"
   )
+  .option("--asvs-level <level>", "OWASP ASVS 5.0.0 verification target: 1, 2, or 3; does not certify the generated app")
   .option(
     "--lockout <policy>",
     'how repeated failed logins are refused: "progressive" (default, 3 free then a doubling wait to 15 minutes) or "fixed" (10 attempts, 5 minute lock, count cleared after 15 quiet minutes)'
   )
-  .option("--defaults", "skip store, browser-topology, lockout, and confirmation prompts; use Postgres plus local same-site defaults")
-  .option("-y, --yes", "skip confirmation; omitted store/topology/lockout use local Postgres, same-site, and progressive defaults")
+  .option("--defaults", "skip store, browser-topology, ASVS-level, lockout, and confirmation prompts; use Postgres, same-site, L2, and progressive lockout")
+  .option("-y, --yes", "skip confirmation; omitted browser topology, ASVS level, and lockout use same-site, L2, and progressive defaults")
   .action(
     async (opts: {
       store?: string;
       browserTopology?: string;
+      asvsLevel?: string;
       lockout?: string;
       defaults?: boolean;
       yes?: boolean;
@@ -623,8 +656,9 @@ add
           store = await promptAuthStore();
         }
         const browserTopology = await resolveBrowserTopology(opts);
+        const asvsLevel = await resolveAsvsLevel(opts);
         const lockout = await resolveLockoutPolicy(opts);
-        await runAddAuth(store, browserTopology, lockout, { yes: opts.yes || opts.defaults });
+        await runAddAuth(store, browserTopology, asvsLevel, lockout, { yes: opts.yes || opts.defaults });
       } catch (err) {
         fail(err);
       }

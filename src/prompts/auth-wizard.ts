@@ -1,5 +1,27 @@
 import { select } from "./interactive";
-import { AuthStore, BrowserTopology, LockoutPolicy } from "../types";
+import { AsvsLevel, AuthStore, BrowserTopology, LockoutPolicy } from "../types";
+
+export const DEFAULT_ASVS_LEVEL: AsvsLevel = 2;
+
+export function parseAsvsLevel(raw: string): AsvsLevel {
+  const value = raw.trim();
+  if (value !== "1" && value !== "2" && value !== "3") {
+    throw new Error(`--asvs-level must be one of: 1, 2, 3 (got "${raw}")`);
+  }
+  return Number(value) as AsvsLevel;
+}
+
+export async function promptAsvsLevel(): Promise<AsvsLevel> {
+  return select<AsvsLevel>({
+    message: "Which OWASP ASVS 5.0.0 level should this project target for verification?",
+    default: DEFAULT_ASVS_LEVEL,
+    choices: [
+      { name: "L1 — baseline", value: 1, description: "minimum security verification target" },
+      { name: "L2 — most applications", value: 2, description: "includes L1; requires further auth controls and review" },
+      { name: "L3 — high assurance", value: 3, description: "includes L1 and L2; requires phishing-resistant MFA and review" },
+    ],
+  });
+}
 
 // The one decision `add auth` cannot make for you: where refresh tokens and
 // rate-limit counters live. Recovery tokens always use the durable Postgres

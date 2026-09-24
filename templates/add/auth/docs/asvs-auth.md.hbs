@@ -1,0 +1,32 @@
+# Auth security verification target
+
+Target: **OWASP ASVS 5.0.0 Level {{asvsLevel}}**. This is a target for the
+generated application, not a claim of ASVS compliance or OWASP certification.
+L2 includes L1 requirements; L3 includes L1 and L2 requirements. Assess the
+whole deployed application against the [versioned ASVS requirements](https://github.com/OWASP/ASVS/tree/v5.0.0/5.0),
+including session management, authorization, configuration, and the frontend.
+
+Record each applicable requirement as Pass, Fail, or N/A with a test, source
+reference, or deployment evidence. Document why an item is N/A. The entries
+below are starting points for auth, not a complete ASVS requirement matrix.
+
+| Requirement | Current generated state | Verification needed |
+| --- | --- | --- |
+| v5.0.0-6.1.1 / 6.3.1: anti-automation | Per-IP rate limit and per-email failed-login backoff are generated | Document deployment policy; test distributed abuse and malicious account lockout |
+| v5.0.0-6.2.2 / 6.2.3: password change | Password reset exists; authenticated password-change flow is not generated | Implement and test a change flow requiring the current password |
+| v5.0.0-6.2.4: common passwords | No common-password blocklist is generated | Add a blocklist of at least the applicable top 3000 passwords and test register/change/reset paths |
+| v5.0.0-6.3.2: default accounts | `cmd/seed` supports an operator-supplied admin | Ensure no deployed default credentials or enabled default account |
+{{#if asvsL2}}
+| v5.0.0-6.2.12: breached passwords | No breached-password screening is generated | Add screening on registration and password changes; verify failure handling |
+| v5.0.0-6.3.3: stronger authentication | TOTP exists but is disabled globally by default and optional per user | Define and enforce an MFA policy for the deployed app, or document the permitted alternative and mitigations |
+| v5.0.0-6.3.4: multiple login paths | Email/password and Google OIDC can both issue sessions | Verify equivalent security controls and authentication strength across all enabled paths |
+{{/if}}
+{{#if asvsL3}}
+| v5.0.0-6.3.3: phishing-resistant factor | No FIDO2/WebAuthn factor is generated | Implement and verify a hardware-backed, phishing-resistant factor where required |
+| v5.0.0-6.3.5: suspicious-login notices | No suspicious-authentication notification flow is generated | Add detection, notices, and tests for relevant events |
+{{/if}}
+
+Run `go-scaffold check` for structural generator checks and this target's
+known gaps. A passing architecture check is not an ASVS assessment. Capture
+source review, integration tests, deployment settings, and manual assessment
+results before saying the application meets the selected level.

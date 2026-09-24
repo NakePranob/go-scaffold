@@ -5,7 +5,7 @@ import { readConfig, writeConfig } from "../utils/config";
 import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import { authFiles } from "../templates/auth-manifest";
 import { patchConfigForAuth, patchMainGoForAuth } from "../utils/auth-patcher";
-import { AuthStore, BrowserTopology, LockoutPolicy } from "../types";
+import { AsvsLevel, AuthStore, BrowserTopology, LockoutPolicy } from "../types";
 import { patchCiForRedis, patchComposeForRedis, patchConfigForRedis, patchConfigForSMTP, patchMainGoForWorker } from "../utils/platform-patcher";
 import { MAIL_CLIENT_ONLY } from "../templates/worker-manifest";
 import { patchGolangciForModule } from "../utils/golangci-patcher";
@@ -13,7 +13,13 @@ import { newMigrationVersion } from "../utils/migrations";
 import { patchOpenapiIndexRaw } from "../utils/openapi-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
-import { DEFAULT_BROWSER_TOPOLOGY, DEFAULT_LOCKOUT_POLICY, validateBrowserTopology, validateLockoutPolicy } from "../prompts/auth-wizard";
+import {
+  DEFAULT_ASVS_LEVEL,
+  DEFAULT_BROWSER_TOPOLOGY,
+  DEFAULT_LOCKOUT_POLICY,
+  validateBrowserTopology,
+  validateLockoutPolicy,
+} from "../prompts/auth-wizard";
 import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
 
 // URL (relative to the api prefix) -> docs file (relative to docs/) for every
@@ -57,10 +63,12 @@ export async function addAuth(
   store: AuthStore = "postgres",
   projectDir: string = process.cwd(),
   browserTopology: BrowserTopology = DEFAULT_BROWSER_TOPOLOGY,
+  asvsLevel: AsvsLevel = DEFAULT_ASVS_LEVEL,
   lockout: LockoutPolicy = DEFAULT_LOCKOUT_POLICY
 ): Promise<void> {
   const config = readConfig(projectDir);
   const browser = validateBrowserTopology(browserTopology);
+  if (![1, 2, 3].includes(asvsLevel)) throw new Error("ASVS level must be 1, 2, or 3");
   const lockoutPolicy = validateLockoutPolicy(lockout);
 
   // No longer a prerequisite. Without a worker the verification and reset mail
@@ -96,6 +104,9 @@ export async function addAuth(
     // equality helper the renderer does not have
     fixedLockout: lockoutPolicy === "fixed",
   });
+  await applyTemplateEntries(projectDir, [
+    { template: "add/auth/docs/asvs-auth.md.hbs", output: "docs/security/asvs-auth.md" },
+  ], { asvsLevel, asvsL2: asvsLevel >= 2, asvsL3: asvsLevel >= 3 });
 
   const migrationsDir = path.join(projectDir, "migrations");
   fs.ensureDirSync(migrationsDir);
@@ -228,6 +239,7 @@ export async function addAuth(
 
   writeConfig(projectDir, {
     ...config,
+    asvs: { version: "5.0.0", level: asvsLevel },
     features: { ...config.features, auth: true, authStore: store },
     modules: {
       ...config.modules,
@@ -236,6 +248,7 @@ export async function addAuth(
   });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
+  console.log(`OWASP ASVS 5.0.0 L${asvsLevel} verification target recorded; review docs/security/asvs-auth.md before making any compliance claim`);
   console.log(
     worker
       ? "verification + password-reset mail goes through the queue"

@@ -78,7 +78,7 @@ go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [
 go-scaffold generate migration <name>
 go-scaffold check
 go-scaffold config
-go-scaffold add auth --store <postgres|redis> --browser-topology <same-origin|same-site|cross-site> [--defaults] [--yes]
+go-scaffold add auth --store <postgres|redis> --browser-topology <same-origin|same-site|cross-site> --asvs-level <1|2|3> [--defaults] [--yes]
 go-scaffold add worker --queue <postgres|redis> [--defaults]
 go-scaffold undo module <name> -y
 ~~~
@@ -95,8 +95,10 @@ separately. Add `--auth` and `--permission <code>` only when they are wanted;
 permission also requires `--auth`. `--get-mode` is required with `--type get`;
 `--field` is required for GET-one and cannot be id. `undo` requires
 `-y`. `add auth` accepts `--store postgres|redis` and
-`--browser-topology same-origin|same-site|cross-site`; `--defaults` selects
-Postgres and same-site. Postgres keeps refresh, recovery, and MFA state in
+`--browser-topology same-origin|same-site|cross-site` and `--asvs-level 1|2|3`;
+`--defaults` selects Postgres, same-site, and ASVS L2 as a verification target.
+The target is not a compliance claim; review `docs/security/asvs-auth.md` and
+the full application. Postgres keeps refresh, recovery, and MFA state in
 Postgres and uses an in-process rate limiter. Redis keeps refresh tokens and
 rate-limit counters in Redis, while recovery and MFA state remain durable in
 Postgres. Without `add worker`, auth mail is sent inline; with a worker it uses
@@ -322,7 +324,7 @@ with a positional constructor.
 When adding auth from a script, pass the choices explicitly, for example:
 
 ~~~bash
-go-scaffold add auth --store postgres --browser-topology same-site --defaults --yes
+go-scaffold add auth --store postgres --browser-topology same-site --asvs-level 2 --yes
 ~~~
 
 ## Runtime, migration, and security guardrails
