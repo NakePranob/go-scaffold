@@ -2,11 +2,15 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 
 	"{{goModule}}/internal/app/role/domain"
+	"{{goModule}}/internal/app/role/ports"
 )
 
 // fakeRepo = mock of the repository interface, so the service can be tested
@@ -17,13 +21,16 @@ type fakeRepo struct {
 	role                *domain.Role
 	findErr             error
 	allPermissionCodes  []string
+	setPermissions      []string
 	countWithPermission int64
 	setPermissionsErr   error
 	deleteErr           error
 }
 
 func (f *fakeRepo) PermissionCodes(context.Context, string) ([]string, error) { return nil, nil }
-func (f *fakeRepo) FindAll(context.Context, int, int) ([]domain.Role, error)  { return nil, nil }
+func (f *fakeRepo) FindAll(context.Context, ports.ListFilter) ([]domain.Role, int64, error) {
+	return nil, 0, nil
+}
 func (f *fakeRepo) FindByCode(context.Context, string) (*domain.Role, error) {
 	if f.findErr != nil {
 		return nil, f.findErr
@@ -31,7 +38,8 @@ func (f *fakeRepo) FindByCode(context.Context, string) (*domain.Role, error) {
 	return f.role, nil
 }
 func (f *fakeRepo) Create(context.Context, *domain.Role) error { return nil }
-func (f *fakeRepo) SetPermissions(context.Context, string, []string) error {
+func (f *fakeRepo) SetPermissions(_ context.Context, _ string, codes []string) error {
+	f.setPermissions = codes
 	return f.setPermissionsErr
 }
 func (f *fakeRepo) Delete(context.Context, string) error { return f.deleteErr }
@@ -99,6 +107,39 @@ func TestService_SetPermissions_KeepingRoleManageNeverLocksOut(t *testing.T) {
 	}
 }
 
+func TestService_SetPermissions_AWriteDragsItsReadIn(t *testing.T) {
+	repo := &fakeRepo{
+		role:                &domain.Role{Code: "ops", Name: "Ops"},
+		allPermissionCodes:  []string{PermRoleManage, "user:manage-role", "user:read"},
+		countWithPermission: 1, // another role still grants PermRoleManage
+	}
+	svc := NewService(repo)
+	// user:manage-role on its own is a role that may change what other people
+	// are with no screen to see them on — the user list is user:read.
+	// PermRoleManage has no read to imply and is left alone.
+	out, err := svc.SetPermissions(context.Background(), "ops", []string{"user:manage-role", PermRoleManage})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"user:manage-role", PermRoleManage, "user:read"}
+	if !slices.Equal(repo.setPermissions, want) {
+		t.Fatalf("stored %v, want %v", repo.setPermissions, want)
+	}
+	// The answer is what was stored, or a roles screen redraws the boxes that
+	// were ticked rather than the ones the role now holds.
+	if !slices.Equal(out.Permissions, want) {
+		t.Fatalf("answered %v, want %v", out.Permissions, want)
+	}
+	// Saving the expanded set back adds nothing a second time — the matrix
+	// sends the whole set on every tick.
+	if _, err := svc.SetPermissions(context.Background(), "ops", want); err != nil {
+		t.Fatalf("unexpected error on the second save: %v", err)
+	}
+	if !slices.Equal(repo.setPermissions, want) {
+		t.Fatalf("stored %v on the second save, want %v", repo.setPermissions, want)
+	}
+}
+
 func TestService_Delete_LastRoleManagerLockout(t *testing.T) {
 	repo := &fakeRepo{role: &domain.Role{Code: "ops"}, countWithPermission: 0}
 	svc := NewService(repo)
@@ -122,5 +163,18 @@ func TestService_Delete_SystemRoleRejected(t *testing.T) {
 	err := svc.Delete(context.Background(), "admin")
 	if got := status(t, err); got != http.StatusConflict {
 		t.Fatalf("want 409 for a system role, got %d", got)
+	}
+}
+
+func TestToRoleResponse_EmptyPermissionsMarshalAsArray(t *testing.T) {
+	// The repository's Pluck leaves the slice nil for a role with no grants,
+	// and `null` breaks any client that treats permissions as a list — which
+	// is every one of them, since the seeded `staff` role starts empty.
+	body, err := json.Marshal(ToRoleResponse(RoleListItem{Role: domain.Role{Code: "staff"}}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"Permissions":[]`) {
+		t.Fatalf("want an empty array for a role with no permissions, got %s", body)
 	}
 }

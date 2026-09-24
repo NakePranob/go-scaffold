@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
 	"{{goModule}}/internal/shared/id"
 
 	"github.com/google/uuid"
@@ -32,12 +33,12 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (*domain.User, erro
 
 // List is kept for the optional RBAC admin routes. It is not part of the
 // public self-service auth surface until that feature is installed.
-func (s *Service) List(ctx context.Context, limit, offset int) ([]domain.User, error) {
-	items, err := s.repo.FindAll(ctx, limit, offset)
+func (s *Service) List(ctx context.Context, filter ports.ListFilter) ([]domain.User, int64, error) {
+	items, total, err := s.repo.FindAll(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("list users: %w", err)
+		return nil, 0, fmt.Errorf("list users: %w", err)
 	}
-	return items, nil
+	return items, total, nil
 }
 
 // EnsureUser is idempotent and used only by cmd/seed. It never resets an

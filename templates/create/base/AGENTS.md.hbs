@@ -91,6 +91,13 @@ and ports; RBAC owns role policy and authorization adapters. Their public
 module roots compose those pieces, and one canonical implementation tree is
 generated.
 
+`Authz.Require` matches one exact permission code and implies nothing, so a
+screen guarded by `<resource>:read` stays shut to a role holding only
+`<resource>:manage`. `SetPermissions` closes that on the way in instead: any
+code that is not a `:read` is stored with its own resource's `:read` beside it,
+when that read exists in the catalogue. Grant a permission and its read comes
+with it; what a role holds is still exactly the rows stored for it.
+
 ## Hard rule: use the CLI for generated surface
 
 If you are creating a **new domain** (`internal/app/<name>/` with its own
@@ -101,6 +108,13 @@ an existing domain, stop and run the CLI:
 go-scaffold generate module <name> --defaults
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete>
 ```
+
+`generate method` extends the modules `generate module` created, and the one
+`add auth` owns. It refuses `add rbac`'s: that module builds its response from
+a role *together with its permissions* rather than from the entity, and the
+generator has no shape to write against there. Add an endpoint to it by hand —
+a route in `internal/app/role/adapters/inbound/http/handler.go`, a method on
+the application service, and its entry in `docs/`.
 
 Pass every value as a flag in CI. In an interactive shell, omitted values use
 the project defaults as the initial wizard choices. In a non-interactive
@@ -143,7 +157,8 @@ These remain deliberate engineering work:
 - any work in a repository that lacks `go-scaffold.config.json`.
 
 Generated methods are explicit stubs. `generate method` GET-all reuses
-`FindAll` until real filtering is added; POST and DELETE return an internal
+`FindAll`, so it answers the same rows as the module's own list until
+`ports.ListFilter` grows the fields that endpoint narrows by; POST and DELETE return an internal
 error until implemented; PUT/PATCH intentionally return `501 Not Implemented`
 and must not read or write a record before their behavior is designed. Treat
 the generated OpenAPI TODO contract as incomplete, not as a promise that the
@@ -153,14 +168,46 @@ endpoint is production-ready.
 
 - `APP_ENV` is the single environment gate and accepts only `development` or
   `production`. Do not add a parallel flag such as `AUTO_MIGRATE`.
-- Development may use the convenience `db.AutoMigrate(...)` path for the
-  models registered by the generator. Production must never bootstrap or
-  mutate schema at API startup: apply versioned SQL with
-  `make migrate-up`, then let the startup migration-version check fail fast if
-  the database is behind or dirty.
+- **The schema comes from `migrations/` in every environment, development
+  included.** `cmd/api/wiring.go` runs the migration-version check and nothing
+  else: apply versioned SQL with `make migrate-up`, and let the check fail
+  fast when the database is behind or dirty. Never bootstrap or mutate schema
+  at API startup, and do not reintroduce a `db.AutoMigrate(...)` convenience
+  for development — GORM builds tables from the Go structs, so it writes none
+  of the CHECK constraints, none of the foreign keys and none of the seeded
+  rows a migration carries, and it is additive over an already-migrated
+  database, so a column a model has and a migration does not shows up on one
+  developer's machine and nowhere else.
 - Any schema change is a reviewed pair of versioned files in `migrations/`.
   Use `go-scaffold generate migration <name>` for changes outside a new
   module, write both directions, and test them against a disposable database.
+  Write the SQL first and the Go struct second: the SQL is what exists, the
+  struct is Go's view of it, and doing it the other way round feels finished
+  while the database still has nothing.
+- **A destructive change takes two deploys, never one.** During a rolling
+  deploy the old binary and the new one serve traffic at the same time, so a
+  migration has to be readable by the version of the code still running.
+  `CheckMigrationVersion` is built for that order — a database ahead of the
+  binary is a warning, behind it is fatal — which only works if migrations go
+  out first and stay backward compatible.
+
+  | change | deploys |
+  |---|---|
+  | add a nullable column, add a table, add an index | 1 |
+  | add `NOT NULL` with a `DEFAULT` | 1 — but it rewrites the table, so check its size first |
+  | rename a column | **2** |
+  | drop a column or a table | **2** |
+  | change a column's type | **2** |
+
+  The two are *expand* then *contract*: add the new shape and have the code
+  write both and prefer the new one; deploy that everywhere; only then drop the
+  old shape. `DROP COLUMN` in one round pulls the floor out from under the pods
+  still serving requests.
+- `make migrate-verify` (up → down -all → up) runs in CI and is the only thing
+  that catches a `down.sql` which has quietly stopped reversing its `up.sql`.
+  Without it that is found during a rollback, which is the worst moment to find
+  out. Never run it against a database whose data matters — `down -all` means
+  it.
 - Keep `*sql.DB`, Redis, queue, mail, and other external resources owned by
   their composition root. Close them on every exit path and preserve the
   signal-driven graceful shutdown; do not call `os.Exit` from a goroutine or

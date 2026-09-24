@@ -7,6 +7,7 @@ import (
 
 	"{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/app/user/domain"
+	"{{goModule}}/internal/app/user/ports"
 	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/httpx"
 	"{{goModule}}/internal/shared/middleware"
@@ -154,7 +155,16 @@ func (h *Handler) Register(rg gin.IRouter) {
 
 func (h *Handler) adminListUsers(c *gin.Context) {
 	p := pagination.Parse(c)
-	items, err := h.svc.List(c.Request.Context(), p.Limit, p.Offset)
+	// One struct all the way down, so a filter added later is a field on
+	// ports.ListFilter and not a new argument on the three signatures below.
+	filter := ports.ListFilter{
+		Search: p.Search,
+		Sort:   p.Sort,
+		Desc:   p.Desc,
+		Limit:  p.Limit,
+		Offset: p.Offset,
+	}
+	items, total, err := h.svc.List(c.Request.Context(), filter)
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return
@@ -163,7 +173,7 @@ func (h *Handler) adminListUsers(c *gin.Context) {
 	for i := range items {
 		out[i] = toMeResponse(&items[i])
 	}
-	c.JSON(http.StatusOK, p.Response(out))
+	c.JSON(http.StatusOK, p.ResponseWithTotal(out, total))
 }
 func (h *Handler) adminGetUser(c *gin.Context) {
 	id, ok := httpx.ParseID(c)
@@ -225,6 +235,12 @@ func toHTTPError(err error) error {
 			status = http.StatusUnprocessableEntity
 		}
 		return apperror.New(status, ruleErr.Code, ruleErr.Message)
+	}
+	// Before the catch-all: a stub `generate method` wrote has no body yet and
+	// 501 says so, where NewInternal would report a server fault for a route
+	// nobody has written.
+	if errors.Is(err, domain.ErrNotImplemented) {
+		return apperror.New(http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
 	}
 	if errors.Is(err, domain.ErrNotFound) {
 		return apperror.NewNotFound("user not found")

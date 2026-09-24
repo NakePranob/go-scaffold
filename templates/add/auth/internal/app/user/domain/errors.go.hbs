@@ -3,6 +3,10 @@ package domain
 import "errors"
 
 var (
+	// What every endpoint `generate method` adds returns until an engineer
+	// writes its body. The inbound adapter maps it to 501, so a scaffolded
+	// route answers "not built yet" rather than reporting a server fault.
+	ErrNotImplemented    = errors.New("user operation is not implemented")
 	ErrNotFound          = errors.New("user not found")
 	ErrConflict          = errors.New("user conflict")
 	ErrInvalidCredential = errors.New("invalid credentials")

@@ -325,6 +325,20 @@ CRUD modules contain the starter list/get/create/update/delete methods. Lean
 modules keep the endpoint surface small so it can be extended with
 generate method.
 
+Every generated list endpoint reads `?limit=&offset=&q=&sort=&order=`, passes
+one `ports.ListFilter` from handler to application to repository, and answers
+the page beside the total the filter matched. The lists `add auth` and
+`add rbac` own use the same contract. `FindAll` calls `dbq.Search` with no
+columns and carries a `dbq.Sort` with no columns either, so `?q=` and `?sort=`
+are accepted and ignored until you name them in
+`adapters/outbound/postgres/repository.go`; add further filters as fields on
+`ListFilter` rather than as parameters.
+
+`dbq.Sort` is why a sort name off the request never reaches the SQL — `ORDER
+BY` takes no bound parameter, so only a key of its `Columns` map is ever
+interpolated — and it adds the tiebreaker and `NULLS LAST` that every stable
+paged list needs.
+
 CQRS modules additionally contain:
 
 ~~~text
@@ -361,6 +375,13 @@ If the module, method name, or endpoint details are omitted, the wizard asks
 for them. The module selector lists modules that exist on disk, so the command
 does not require memorising the normalised Go package name.
 
+`generate method` extends the modules `generate module` created, and the one
+`add auth` owns. It refuses `add rbac`'s role module: that module builds its
+HTTP response from a role *together with its permissions* rather than from the
+entity alone, so no generated body fits it. Add an endpoint there by hand — a
+route in `internal/app/role/adapters/inbound/http/handler.go`, a method on the
+application service, and its OpenAPI entry.
+
 ### Method options
 
 | Option | Effect |
@@ -373,7 +394,7 @@ The generated route and code depend on the method type:
 
 | Input | Route shape | Result |
 |---|---|---|
-| get --get-mode all | GET /<plural>/<method> | Uses the module's list query; add real filtering yourself |
+| get --get-mode all | GET /<plural>/<method> | Reuses the module's list query, so it inherits ListFilter, ?q= and the total |
 | get --get-mode one --field <field> | GET /<plural>/<field>/:<field> | Adds a FindBy<Field> query and a column/index migration |
 | post | POST /<plural>/<method> | Adds a request body DTO and a TODO service method |
 | put / patch | <VERB> /<plural>/:id/<method> | Loads by ID and leaves the update behavior as a TODO |
@@ -490,10 +511,23 @@ Auth adds:
   `password_credentials`, and `external_identities`; a Google-only user can
   add a password through `POST /users/me/identities/local` without creating a
   second account
-- failed-login lockout and user-session management
+- failed-login lockout in either of two shapes (`--lockout`), both ignoring a
+  repeated wrong password so a stale saved credential cannot lock the owner
+  out — and user-session management
 - MFA endpoints and configuration hooks
 - internal/app/user, auth middleware, cmd/seed, migrations, and OpenAPI
   documents when OpenAPI is enabled
+
+The --lockout choice controls what repeated failed logins cost:
+
+| --lockout | Policy | A patient attacker gets |
+|---|---|---|
+| progressive (default) | 3 free attempts, then the wait doubles from 2s to a 15 minute ceiling | ~4 guesses/hour |
+| fixed | 10 attempts, then a 5 minute lock; the count clears after 15 quiet minutes | ~12 guesses/hour |
+
+Both are per-account, temporary, and need no admin to unlock. `fixed` is the
+shape AD/Entra administrators expect and is kinder to someone who simply
+forgot their password; `progressive` starts costing time sooner.
 
 The --store choice controls refresh-token storage and rate-limit counters:
 
@@ -592,10 +626,11 @@ my-api/
 │   │   ├── config/                 # environment configuration
 │   │   ├── apperror/               # consistent application errors
 │   │   ├── dberr/                  # database error classification
+│   │   ├── dbq/                    # escaped contains-search and whitelisted sort
 │   │   ├── httpx/                  # HTTP parsing and binding helpers
 │   │   ├── id/                     # UUID generation
 │   │   ├── middleware/             # request ID, logging, errors, CORS
-│   │   ├── pagination/             # pagination parsing and responses
+│   │   ├── pagination/             # ?limit/offset/q/sort/order parsing, responses
 │   │   └── tx/                     # transaction context helpers
 │   └── app/                        # empty until generate module is used
 ├── migrations/                     # embedded, versioned SQL migrations

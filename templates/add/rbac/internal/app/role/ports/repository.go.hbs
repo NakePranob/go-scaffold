@@ -7,9 +7,21 @@ import (
 	"{{goModule}}/internal/app/role/domain"
 )
 
+// ListFilter is the whole question the role list asks. The zero value is "the
+// first page of everything", so a caller only sets what it narrows by. Put new
+// filters here as fields rather than as arguments — see
+// docs/architect/patterns.md.
+type ListFilter struct {
+	// Search is ?q= as shared/pagination parsed it, matched against the code
+	// and the display name.
+	Search string
+	Limit  int
+	Offset int
+}
+
 type Repository interface {
 	PermissionCodes(context.Context, string) ([]string, error)
-	FindAll(context.Context, int, int) ([]domain.Role, error)
+	FindAll(context.Context, ListFilter) ([]domain.Role, int64, error)
 	FindByCode(context.Context, string) (*domain.Role, error)
 	Create(context.Context, *domain.Role) error
 	SetPermissions(context.Context, string, []string) error

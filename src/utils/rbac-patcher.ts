@@ -1,7 +1,7 @@
 import { AuthStore } from "../types";
 import fs from "fs-extra";
 import { authHandlerLineFor } from "./auth-patcher";
-import { insertBeforeMarker, insertBeforeMarkerOnce } from "./marker-patch";
+import { hasMarker, insertBeforeMarker, insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const SCHEMA_MARKER = "// go-scaffold:schemas";
@@ -190,18 +190,29 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
   const importLine = `"${goModule}/internal/app/role"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
   const modelImportLine = `rolepostgres "${goModule}/internal/app/role/adapters/outbound/postgres"`;
-  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+  // Only the development AutoMigrate list ever used this alias.
+  if (hasMarker(content, MODEL_MARKER)) {
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+  }
 
   const schemaBlock = [
     'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS role_svc").Error; err != nil {',
     '\treturn fmt.Errorf("create schema role_svc: %w", err)',
     "}",
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS role_svc");
+  // The development AutoMigrate bootstrap is gone from the template, and with
+  // it the schema/model markers. A project scaffolded before that still has
+  // them, and still wants its tables registered there — so these stay, guarded
+  // by the marker's presence rather than deleted. New projects skip them.
+  if (hasMarker(content, SCHEMA_MARKER)) {
+    content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS role_svc");
+  }
 
   const migrateLines = ["&rolepostgres.Role{},", "&rolepostgres.Permission{},", "&rolepostgres.RolePermission{},"];
-  for (const line of migrateLines) {
-    content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
+  if (hasMarker(content, MODEL_MARKER)) {
+    for (const line of migrateLines) {
+      content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
+    }
   }
 
   const wiring = { goModule, queueBackend: "river" as const, store, worker };

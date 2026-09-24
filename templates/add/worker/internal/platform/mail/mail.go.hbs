@@ -1,12 +1,20 @@
 package mail
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
+	"net/mail"
 	"net/smtp"
+	"net/textproto"
+	"time"
 
 	"{{goModule}}/internal/shared/config"
+	"{{goModule}}/internal/shared/emails"
 )
 
 // Client sends plain-text email over SMTP (net/smtp already handles STARTTLS
@@ -30,14 +38,33 @@ func Open(cfg config.Config) *Client {
 // Send delivers a plain-text email. If SMTP isn't configured (dev default —
 // SMTP_HOST unset), it logs the message instead of failing, so flows that
 // send email stay testable without a real mail server.
-func (c *Client) Send(to, subject, body string) error {
+// Send delivers a rendered message. If SMTP isn't configured (dev default —
+// SMTP_HOST unset), it logs the plain-text part instead of failing, so flows
+// that send email stay testable without a mail server and the link stays
+// readable in the log.
+func (c *Client) Send(to string, m emails.Message) error {
+	// build() skips a part whose body is empty, so a Message with neither half
+	// would go out as a multipart/alternative containing no parts at all —
+	// which every client renders as a blank mail. Refusing here leaves the job
+	// failed and visible instead of delivered and silent.
+	if m.Text == "" && m.HTML == "" {
+		return fmt.Errorf("refusing to send an email with no body (subject %q)", m.Subject)
+	}
 	if c.host == "" {
-		// ponytail: no SMTP configured — log instead of failing. Upgrade path:
-		// set SMTP_HOST (+ USERNAME/PASSWORD/FROM) once a real environment needs it.
-		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", subject, "body", body)
+		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", m.Subject, "body", m.Text)
 		return nil
 	}
-	msg := fmt.Sprintf("To: %s\r\nFrom: %s\r\nSubject: %s\r\n\r\n%s\r\n", to, c.from, subject, body)
+	// ParseAddress so SMTP_FROM can carry a display name. The envelope needs
+	// the bare address — a relay handed `Name <a@b.com>` in MAIL FROM rejects
+	// the whole message — while the header keeps the name.
+	from, err := mail.ParseAddress(c.from)
+	if err != nil {
+		return fmt.Errorf("parse SMTP_FROM: %w", err)
+	}
+	msg, err := build(from.String(), to, m)
+	if err != nil {
+		return err
+	}
 	// nil Auth when no username is set — a relay/local catcher that doesn't
 	// require auth (or doesn't advertise AUTH at all) rejects a non-nil Auth
 	// outright, even with empty credentials.
@@ -45,7 +72,48 @@ func (c *Client) Send(to, subject, body string) error {
 	if c.username != "" {
 		auth = smtp.PlainAuth("", c.username, c.password, c.host)
 	}
-	return smtp.SendMail(c.host+":"+c.port, auth, c.from, []string{to}, []byte(msg))
+	return smtp.SendMail(c.host+":"+c.port, auth, from.Address, []string{to}, msg)
+}
+
+// build assembles a multipart/alternative message: plain text first, HTML
+// second, which is the order the spec uses to mean "prefer the last one you
+// can render". Sending HTML alone is a spam signal on its own, and leaves
+// nothing for a text-only client.
+func build(from, to string, m emails.Message) ([]byte, error) {
+	var buf bytes.Buffer
+	parts := multipart.NewWriter(&buf)
+	// Date is required by RFC 5322 and a missing one is a spam signal; the
+	// subject is Q-encoded because copy is free to be non-ASCII.
+	fmt.Fprintf(&buf, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%s\r\n\r\n",
+		from, to, mime.QEncoding.Encode("utf-8", m.Subject), time.Now().Format(time.RFC1123Z), parts.Boundary())
+	for _, part := range []struct{ contentType, body string }{
+		{"text/plain; charset=UTF-8", m.Text},
+		{"text/html; charset=UTF-8", m.HTML},
+	} {
+		if part.body == "" {
+			continue
+		}
+		w, err := parts.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {part.contentType},
+			"Content-Transfer-Encoding": {"quoted-printable"},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build email part: %w", err)
+		}
+		// quoted-printable keeps 8-bit copy intact over a 7-bit path and wraps
+		// the long lines HTML is full of; SMTP rejects lines over 998.
+		qp := quotedprintable.NewWriter(w)
+		if _, err := qp.Write([]byte(part.body)); err != nil {
+			return nil, fmt.Errorf("encode email part: %w", err)
+		}
+		if err := qp.Close(); err != nil {
+			return nil, fmt.Errorf("encode email part: %w", err)
+		}
+	}
+	if err := parts.Close(); err != nil {
+		return nil, fmt.Errorf("close email parts: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // SyncClient sends in the caller's goroutine, satisfying the same mailer
@@ -64,6 +132,6 @@ func NewSyncClient(c *Client) *SyncClient { return &SyncClient{c: c} }
 // Send ignores ctx: there is no queue here to join a transaction, so the mail
 // goes out whether or not the caller's transaction ends up committing. That is
 // the guarantee the Postgres-backed queue exists to give you.
-func (c *SyncClient) Send(_ context.Context, to, subject, body string) error {
-	return c.c.Send(to, subject, body)
+func (c *SyncClient) Send(_ context.Context, to string, m emails.Message) error {
+	return c.c.Send(to, m)
 }

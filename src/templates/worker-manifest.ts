@@ -8,12 +8,22 @@ type Entry = { template: string; output: string };
 // pulling it in would drag platform/queue along with it.
 export const MAIL_CLIENT_ONLY: Entry[] = [
   { template: "add/worker/internal/platform/mail/mail.go.hbs", output: "internal/platform/mail/mail.go" },
+  { template: "add/worker/internal/platform/mail/mail_test.go.hbs", output: "internal/platform/mail/mail_test.go" },
+  // What the client sends, not how it sends it: the copy lives here so a
+  // service never writes markup, and mail.Client depends on emails.Message,
+  // so whatever installs one installs the other.
+  { template: "add/worker/internal/shared/emails/emails.go.hbs", output: "internal/shared/emails/emails.go" },
+  { template: "add/worker/internal/shared/emails/emails_test.go.hbs", output: "internal/shared/emails/emails_test.go" },
+  { template: "add/worker/internal/shared/emails/templates/layout.html.hbs", output: "internal/shared/emails/templates/layout.html" },
+  { template: "add/worker/internal/shared/emails/templates/reset_password.html.hbs", output: "internal/shared/emails/templates/reset_password.html" },
+  { template: "add/worker/internal/shared/emails/templates/verify_email.html.hbs", output: "internal/shared/emails/templates/verify_email.html" },
 ];
 
 const SHARED: Entry[] = [
   { template: "add/worker/internal/platform/queue/queue.go.hbs", output: "internal/platform/queue/queue.go" },
   ...MAIL_CLIENT_ONLY,
   { template: "add/worker/internal/platform/mail/task.go.hbs", output: "internal/platform/mail/task.go" },
+  { template: "add/worker/internal/platform/mail/task_test.go.hbs", output: "internal/platform/mail/task_test.go" },
   { template: "add/worker/cmd/worker/main.go.hbs", output: "cmd/worker/main.go" },
 ];
 

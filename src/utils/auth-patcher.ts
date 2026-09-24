@@ -1,5 +1,5 @@
 import fs from "fs-extra";
-import { ensureImport, insertBeforeMarkerOnce } from "./marker-patch";
+import { ensureImport, hasMarker, insertBeforeMarkerOnce } from "./marker-patch";
 import { AuthStore, QueueBackend } from "../types";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
@@ -81,7 +81,7 @@ export function patchConfigForAuth(configGoPath: string): void {
 
 // patchMainGoForAuth wires the user domain into cmd/api: its import, a
 // queue.Client (needed for the forgot-password email — cmd/api itself never
-// enqueued anything before this), its models in the development bootstrap, a
+// enqueued anything before this), its models in a legacy development bootstrap, a
 // prod guard against the still-default JWT secret, and its route
 // registration (the domain's own Handler.Register splits /auth public vs
 // /users protected — main.go doesn't need to know that split, same
@@ -128,7 +128,11 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   const importLine = `"${goModule}/internal/app/user"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
   const modelImportLine = `usermodel "${goModule}/internal/app/user/adapters/outbound/postgres"`;
-  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+  // Only the development AutoMigrate list ever used this alias, so it is only
+  // an import where that list still exists — see the guard further down.
+  if (hasMarker(content, MODEL_MARKER)) {
+    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
+  }
   if (w.worker) {
     const queueImportLine = `"${goModule}/internal/platform/queue"`;
     content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
@@ -185,7 +189,13 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
     '\treturn fmt.Errorf("create schema user_svc: %w", err)',
     "}",
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
+  // The development AutoMigrate bootstrap is gone from the template, and with
+  // it the schema/model markers. A project scaffolded before that still has
+  // them, and still wants its tables registered there — so these stay, guarded
+  // by the marker's presence rather than deleted. New projects skip them.
+  if (hasMarker(content, SCHEMA_MARKER)) {
+    content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaBlock, "CREATE SCHEMA IF NOT EXISTS user_svc");
+  }
 
   const migrateLines = [
     "&usermodel.User{},",
@@ -198,8 +208,10 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   // live in Redis, so reset/verification can share the user transaction.
   migrateLines.push("&usermodel.AuthToken{},");
   migrateLines.push("&usermodel.MFAEnrollment{},", "&usermodel.MFAChallenge{},", "&usermodel.MFARecoveryCode{},");
-  for (const line of migrateLines) {
-    content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
+  if (hasMarker(content, MODEL_MARKER)) {
+    for (const line of migrateLines) {
+      content = insertBeforeMarkerOnce(content, MODEL_MARKER, line, line);
+    }
   }
 
   // Keep auth construction inside the feature package. The root only chooses

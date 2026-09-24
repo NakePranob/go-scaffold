@@ -154,7 +154,7 @@ type ServicePort interface {
 	ConfirmMFA(context.Context, uuid.UUID, string) ([]string, error)
 	DisableMFA(context.Context, uuid.UUID, string) error
 	Get(context.Context, uuid.UUID) (*domain.User, error)
-	List(context.Context, int, int) ([]domain.User, error)
+	List(context.Context, ports.ListFilter) ([]domain.User, int64, error)
 	SetRole(context.Context, uuid.UUID, string) (*domain.User, error)
 }
 

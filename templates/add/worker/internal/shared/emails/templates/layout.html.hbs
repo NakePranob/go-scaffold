@@ -1,0 +1,81 @@
+{{{{raw}}}}{{/*
+  The shell every mail shares, in the shape a transactional mail actually
+  takes: a white sheet inset on a grey canvas, a wordmark, a heading with size
+  to it, and the legal line outside the sheet where people expect it.
+
+  Square corners and no border on the sheet are deliberate. Outlook renders on
+  Word's engine and drops border-radius silently, so anything whose shape
+  depends on it arrives squared off anyway:
+
+    https://www.caniemail.com/features/css-border-radius/
+
+  Tables and inline styles are not nostalgia either: Outlook and Gmail strip
+  <style> rules and ignore most of flexbox.
+
+  The palette here is deliberately colourless — a generator has no business
+  guessing your brand. Swap the near-black button and the wordmark for yours;
+  the structure is what is worth keeping.
+
+  A mail file defines "subject", "preview", "content", "note" and "text"; this
+  file provides "layout", the "button" partial — which takes its label from the
+  mail's own "action" block — and "greeting".
+*/}}
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en" style="color-scheme:light dark;supported-color-schemes:light dark;">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<title>{{template "subject" .}}</title>
+</head>
+<body style="width:100%!important;height:100%;-webkit-text-size-adjust:none;margin:0;padding:0;background-color:#f3f3f6;color:#52525b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+
+{{/* Preheader: the line the inbox list shows after the subject. Hidden this
+     thoroughly because half of these properties are the one a given client
+     honours. */}}
+<span style="display:none!important;visibility:hidden;mso-hide:all;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{template "preview" .}}</span>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0;padding:0;background-color:#f3f3f6;">
+<tr><td align="center" style="padding:40px 12px 44px;">
+
+<table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;margin:0 auto;background-color:#ffffff;">
+
+<tr><td style="padding:32px 40px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+  <div style="font-size:17px;font-weight:700;line-height:1.35;color:#18181b;">Acme</div>
+</td></tr>
+
+<tr><td style="padding:34px 40px 44px;word-break:break-word;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+{{template "content" .}}
+  <p style="margin:26px 0 0;font-size:14px;line-height:1.7;color:#8e8e96;">{{template "note" .}}</p>
+</td></tr>
+
+</table>
+
+<table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;margin:0 auto;">
+<tr><td align="center" style="padding:26px 32px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.7;text-align:center;color:#9b9ba3;">
+You are receiving this because someone asked for it on your account.<br>
+This message was sent automatically — please do not reply.
+</td></tr>
+</table>
+
+</td></tr>
+</table>
+</body>
+</html>{{end}}
+
+{{/* Padding comes from border-width, not padding: Outlook on Windows shrinks a
+     padded inline-block back to its text. The fallback URL underneath is the
+     difference between a broken mail and an ugly one when a client refuses to
+     style an anchor. */}}
+{{define "button"}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:28px 0 24px;padding:0;">
+<tr><td align="left">
+<a href="{{.Link}}" style="display:inline-block;box-sizing:border-box;-webkit-text-size-adjust:none;border-radius:6px;border-style:solid;border-width:15px 28px;border-color:#18181b;background-color:#18181b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;line-height:1;color:#ffffff;text-decoration:none;">{{template "action" .}}</a>
+</td></tr>
+</table>
+<p style="margin:0 0 6px;font-size:14px;line-height:1.7;color:#8e8e96;">Or paste this link into your browser:</p>
+<p style="margin:0;font-size:14px;line-height:1.7;word-break:break-all;"><a href="{{.Link}}" style="color:#3f3f46;">{{.Link}}</a></p>
+{{end}}
+
+{{define "greeting"}}{{if .Name}}Hi {{.Name}},{{else}}Hi,{{end}}{{end}}
+{{{{/raw}}}}

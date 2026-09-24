@@ -38,7 +38,11 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.match(agents, /internal\/composition/);
     assert.match(agents, /APP_ENV/);
     assert.match(agents, /AUTO_MIGRATE/);
-    assert.match(agents, /Production must never bootstrap or/);
+    // The schema rule, in the form it took once the development AutoMigrate
+    // bootstrap was removed: migrations own it everywhere, and nothing
+    // bootstraps at startup.
+    assert.match(agents, /schema comes from `migrations\/` in every environment/);
+    assert.match(agents, /Never bootstrap or mutate schema\n?\s*at API startup/);
     assert.match(agents, /501 Not Implemented/);
     assert.match(agents, /go test -race \.\/\.\.\./);
     assert.match(agents, /REQUIRE_TEST_DB=true/);

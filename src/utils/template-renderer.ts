@@ -6,6 +6,17 @@ import Handlebars from "handlebars";
 
 Handlebars.registerHelper("eq", (a, b) => a === b);
 
+// Go's text/template and Handlebars both spell interpolation {{...}}, so a
+// template written for one is eaten by the other. A file whose body is a Go
+// template — the mail templates in shared/emails — wraps itself in a raw block
+// and arrives byte for byte:
+//
+//   {{{{raw}}}}{{define "subject"}}…{{end}}{{{{/raw}}}}
+//
+// The trade is that nothing inside is substituted, which is the right way
+// round: a generator has no business guessing a project's mail copy.
+Handlebars.registerHelper("raw", (options: Handlebars.HelperOptions) => options.fn(options.data?.root ?? {}));
+
 export function getTemplatesRoot(): string {
   const candidates = [
     path.join(__dirname, "..", "..", "templates"),

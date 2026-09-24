@@ -26,4 +26,12 @@ post:
               - { $ref: './schemas.yaml#/MFAChallengeResponse' }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
-    "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }
+    "429":
+      description: |
+        Two different limiters answer with this status, and the body's `code`
+        says which: `RATE_LIMITED` is the per-IP request rate on this route,
+        while `AUTH_TOO_MANY_ATTEMPTS` means this account is locked out after
+        repeated failures and no password will be checked until it expires.
+      content:
+        application/json:
+          schema: { $ref: '../common/schemas.yaml#/Error' }

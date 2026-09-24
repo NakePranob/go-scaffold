@@ -36,6 +36,15 @@ export interface HexagonalMethodPatchPaths {
   repositoryErrorMapper?: string;
   repositoryStubReceiver?: string;
   handlerErrorMapper?: string;
+  /**
+   * How the module spells its HTTP response. A generated module uses the
+   * plain `response` / `toResponse` / `ToResponse`; a hand-written feature
+   * names them after its entity, and emitting the generic ones there compiles
+   * to `undefined: toResponse`.
+   */
+  handlerResponseType?: string;
+  handlerResponseMapper?: string;
+  applicationResponseMapper?: string;
 }
 
 type FileSet = Map<string, string>;
@@ -90,7 +99,7 @@ function applicationInterfaceMarker(paths: HexagonalMethodPatchPaths, type: Meth
 
 function methodSignature(naming: ModuleNaming, method: MethodNaming, opts: { type: MethodType; getMode?: GetMethodMode; field?: string }): string {
   if (opts.type === "get" && opts.getMode === "all") {
-    return `${method.pascalName}(context.Context, int, int) ([]domain.${naming.pascalName}, error)`;
+    return `${method.pascalName}(context.Context, ports.ListFilter) ([]domain.${naming.pascalName}, int64, error)`;
   }
   if (opts.type === "get") {
     return `${method.pascalName}(context.Context, string) (*domain.${naming.pascalName}, error)`;
@@ -105,8 +114,11 @@ function applicationMethod(naming: ModuleNaming, method: MethodNaming, opts: { t
   const target = receiver.startsWith("s ") ? "s" : "h";
   if (opts.type === "get" && opts.getMode === "all") {
     return [
-      `func (${receiver}) ${method.pascalName}(ctx context.Context, limit, offset int) ([]domain.${naming.pascalName}, error) {`,
-      `\treturn ${target}.repo.FindAll(ctx, limit, offset)`,
+      `// TODO: narrow this list. It reuses FindAll, so today it answers the`,
+      `// same rows as the module's own list — give ports.ListFilter the fields`,
+      `// this endpoint filters by and read them in the repository.`,
+      `func (${receiver}) ${method.pascalName}(ctx context.Context, filter ports.ListFilter) ([]domain.${naming.pascalName}, int64, error) {`,
+      `\treturn ${target}.repo.FindAll(ctx, filter)`,
       `}`,
       "",
     ].join("\n");
@@ -141,6 +153,14 @@ function applicationMethod(naming: ModuleNaming, method: MethodNaming, opts: { t
   ].join("\n");
 }
 
+// "ports" is the module's own package, not a shared one — every other token
+// in an imports list resolves under internal/shared.
+function handlerImportPath(need: string, goModule: string, naming: ModuleNaming): string {
+  if (need.startsWith("net/")) return need;
+  if (need === "ports") return `${goModule}/internal/app/${naming.pkg}/ports`;
+  return `${goModule}/internal/shared/${need}`;
+}
+
 function handlerMethod(
   naming: ModuleNaming,
   method: MethodNaming,
@@ -148,25 +168,34 @@ function handlerMethod(
   cqrs: boolean,
   routeReceiver: string,
   errorMapper: string,
+  appPkg: string,
+  names: { responseType: string; responseMapper: string; applicationResponseMapper: string },
 ): { route: string; body: string; imports: string[] } {
   const receiver = cqrs ? (opts.type === "get" ? "h.queries" : "h.commands") : "h.svc";
   if (opts.type === "get" && opts.getMode === "all") {
     return {
       route: `${routeReceiver}.GET("/${method.pathSegment}", h.${method.handlerName})`,
-      imports: ["net/http", "pagination"],
+      imports: ["net/http", "pagination", "ports"],
       body: [
         `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
         `\tp := pagination.Parse(c)`,
-        `\titems, err := ${receiver}.${method.pascalName}(c.Request.Context(), p.Limit, p.Offset)`,
+        `\tfilter := ports.ListFilter{`,
+        `\t\tSearch: p.Search,`,
+        `\t\tSort:   p.Sort,`,
+        `\t\tDesc:   p.Desc,`,
+        `\t\tLimit:  p.Limit,`,
+        `\t\tOffset: p.Offset,`,
+        `\t}`,
+        `\titems, total, err := ${receiver}.${method.pascalName}(c.Request.Context(), filter)`,
         `\tif err != nil {`,
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tout := make([]response, len(items))`,
+        `\tout := make([]${names.responseType}, len(items))`,
         `\tfor i := range items {`,
-        `\t\tout[i] = toResponse(application.ToResponse(&items[i]))`,
+        `\t\tout[i] = ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(&items[i]))`,
         `\t}`,
-        `\tc.JSON(http.StatusOK, p.Response(out))`,
+        `\tc.JSON(http.StatusOK, p.ResponseWithTotal(out, total))`,
         `}`,
         "",
       ].join("\n"),
@@ -186,7 +215,7 @@ function handlerMethod(
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tc.JSON(http.StatusOK, toResponse(application.ToResponse(m)))`,
+        `\tc.JSON(http.StatusOK, ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(m)))`,
         `}`,
         "",
       ].join("\n"),
@@ -208,7 +237,7 @@ function handlerMethod(
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-      `\tc.JSON(http.StatusCreated, toResponse(application.ToResponse(m)))`,
+      `\tc.JSON(http.StatusCreated, ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(m)))`,
         `}`,
         "",
       ].join("\n"),
@@ -238,10 +267,51 @@ function assertNotDuplicate(content: string, needle: string, what: string): void
   if (content.includes(needle)) throw new Error(`${what} already exists — pick a different method name`);
 }
 
-function handlerRouteReceiver(content: string): string {
-  // Auth's protected routes use usersGroup; generated CRUD modules use the
-  // local g group. Both remain the module's inbound adapter boundary.
-  return hasMarker(content, "// go-scaffold:user-routes") ? "usersGroup" : "g";
+/**
+ * The variable a new route hangs off, read out of the handler rather than
+ * guessed from it.
+ *
+ * Every module declares its own group — `g` in a generated CRUD module,
+ * `usersGroup` in auth, `roles` in rbac — and a hard-coded pair of names
+ * silently emitted `g.PATCH(...)` into modules that never declared a `g`. The
+ * project then failed to compile with `undefined: g`, after the CLI had
+ * already reported success.
+ *
+ * Matched on the mounted path, not on declaration order: a module may open
+ * several groups (rbac has one for roles and one for permissions), and the
+ * one that owns the module's own collection is the one a new endpoint belongs
+ * to.
+ */
+function handlerRouteReceiver(content: string, naming: ModuleNaming): string {
+  const owning = new RegExp(`(\\w+)\\s*:=\\s*\\w+\\.Group\\(\\s*"/${naming.plural}"`).exec(content);
+  if (owning) return owning[1];
+  const anyGroup = /(\w+)\s*:=\s*\w+\.Group\(/.exec(content);
+  if (anyGroup) return anyGroup[1];
+  throw new Error(
+    "no route group found in the handler — `generate method` adds a route to an existing group and this module declares none",
+  );
+}
+
+/**
+ * The function that turns an application error into an HTTP one, by its
+ * signature rather than by a name the caller passes in. Modules disagree:
+ * generated ones use `appError`/`applicationError`, auth and rbac both use
+ * `toHTTPError`.
+ */
+function handlerErrorMapperName(content: string, fallback: string): string {
+  const found = /func\s+(\w+)\(err error\) error \{/.exec(content);
+  return found ? found[1] : fallback;
+}
+
+/**
+ * How the file being patched refers to the module's application package.
+ * `add auth` imports it aliased as `userapp`; everything else imports it
+ * plainly. Emitting the wrong one compiles to `undefined: application`.
+ */
+function applicationAlias(content: string, goModule: string, naming: ModuleNaming): string {
+  const importPath = `${goModule}/internal/app/${naming.pkg}/application`;
+  const aliased = new RegExp(`(\\w+)\\s+"${importPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`).exec(content);
+  return aliased ? aliased[1] : "application";
 }
 
 export function hexagonalMarkersPresent(paths: HexagonalMethodPatchPaths): boolean {
@@ -302,12 +372,18 @@ export function patchHexagonalMethod(
     method,
     opts,
     cqrs,
-    handlerRouteReceiver(handler),
-    paths.handlerErrorMapper ?? "appError",
+    handlerRouteReceiver(handler, naming),
+    handlerErrorMapperName(handler, paths.handlerErrorMapper ?? "appError"),
+    applicationAlias(handler, goModule, naming),
+    {
+      responseType: paths.handlerResponseType ?? "response",
+      responseMapper: paths.handlerResponseMapper ?? "toResponse",
+      applicationResponseMapper: paths.applicationResponseMapper ?? "ToResponse",
+    },
   );
   handler = insert(handler, HANDLER_ROUTES_MARKER, handlerResult.route);
   handler = insert(handler, HANDLER_FUNCS_MARKER, handlerResult.body);
-  for (const need of handlerResult.imports) handler = addImport(handler, need.startsWith("net/") ? need : `${goModule}/internal/shared/${need}`);
+  for (const need of handlerResult.imports) handler = addImport(handler, handlerImportPath(need, goModule, naming));
   write(files, paths.handlerPath, handler);
 
   if (opts.type === "post") {
@@ -319,16 +395,19 @@ export function patchHexagonalMethod(
 
     let requestDTO = read(files, paths.requestDTOPath);
     assertNotDuplicate(requestDTO, `type ${inputName} struct`, `HTTP DTO "${inputName}"`);
+    // Read before the import is added, so an alias the file already carries
+    // wins over the plain name this would otherwise introduce.
+    const requestAppPkg = applicationAlias(requestDTO, goModule, naming);
     requestDTO = addImport(requestDTO, `${goModule}/internal/app/${naming.pkg}/application`);
     requestDTO = insert(requestDTO, requestDTOMarker(requestDTO), [
       `type ${inputName} struct {`,
-      `\t// TODO: mirror request fields from application.${inputName} and add JSON/binding tags`,
+      `\t// TODO: mirror request fields from ${requestAppPkg}.${inputName} and add JSON/binding tags`,
       `}`,
       "",
-      `func to${inputName}(in ${inputName}) application.${inputName} {`,
+      `func to${inputName}(in ${inputName}) ${requestAppPkg}.${inputName} {`,
       `\t// TODO: map request fields explicitly into the application input.`,
       `\t_ = in`,
-      `\treturn application.${inputName}{}`,
+      `\treturn ${requestAppPkg}.${inputName}{}`,
       `}`,
       "",
     ].join("\n"));

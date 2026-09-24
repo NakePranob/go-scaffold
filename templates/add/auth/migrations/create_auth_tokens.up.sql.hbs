@@ -17,8 +17,8 @@ CREATE TABLE user_svc.auth_tokens (
     last_used_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Named to match model.AuthToken's own `index:` tags exactly, so the
--- development bootstrap and production migration describe the same indexes.
+-- Named to match model.AuthToken's own `index:` tags exactly, so the Go model
+-- and the schema that actually exists describe the same indexes.
 CREATE INDEX idx_auth_tokens_user_kind ON user_svc.auth_tokens (user_id, kind);
 CREATE INDEX idx_auth_tokens_expires_at ON user_svc.auth_tokens (expires_at);
 CREATE INDEX idx_auth_tokens_absolute_expires_at ON user_svc.auth_tokens (absolute_expires_at);

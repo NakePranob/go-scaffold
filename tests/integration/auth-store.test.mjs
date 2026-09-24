@@ -30,6 +30,25 @@ function project(t, store) {
 const read = (app, ...p) => readFileSync(path.join(app, ...p), "utf8");
 const has = (app, ...p) => existsSync(path.join(app, ...p));
 
+/**
+ * Every table auth needs, as a migration — including auth_tokens, which
+ * recovery tokens use whether refresh lives in Postgres or Redis. This is the
+ * only place the schema comes from: wiring.go has no development AutoMigrate
+ * list to register a model in.
+ */
+function assertAuthMigrations(app) {
+  const files = execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" });
+  for (const table of [
+    "create_users",
+    "create_user_emails",
+    "create_password_credentials",
+    "create_external_identities",
+    "create_auth_tokens",
+  ]) {
+    assert.ok(files.includes(`_${table}.up.sql`), `missing migration ${table}`);
+  }
+}
+
 test("--store postgres writes the Postgres store and no Redis anywhere", (t) => {
   const app = project(t, "postgres");
 
@@ -47,16 +66,11 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.doesNotMatch(main, /rdb/, "wiring.go must not reference a Redis client");
-  // the table AutoMigrate needs in dev, and the migration prod uses
-  assert.match(main, /&usermodel\.AuthToken\{\},/);
-  assert.match(main, /&usermodel\.UserEmail\{\},/);
-  assert.match(main, /&usermodel\.PasswordCredential\{\},/);
-  assert.match(main, /&usermodel\.ExternalIdentity\{\},/);
-  assert.ok(
-    readFileSync(path.join(app, "migrations", "embed.go"), "utf8") &&
-      execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),
-    "the auth_tokens migration must be generated"
-  );
+  // The tables are the migrations' — wiring.go has no model list to register
+  // them in, in any environment.
+  assert.doesNotMatch(main, /usermodel/, "the model alias existed only for the AutoMigrate list");
+  assert.ok(readFileSync(path.join(app, "migrations", "embed.go"), "utf8"));
+  assertAuthMigrations(app);
 });
 
 test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t) => {
@@ -81,10 +95,8 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
   assert.doesNotMatch(composition, /func NewPgTokenStore\(db \*gorm\.DB\)/);
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
-  assert.match(main, /&usermodel\.AuthToken\{\},/, "recovery tokens need the auth_tokens table");
-  assert.match(main, /&usermodel\.UserEmail\{\},/);
-  assert.match(main, /&usermodel\.PasswordCredential\{\},/);
-  assert.match(main, /&usermodel\.ExternalIdentity\{\},/);
+  assert.doesNotMatch(main, /usermodel/, "the model alias existed only for the AutoMigrate list");
+  assertAuthMigrations(app);
   assert.ok(has(app, "internal/app/user/adapters/outbound/postgres/tokenstore_recovery.go"));
   assert.ok(
     execFileSync("ls", [path.join(app, "migrations")], { encoding: "utf8" }).includes("_create_auth_tokens.up.sql"),

@@ -16,7 +16,7 @@ function cli(cwd, ...args) {
 function cliFailure(cwd, ...args) {
   assert.throws(
     () => cli(cwd, ...args),
-    (err) => /Browser topology|unknown/i.test(String(err.stdout ?? "") + String(err.stderr ?? "") + String(err.message)),
+    (err) => /Browser topology|Lockout policy|unknown/i.test(String(err.stdout ?? "") + String(err.stderr ?? "") + String(err.message)),
   );
 }
 
@@ -214,9 +214,47 @@ test("browser topology rejects unsupported values", (t) => {
   cliFailure(project, "add", "auth", "--browser-topology", "embedded-webview", "--defaults", "--yes");
 });
 
+// The lockout shape is a real fork in the generated code — different
+// constants, a different repository signature, and different SQL — so it is
+// checked by generating both and letting the project's own tests run.
+test("--lockout fixed generates the threshold/duration/window policy", (t) => {
+  const project = createProject(t, "lockout-fixed-app");
+  cli(project, "add", "auth", "--store", "postgres", "--lockout", "fixed", "--yes");
+
+  const application = ["internal", "app", "user", "application"];
+  const localAuth = read(project, ...application, "local_auth.go");
+  const repository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "repository.go");
+
+  assert.match(localAuth, /loginMaxAttempts = 10/);
+  assert.match(localAuth, /loginLockFor\s+= 5 \* time\.Minute/);
+  assert.match(localAuth, /loginCountWindow = 15 \* time\.Minute/);
+  assert.doesNotMatch(localAuth, /loginFreeAttempts|loginMaxLock/, "the progressive constants must not survive the fork");
+  assert.match(repository, /maxAttempts int, lockFor, window time\.Duration/);
+  assert.doesNotMatch(repository, /power\(2,/, "the fixed policy has no doubling term");
+
+  execFileSync("go", ["mod", "tidy"], { cwd: project, stdio: "ignore" });
+  execFileSync("go", ["test", "./..."], { cwd: project, stdio: "ignore" });
+});
+
+test("the default lockout stays progressive", (t) => {
+  const project = createProject(t, "lockout-default-app");
+  cli(project, "add", "auth", "--defaults");
+
+  const localAuth = read(project, "internal", "app", "user", "application", "local_auth.go");
+  assert.match(localAuth, /loginFreeAttempts = 3/);
+  assert.match(localAuth, /loginMaxLock\s+= 15 \* time\.Minute/);
+  assert.doesNotMatch(localAuth, /loginCountWindow/);
+});
+
+test("lockout policy rejects unsupported values", (t) => {
+  const project = createProject(t, "lockout-bad-app");
+  cliFailure(project, "add", "auth", "--lockout", "admin-unlock", "--defaults", "--yes");
+});
+
 test("add auth help exposes topology without server frontend URL flags", () => {
   const help = execFileSync("node", [CLI, "add", "auth", "--help"], { encoding: "utf8" });
   assert.match(help, /--browser-topology <topology>/);
+  assert.match(help, /--lockout <policy>/);
   assert.doesNotMatch(help, /--frontend-success-url|--frontend-error-url/);
 });
 

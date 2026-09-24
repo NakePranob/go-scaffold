@@ -148,6 +148,17 @@ async function generateHexagonalMethod(
   }
   const cqrs = moduleConfig.applicationStyle === "cqrs";
   const authModule = naming.pkg === "user" && fs.existsSync(path.join(moduleDir, "application", "contracts.go"));
+  // `add rbac`'s role module, not a module someone generated and named "role":
+  // the generated one has no application/errors.go, so it stays extendable.
+  const rbacModule = naming.pkg === "role" && fs.existsSync(path.join(moduleDir, "application", "errors.go"));
+  if (rbacModule) {
+    throw new Error(
+      "internal/app/role comes from `add rbac`, which builds its HTTP response from a role *and its permissions* " +
+        "rather than from the entity alone — `generate method` has no shape to write against there. Add the endpoint " +
+        "by hand: a route in internal/app/role/adapters/inbound/http/handler.go, a method on the application service, " +
+        "and its OpenAPI entry.",
+    );
+  }
   const paths: HexagonalMethodPatchPaths = {
     dtoPath: path.join(moduleDir, "application", "dto.go"),
     requestDTOPath: path.join(moduleDir, "adapters", "inbound", "http", "dto.go"),
@@ -158,6 +169,17 @@ async function generateHexagonalMethod(
     queryPath: cqrs ? path.join(moduleDir, "application", "queries.go") : undefined,
     handlerPath: path.join(moduleDir, "adapters", "inbound", "http", "handler.go"),
     serviceTestPath: path.join(moduleDir, "application", moduleConfig.applicationStyle === "cqrs" ? "cqrs_test.go" : "service_test.go"),
+    // What `add auth` and `add rbac` call the things the patcher writes
+    // against. They are finished features rather than starting points, so
+    // they name their persistence model, their mappers and their response
+    // type after themselves, not after the vocabulary `generate module`
+    // emits. Anything left out here is emitted with the generated module's
+    // name and compiles to `undefined: <that name>`.
+    //
+    // The route group, the HTTP error mapper and the application package
+    // alias are *not* here: those are read out of the handler being patched
+    // (hexagonal-method-patcher.ts), which is why this table is three
+    // entries shorter than the number of names that differ.
     ...(authModule
       ? {
           repositoryModelType: "User",
@@ -166,9 +188,15 @@ async function generateHexagonalMethod(
           repositoryToDomainCallReturnsError: true,
           repositoryErrorMapper: "persistenceError",
           repositoryStubReceiver: "f *fakeRepo",
-          handlerErrorMapper: "toHTTPError",
         }
       : {}),
+    // rbac is deliberately absent. Renaming was never enough for it: its
+    // `toDomainRole` returns a value where every other module returns a
+    // pointer, and `ToRoleResponse` takes a RoleListItem — a role together
+    // with its permission codes — where the others take the entity. No name
+    // substitution reconciles a different shape, so `generate method` refuses
+    // the module instead of writing code that resolves and then will not
+    // type-check.
   };
   const required = [
     paths.dtoPath,

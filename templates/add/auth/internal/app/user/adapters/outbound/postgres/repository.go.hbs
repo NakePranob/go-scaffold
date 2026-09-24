@@ -9,6 +9,7 @@ import (
 
 	"{{goModule}}/internal/app/user/domain"
 	"{{goModule}}/internal/app/user/ports"
+	"{{goModule}}/internal/shared/dbq"
 	"{{goModule}}/internal/shared/dberr"
 	"{{goModule}}/internal/shared/tx"
 
@@ -76,12 +77,60 @@ func (r *Repository) UpdateUser(ctx context.Context, user *domain.User) error {
 	}))
 }
 
-func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.User, error) {
+// sortable is the whole of what ?sort= may say on the admin user list: dbq.Sort
+// resolves the requested name against Columns, so nothing off the request is
+// ever interpolated into the ORDER BY.
+var sortable = dbq.Sort{
+	Columns: map[string]string{
+		"name":       "name",
+		"role":       "role",
+		"created_at": "created_at",
+		// The address lives one table over, and only one row per user is
+		// primary (idx_user_emails_primary), so the subquery answers exactly
+		// one value. Correlated, so it runs per matching row — fine for a
+		// staff table; make it a LEFT JOIN on that index if this ever pages
+		// thousands, and give the query its own SELECT list when you do.
+		"email": "(SELECT e.email FROM user_svc.user_emails e WHERE e.user_id = user_svc.users.id AND e.is_primary)",
+	},
+	Default:  "created_at desc",
+	Tiebreak: "id",
+}
+
+// FindAll answers one page of the filter and how many accounts it matched
+// altogether. Two queries for that, because a count over a LIMITed query would
+// only ever count the page.
+func (r *Repository) FindAll(ctx context.Context, filter ports.ListFilter) ([]domain.User, int64, error) {
+	// A closure rather than one *gorm.DB reused twice: conditions accumulate
+	// on the value, so the count would silently inherit the page's LIMIT.
+	matching := func() *gorm.DB {
+		q := tx.From(ctx, r.db).WithContext(ctx).Model(&User{})
+		if filter.Search != "" {
+			// The address lives one table over, so its leg of the OR is a
+			// subquery on user_emails rather than a join — a join would
+			// multiply a user by their addresses and break both the page size
+			// and the count.
+			pattern := dbq.LikePattern(filter.Search)
+			primaryEmails := tx.From(ctx, r.db).WithContext(ctx).Model(&UserEmail{}).
+				Select("user_id").Where("is_primary = true AND email ILIKE ?", pattern)
+			q = q.Where("(name ILIKE ? OR id IN (?))", pattern, primaryEmails)
+		}
+		return q
+	}
+
+	var total int64
+	if err := matching().Count(&total).Error; err != nil {
+		return nil, 0, persistenceError(err)
+	}
+
 	var rows []User
-	err := tx.From(ctx, r.db).WithContext(ctx).
-		Order("created_at desc").Limit(limit).Offset(offset).Find(&rows).Error
+	// Newest account first until a client asks for something else, and always
+	// with the tiebreaker sortable carries: without it two accounts created in
+	// the same instant can swap between page 1 and page 2, showing one twice
+	// and hiding the other.
+	order := sortable.OrderBy(filter.Sort, filter.Desc)
+	err := matching().Order(order).Limit(filter.Limit).Offset(filter.Offset).Find(&rows).Error
 	if err != nil {
-		return nil, persistenceError(err)
+		return nil, 0, persistenceError(err)
 	}
 	ids := make([]uuid.UUID, len(rows))
 	for i := range rows {
@@ -91,7 +140,7 @@ func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.U
 	if len(ids) > 0 {
 		if err := tx.From(ctx, r.db).WithContext(ctx).
 			Where("user_id IN ? AND is_primary = true", ids).Find(&emailRows).Error; err != nil {
-			return nil, persistenceError(err)
+			return nil, 0, persistenceError(err)
 		}
 	}
 	emails := make(map[uuid.UUID]*UserEmail, len(emailRows))
@@ -102,7 +151,7 @@ func (r *Repository) FindAll(ctx context.Context, limit, offset int) ([]domain.U
 	for i := range rows {
 		items[i] = *toDomainUserWithEmail(&rows[i], emails[rows[i].ID])
 	}
-	return items, nil
+	return items, total, nil
 }
 
 func (r *Repository) FindIdentity(ctx context.Context, userID uuid.UUID, provider domain.Provider) (*domain.Identity, error) {
@@ -254,23 +303,79 @@ func (r *Repository) LoginLockedUntil(ctx context.Context, key string) (time.Tim
 }
 
 // RecordLoginFailure uses one SQL statement so concurrent attempts cannot
-// both read and write the same backoff value.
-func (r *Repository) RecordLoginFailure(ctx context.Context, key string, freeAttempts int, maxLock time.Duration) error {
+// both read and write the same counter.
+//
+// attempt is an opaque fingerprint of the password that was submitted, or ""
+// for callers that have no password to fingerprint. Repeating the fingerprint
+// that is already on the row leaves the counter and the lock exactly where
+// they are: a browser replaying one saved, outdated password costs a single
+// attempt instead of all of them, while a guessing attack — which submits
+// something different every time — is untouched. "" never matches, so those
+// callers keep counting normally.
+//
+// The leading DELETE is the table's whole retention policy. A row for a handle
+// that never logs in successfully — a typo'd address, a sprayed list — is
+// never cleared by ClearLoginFailures, and it holds a fingerprint derived from
+// a real password, so it cannot simply sit there. A failed login is the only
+// moment this table is written, which makes it the only moment it can clean
+// itself, and no scheduler has to exist for that to work.
+//
+// The current key is excluded from the sweep on purpose: the DELETE and the
+// UPSERT run on the same snapshot and cannot see each other, so letting them
+// meet on one row makes the outcome depend on which one wins.
+{{#if fixedLockout}}//
+// A failure inside window continues the count, one after it starts over. With
+// window longer than the lock, sitting out a lock resets nothing: the next
+// wrong password trips it again.
+func (r *Repository) RecordLoginFailure(ctx context.Context, key, attempt string, maxAttempts int, lockFor, window time.Duration) error {
+	stale := window.Seconds()
 	err := tx.From(ctx, r.db).WithContext(ctx).Exec(`
-		INSERT INTO user_svc.login_throttle AS t (email_hash, failures, locked_until, updated_at)
-		VALUES (?, 1, NULL, now())
+		WITH gc AS (
+			DELETE FROM user_svc.login_throttle
+			WHERE email_hash <> ? AND updated_at < now() - interval '1 day'
+		)
+		INSERT INTO user_svc.login_throttle AS t (email_hash, failures, last_attempt, locked_until, updated_at)
+		VALUES (?, 1, NULLIF(?, ''), NULL, now())
 		ON CONFLICT (email_hash) DO UPDATE SET
-			failures = t.failures + 1,
-			locked_until = CASE
-				WHEN t.failures + 1 <= ? THEN NULL
-				ELSE now() + make_interval(secs => least(power(2, t.failures + 1 - ?), ?))
+			failures = CASE
+				WHEN t.last_attempt = ? THEN t.failures
+				WHEN t.updated_at < now() - make_interval(secs => ?) THEN 1
+				ELSE t.failures + 1
 			END,
+			locked_until = CASE
+				WHEN t.last_attempt = ? THEN t.locked_until
+				WHEN t.updated_at < now() - make_interval(secs => ?) THEN NULL
+				WHEN t.failures + 1 >= ? THEN now() + make_interval(secs => ?)
+				ELSE NULL
+			END,
+			last_attempt = NULLIF(?, ''),
 			updated_at = now()`,
-		key, freeAttempts, freeAttempts, maxLock.Seconds()).Error
+		key, key, attempt, attempt, stale, attempt, stale, maxAttempts, lockFor.Seconds(), attempt).Error
 	return persistenceError(err)
 }
 
-func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
+{{else}}func (r *Repository) RecordLoginFailure(ctx context.Context, key, attempt string, freeAttempts int, maxLock time.Duration) error {
+	err := tx.From(ctx, r.db).WithContext(ctx).Exec(`
+		WITH gc AS (
+			DELETE FROM user_svc.login_throttle
+			WHERE email_hash <> ? AND updated_at < now() - interval '1 day'
+		)
+		INSERT INTO user_svc.login_throttle AS t (email_hash, failures, last_attempt, locked_until, updated_at)
+		VALUES (?, 1, NULLIF(?, ''), NULL, now())
+		ON CONFLICT (email_hash) DO UPDATE SET
+			failures = CASE WHEN t.last_attempt = ? THEN t.failures ELSE t.failures + 1 END,
+			locked_until = CASE
+				WHEN t.last_attempt = ? THEN t.locked_until
+				WHEN t.failures + 1 <= ? THEN NULL
+				ELSE now() + make_interval(secs => least(power(2, t.failures + 1 - ?), ?))
+			END,
+			last_attempt = NULLIF(?, ''),
+			updated_at = now()`,
+		key, key, attempt, attempt, attempt, freeAttempts, freeAttempts, maxLock.Seconds(), attempt).Error
+	return persistenceError(err)
+}
+
+{{/if}}func (r *Repository) ClearLoginFailures(ctx context.Context, key string) error {
 	err := tx.From(ctx, r.db).WithContext(ctx).
 		Where("email_hash = ?", key).
 		Delete(&LoginThrottle{}).Error
