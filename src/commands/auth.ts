@@ -388,6 +388,10 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "GOOGLE_CLIENT_SECRET=\n" +
     "# exact browser callback URI registered with the provider (frontend-owned route)\n" +
     "GOOGLE_OAUTH_REDIRECT_URI=\n" +
+    "# optional OIDC assurance policy; values are provider-specific and empty means no extra claim requirement\n" +
+    "GOOGLE_OIDC_MAX_AGE_SEC=0\n" +
+    "GOOGLE_OIDC_REQUIRED_ACR=\n" +
+    "GOOGLE_OIDC_REQUIRED_AMR=\n" +
     "\n# cookie/CORS deployment topology; the frontend owns its provider callback route\n" +
     `AUTH_BROWSER_TOPOLOGY=${browserTopology}\n` +
     "\n# MFA is globally off by default. When enabled, set a base64-encoded 32-byte\n" +

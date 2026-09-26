@@ -21,14 +21,14 @@
 | ASVS L1 | `[~]` generated baseline | มี password/session/rate-limit/token controls หลายส่วน แต่ยังต้องเติมหลักฐานเรื่อง common-password policy, account lifecycle และ deployment |
 | ASVS L2 | `[~]` generated enforcement + evidence gap | profile L2 บังคับให้ production เปิด `AUTH_MFA_ENABLED=true` และ `AUTH_MFA_REQUIRED_FOR_LOGIN=true`; ผู้ใช้ที่ยังไม่ enroll จะเข้า enrollment flow ก่อนรับ application session แต่ยังต้องทำ product/deployment evidence ให้ครบ |
 | ASVS L3 | `[ ]` ไม่ได้ implement เป็น target ที่เลือกได้ | wizard ปฏิเสธ L3 โดยตั้งใจ เพราะยังไม่มี phishing-resistant factor, security notifications, factor-revocation และ high-value step-up ครบ |
-| OAuth | `[~]` flow ถูกทิศทาง | ใช้ authorization-code + PKCE S256 และ refresh rotation ใน generated flow แต่ต้องตรวจ provider metadata, `acr`/`amr`/`auth_time` และ production redirect/config |
+| OAuth | `[~]` flow ถูกทิศทาง | ใช้ authorization-code + PKCE S256, refresh rotation และมี optional `acr`/`amr`/`auth_time` + `max_age` policy hook ใน generated flow แต่ต้องตรวจ provider metadata และ production redirect/config |
 | Production readiness | `[~]` ต้องตรวจแยก | source guard ไม่ได้พิสูจน์ TLS, proxy, secret rotation, SMTP, monitoring, backup หรือ live provider configuration |
 
 ### High-risk source gaps ที่ checklist นี้ต้องไม่กลบ
 
 - session list/revoke และ admin session termination ต้องยังมี product policy, audit และ production evidence แม้ generated route จะบังคับ recent-auth และมี RBAC guard แล้ว
 - MFA L2 ถูกบังคับใน production profile ผ่าน enrollment-before-session flow แต่ยังขาด lost-factor recovery, notification และ live IdP assurance evidence
-- auth module ยังไม่มี user disable/delete lifecycle, notification framework หรือ scheduled operational evidence สำหรับ auth cleanup ครบชุด
+- auth module มี soft-disable และ session termination แล้ว แต่ยังไม่มี hard-delete/anonymization policy, notification framework หรือ scheduled operational evidence สำหรับ auth cleanup ครบชุด
 - scaffold ยังไม่สร้าง WebAuthn/passkey, suspicious-login notification, factor-loss revocation หรือ high-value transaction step-up จึงยังไม่ควรเปิด L3
 - key rotation, object/tenant authorization และ production observability ต้องทำที่ generated application/deployment เพิ่มเติม; baseline security headers ถูกสร้างให้แล้วแต่ต้องตรวจที่ proxy/browser จริง
 
@@ -130,7 +130,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] identity-link OAuth transaction bind กับ authenticated user จึงไม่ attach identity ให้ user อื่นจาก callback เดียวกัน
 - [~] ต้องกำหนด notification, session revocation และ incident response เมื่อ identity ถูก link/unlink
 - [~] ต้องตรวจ issuer canonicalization และ provider configuration ของทุก IdP ที่เพิ่มภายหลัง ไม่ใช่ถือว่า Google adapter เป็น policy กลางทั้งหมด
-- [ ] auth module ยังไม่มี user disable/delete use case ที่กำหนดการ revoke tokens, cascade data และ audit ครบ
+- [~] soft-disable/revoke lifecycle มีแล้ว; hard-delete/anonymization, cascade/retention policy และ audit ยังต้องกำหนดใน generated application
 
 อ้างอิงหลัก: ASVS V6.8, V7.4 และ source `external_login.go.hbs`, `identities.go.hbs`, `create_external_identities.up.sql.hbs`
 
@@ -178,8 +178,8 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] Google adapter ตรวจ ID-token signature/algorithm, issuer, audience, `azp`, expiry, issued-at, nonce และ subject ที่ตรงกับ userinfo
 - [x] provider userinfo subject ต้องตรงกับ ID-token subject ก่อนนำ identity ไปใช้
 - [~] ต้องตรวจ issuer, audience, nonce/state, redirect URI และ provider metadata ใน generated project ที่เลือก provider จริง
-- [~] ต้องตรวจ `acr`, `amr`, `auth_time` หรือ documented fallback ก่อนยอมรับ IdP authentication strength/recentness
-- [~] ต้องกำหนด federated session lifetime และ re-auth behavior ให้สอดคล้องกับ local session policy
+- [x] Google adapter มี optional generated policy สำหรับ request/validate `acr`, `amr`, `auth_time` และ `max_age`; ค่าและความหมายของ claims ยังต้องเลือกตาม provider/application
+- [~] federated `max_age`/`auth_time` hook มีแล้ว; ต้องกำหนดค่าจริงและ behavior เมื่อ IdP ไม่คืน claim ให้สอดคล้องกับ local session policy
 - [~] OAuth state cookie เป็น single browser cookie; ต้องทดสอบ concurrent tabs/parallel login-link transactions และกำหนด behavior ที่ยอมรับได้
 - [ ] ยังไม่มี live-provider evidence ใน checklist นี้ เพราะต้องใช้ credentials, callback URL และ environment ของผู้ deploy
 
@@ -271,7 +271,8 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 การตรวจล่าสุดของชุด auth หลัง hardening รอบนี้:
 
-- `[x]` deterministic verification ผ่าน: build, unit 32/32, integration 107/107 และ smoke 57/57 ผ่านในการรันแยก; หลัง hardening ล่าสุด targeted auth integration 25/25 และ smoke 57/57 ผ่านอีกครั้ง
+- `[x]` deterministic verification ผ่าน: build, unit 32/32, integration 107/107 และ targeted auth/provider/store integration 25/25; smoke 57/57 เคยผ่านก่อน lifecycle รอบล่าสุด
+- `[~]` smoke รอบล่าสุดหลัง account lifecycle เปลี่ยนยังไม่ได้ exercise auth/DB/RBAC เพราะ Docker daemon ไม่พร้อม (`Cannot connect to the Docker daemon`); จึงยังไม่ถือเป็น green ล่าสุด
 - `[~]` `pnpm run verify` รอบล่าสุดติด network timeout จาก `proxy.golang.org` ตอน generated smoke ดาวน์โหลด test-only modules; ไม่ใช่ test assertion หรือ generated compile failure
 - `[x]` `git diff --check` ผ่าน
 - `[~]` Redis adapter live integration ไม่ได้ถูก exercise เมื่อไม่มี `TEST_REDIS_URL`; generated test compile และ skip ตาม environment
@@ -305,10 +306,10 @@ go vet ./...
 - [x] generated L2 บังคับ MFA enrollment ก่อน application access เมื่อ deploy ด้วย required flags; ยังต้องทดสอบทุก login/provider path ใน product จริง
 - [ ] ทำ lost-factor recovery พร้อม identity proofing
 - [~] เพิ่ม admin session termination แล้ว; ยังขาด audit trail และ operational notification
-- [ ] ตรวจ IdP `acr`/`amr`/`auth_time` และ federated session lifetime
+- [x] เพิ่ม generated IdP `acr`/`amr`/`auth_time` + `max_age` policy hook; ยังต้องตั้งค่าจริงและทดสอบกับ provider ที่ deploy
 - [~] เพิ่ม cleanup command แล้ว; ยังขาด token-reuse incident handling และ operational metrics
 - [ ] เพิ่ม notification สำหรับ auth/MFA change เป็น security best practice
-- [ ] ตัดสินใจ email verification gate และ user disable/delete lifecycle
+- [~] ตัดสินใจ email verification gate; soft-disable lifecycle ถูก generate แล้ว แต่ hard-delete/retention/anonymization และ re-enable policy ยังเป็น product decision
 - [ ] ถ้าเปิด RBAC ให้เติม object/tenant authorization และ audit trail ต่อ generated module
 
 ### P2 — หากต้องการ target L3

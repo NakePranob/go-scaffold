@@ -200,6 +200,12 @@ cookie. The frontend still owns the callback route and sends the code and
 returned state to the exchange endpoint. The provider redirect URI is separate from
 `CORS_ALLOWED_ORIGINS`; the latter remains an exact-origin credentialed API
 policy. Token responses use `Cache-Control: no-store` and `Pragma: no-cache`.
+When Google/OIDC authentication strength or recentness matters, configure
+`GOOGLE_OIDC_MAX_AGE_SEC`, `GOOGLE_OIDC_REQUIRED_ACR`, and
+`GOOGLE_OIDC_REQUIRED_AMR` (comma-separated). The generated adapter sends the
+corresponding OIDC request claims and rejects a verified ID token that does not
+satisfy the configured policy; claim meanings remain provider-specific and
+must be documented by the deploying application.
 Authenticated users can list active device sessions with
 `GET /users/me/sessions` and revoke an individual session with
 `DELETE /users/me/sessions/:id`; safe parsed device metadata and session

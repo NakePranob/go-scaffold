@@ -83,6 +83,9 @@ func signOIDCTestToken(privateKey *rsa.PrivateKey, issuer, audience, nonce, kid 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, idTokenClaims{
 		Nonce:           nonce,
 		AuthorizedParty: audience,
+		AuthTime:        jwt.NewNumericDate(now.Add(-time.Minute)),
+		ACR:             "urn:test:loa:2",
+		AMR:             []string{"pwd", "otp"},
 		Email:           "User@Example.com",
 		EmailVerified:   true,
 		Name:            "User",
@@ -140,6 +143,48 @@ func TestProvider_Begin_UsesStateAndS256PKCE(t *testing.T) {
 	}
 	if got := parsed.Query().Get("redirect_uri"); got != "https://app.example.test/oauth/callback/google" {
 		t.Fatalf("redirect_uri = %q, want the exact configured frontend callback URI", got)
+	}
+}
+
+func TestProvider_Begin_RequestsConfiguredAuthenticationAssurance(t *testing.T) {
+	provider := New(Config{
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://app.example.test/oauth/callback/google",
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://provider.example.test/authorize",
+			TokenURL: "https://provider.example.test/token",
+		},
+		MaxAuthAge:  10 * time.Minute,
+		RequiredACR: "urn:test:loa:2",
+		RequiredAMR: []string{"pwd", "otp"},
+	})
+
+	authorization, err := provider.Begin(context.Background(), application.LoginStartInput{
+		State:               "signed-state",
+		CodeChallenge:       strings.Repeat("A", 43),
+		CodeChallengeMethod: "S256",
+		Nonce:               "signed-nonce",
+	})
+	if err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	parsed, err := url.Parse(authorization.URL)
+	if err != nil {
+		t.Fatalf("parse authorization URL: %v", err)
+	}
+	if got := parsed.Query().Get("max_age"); got != "600" {
+		t.Fatalf("max_age = %q, want 600", got)
+	}
+	if got := parsed.Query().Get("acr_values"); got != "urn:test:loa:2" {
+		t.Fatalf("acr_values = %q, want configured acr", got)
+	}
+	var claims map[string]map[string]map[string]any
+	if err := json.Unmarshal([]byte(parsed.Query().Get("claims")), &claims); err != nil {
+		t.Fatalf("decode claims request: %v", err)
+	}
+	if claims["id_token"]["auth_time"]["essential"] != true || claims["id_token"]["acr"]["value"] != "urn:test:loa:2" || claims["id_token"]["amr"]["essential"] != true {
+		t.Fatalf("unexpected assurance claims request: %#v", claims)
 	}
 }
 
@@ -210,6 +255,26 @@ func TestProvider_Complete_ExchangesCodeAndNormalizesIdentity(t *testing.T) {
 	}
 	if identity.Provider != "google" || identity.Subject != "subject-1" || identity.Email != "User@Example.com" || !identity.EmailVerified || identity.Name != "User" || identity.AvatarURL == "" {
 		t.Fatalf("unexpected normalized identity: %+v", identity)
+	}
+	if identity.AuthTime.IsZero() || identity.ACR != "urn:test:loa:2" || len(identity.AMR) != 2 {
+		t.Fatalf("expected normalized authentication context, got %+v", identity)
+	}
+}
+
+func TestProvider_Complete_EnforcesConfiguredAuthenticationAssurance(t *testing.T) {
+	provider, server := newOIDCProviderFixture(t, 0)
+	defer server.Close()
+	provider.maxAuthAge = 5 * time.Minute
+	provider.requiredACR = "urn:test:loa:2"
+	provider.requiredAMR = []string{"pwd", "otp"}
+
+	if _, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: oidcFixtureNonce}); err != nil {
+		t.Fatalf("complete login with matching assurance: %v", err)
+	}
+
+	provider.requiredACR = "urn:test:loa:3"
+	if _, err := provider.Complete(context.Background(), application.LoginCompleteInput{Code: "authorization-code", CodeVerifier: oidcFixtureVerifier, Nonce: oidcFixtureNonce}); err == nil || application.IsProviderUnavailable(err) {
+		t.Fatalf("expected mismatched acr to be rejected as a provider failure, got %T: %v", err, err)
 	}
 }
 

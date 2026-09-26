@@ -61,6 +61,9 @@ func NewHandlerFromDB(
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
 			RedirectURL:  cfg.GoogleOAuthRedirectURI,
+			MaxAuthAge:   time.Duration(cfg.GoogleOIDCMaxAuthAgeSec) * time.Second,
+			RequiredACR:  cfg.GoogleOIDCRequiredACR,
+			RequiredAMR:  splitCSV(cfg.GoogleOIDCRequiredAMR),
 		}))
 	}
 	providerRegistry := application.NewProviderRegistry(providers...)
@@ -155,6 +158,16 @@ func NewHandlerFromDB(
 		limiter,
 		authz,
 	)
+}
+
+func splitCSV(raw string) []string {
+	values := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 // NewSessionValidatorFromDB lets the process root give every protected feature
