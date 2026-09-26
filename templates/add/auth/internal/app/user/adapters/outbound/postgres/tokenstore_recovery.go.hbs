@@ -41,10 +41,10 @@ func (s *recoveryTokenStore) withTransaction(ctx context.Context, fn func(contex
 
 func (s *recoveryTokenStore) put(ctx context.Context, hash, kind string, userID uuid.UUID, ttl time.Duration) error {
 	expiresAt := time.Now().Add(ttl)
-	row := AuthToken{TokenHash: hash, UserID: userID, Kind: kind, ExpiresAt: expiresAt}
+	row := AuthToken{TokenHash: hash, UserID: authTokenUserID(userID), Kind: kind, ExpiresAt: expiresAt}
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("token_hash = ?", hash).
-		Assign(map[string]any{"user_id": userID, "kind": kind, "expires_at": expiresAt}).
+		Assign(map[string]any{"user_id": authTokenUserID(userID), "kind": kind, "expires_at": expiresAt}).
 		FirstOrCreate(&row).Error
 }
 

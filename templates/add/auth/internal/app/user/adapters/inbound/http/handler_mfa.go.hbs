@@ -20,13 +20,55 @@ func (h *Handler) verifyMFA(c *gin.Context) {
 		c.Error(httpx.BindErr(err))
 		return
 	}
-	auth, err := h.svc.VerifyMFA(c.Request.Context(), in.Challenge, in.Code)
+	auth, err := h.svc.VerifyMFA(c.Request.Context(), in.Challenge, in.Code, c.ClientIP())
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return
 	}
 	h.setRefreshCookie(c, auth.RefreshToken)
 	c.JSON(http.StatusOK, toCookieResponse(auth))
+}
+
+func (h *Handler) setupMFAEnrollment(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in mfaEnrollmentSetupInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	setup, err := h.svc.SetupMFAEnrollment(c.Request.Context(), in.EnrollmentToken)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, mfaSetupResponse{Secret: setup.Secret, OTPAuthURI: setup.OTPAuthURI})
+}
+
+func (h *Handler) confirmMFAEnrollment(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in mfaEnrollmentConfirmInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	codes, auth, err := h.svc.ConfirmMFAEnrollment(c.Request.Context(), in.EnrollmentToken, in.Code, sessionContext(c.GetHeader("User-Agent"), c.ClientIP()))
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.setRefreshCookie(c, auth.RefreshToken)
+	c.JSON(http.StatusOK, mfaEnrollmentConfirmResponse{
+		AccessToken: auth.AccessToken,
+		TokenType: auth.TokenType,
+		ExpiresIn: auth.ExpiresIn,
+		RecoveryCodes: codes,
+	})
 }
 
 func (h *Handler) mfaStatus(c *gin.Context) {
@@ -41,6 +83,9 @@ func (h *Handler) mfaStatus(c *gin.Context) {
 
 func (h *Handler) setupMFA(c *gin.Context) {
 	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	setup, err := h.svc.SetupMFA(c.Request.Context(), currentUserID(c))
 	if err != nil {
 		c.Error(toHTTPError(err))
@@ -51,6 +96,9 @@ func (h *Handler) setupMFA(c *gin.Context) {
 
 func (h *Handler) confirmMFA(c *gin.Context) {
 	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	var in mfaCodeInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.Error(httpx.BindErr(err))
@@ -66,6 +114,9 @@ func (h *Handler) confirmMFA(c *gin.Context) {
 
 func (h *Handler) disableMFA(c *gin.Context) {
 	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	var in mfaCodeInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.Error(httpx.BindErr(err))

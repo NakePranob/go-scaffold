@@ -124,9 +124,11 @@ for a named per-module preset, or add `--full`, `--cqrs`, `--auth`, and
 `--permission <code>` deliberately.
 `--get-mode`
 is required for `--type get`, and `undo module` needs `-y`. For `add auth`,
-choose the backing store, browser topology, and ASVS verification target with
+choose the backing store, browser topology, and generated ASVS security profile with
 `--defaults` or explicit flags (`--store`, `--browser-topology`,
-`--asvs-level`) as well as the confirmation flag. `--defaults` selects L2.
+`--asvs-level`) as well as the confirmation flag. `--defaults` selects the L2
+generated security profile. L3 is fail-closed until a WebAuthn/passkey adapter
+is generated.
 For `add worker`, choose the backing queue with `--defaults` or an explicit
 flag.
 
@@ -218,9 +220,10 @@ endpoint is production-ready.
 
 ## Auth and error boundaries
 
-The optional `asvs` config records an OWASP ASVS 5.0.0 verification target,
-not a compliance result. `docs/security/asvs-auth.md` lists known generated
-auth gaps. Review the complete deployed application before claiming a level.
+The optional `asvs` config records the generated OWASP ASVS 5.0.0 security
+profile, not a compliance result. `docs/security/asvs-auth.md` lists generated
+controls and remaining deployment evidence. Review the complete deployed
+application before claiming a level.
 
 Treat auth and security changes as high-risk and get the required owner
 approval before changing their contract.
@@ -235,15 +238,22 @@ approval before changing their contract.
 - Authenticated users can inspect active refresh sessions through
   `GET /users/me/sessions` and revoke one with
   `DELETE /users/me/sessions/:id`. Session IDs remain stable through refresh
-  rotation; responses expose only User-Agent and lifecycle timestamps, never
-  refresh tokens or token hashes. The current access token carries the session
-  ID as `sid` so the adapter can mark the current device.
+  rotation; responses expose only safe parsed device metadata and lifecycle
+  timestamps, never raw User-Agent/IP values, refresh tokens, or token hashes.
+  The current access token carries the session ID as `sid`; every protected
+  route validates that the refresh session is still active. Logout, session
+  revoke, password change, and password reset therefore invalidate existing
+  access tokens immediately. If the token store cannot be checked, fail closed.
+  Secure cookie mode reads only the `__Host-` names; legacy unprefixed names
+  are development-only compatibility names and must never be accepted in
+  production.
 - Authenticated users can manage login identities through
   `GET /users/me/identities`, `POST /users/me/identities/local`, and
   `POST /users/me/identities/:provider/link`,
   `POST /users/me/identities/:provider/link/exchange`, and
   `DELETE /users/me/identities/:provider`. The link transaction is bound to
-  the current user as well as provider/state/PKCE/nonce; it can never create a
+  the current user as well as provider/server-bound-state/PKCE/nonce; the state
+  is bound to an HttpOnly browser cookie and it can never create a
   session or silently move a provider account between users. Return only safe
   provider metadata, allow at most one identity per provider per user, and
   refuse to unlink the last remaining login method.
@@ -261,11 +271,16 @@ approval before changing their contract.
   SDKs, or persistence models into new application use cases; keep the
   token/OAuth/MFA tests as the security gate.
 - Browser provider exchange consumes a one-time server-side transaction bound
-  to provider, state, S256 PKCE challenge, and OIDC nonce. Google ID tokens
+  to provider, server-generated state, an HttpOnly browser cookie, S256 PKCE
+  challenge, and OIDC nonce. Google ID tokens
   must be signature, issuer, audience/azp, time-claim, nonce, and subject
   validated before identity resolution. Token responses use
   `Cache-Control: no-store` and `Pragma: no-cache`; SameSite=None also needs an
   exact allowed Origin guard in addition to CORS.
+- Sensitive account operations use a short-lived reauthentication proof bound
+  to the bearer user; password changes revoke all refresh sessions before the
+  password write, and session,
+  MFA, and identity mutations require that proof.
 
 MFA has an operator capability switch and a separate per-user enrollment:
 

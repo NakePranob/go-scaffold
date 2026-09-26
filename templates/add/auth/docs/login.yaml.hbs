@@ -24,6 +24,7 @@ post:
             oneOf:
               - { $ref: './schemas.yaml#/AuthResponse' }
               - { $ref: './schemas.yaml#/MFAChallengeResponse' }
+              - { $ref: './schemas.yaml#/MFAEnrollmentRequiredResponse' }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
     "429":

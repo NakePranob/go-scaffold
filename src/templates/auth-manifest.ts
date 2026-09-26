@@ -17,6 +17,10 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/ports/password.go.hbs", output: "internal/app/user/ports/password.go" },
 
   { template: "add/auth/internal/app/user/application/contracts.go.hbs", output: "internal/app/user/application/contracts.go" },
+  { template: "add/auth/internal/app/user/application/security_profile.go.hbs", output: "internal/app/user/application/security_profile.go" },
+  { template: "add/auth/internal/app/user/application/security_profile_test.go.hbs", output: "internal/app/user/application/security_profile_test.go" },
+  { template: "add/auth/internal/app/user/application/password_policy.go.hbs", output: "internal/app/user/application/password_policy.go" },
+  { template: "add/auth/internal/app/user/application/password_policy_test.go.hbs", output: "internal/app/user/application/password_policy_test.go" },
   { template: "add/auth/internal/app/user/application/dto.go.hbs", output: "internal/app/user/application/dto.go" },
   { template: "add/auth/internal/app/user/application/errors.go.hbs", output: "internal/app/user/application/errors.go" },
   { template: "add/auth/internal/app/user/application/external_login.go.hbs", output: "internal/app/user/application/external_login.go" },
@@ -33,6 +37,8 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/application/service.go.hbs", output: "internal/app/user/application/service.go" },
   { template: "add/auth/internal/app/user/application/service_test.go.hbs", output: "internal/app/user/application/service_test.go" },
   { template: "add/auth/internal/app/user/application/sessions.go.hbs", output: "internal/app/user/application/sessions.go" },
+  { template: "add/auth/internal/app/user/application/session_metadata.go.hbs", output: "internal/app/user/application/session_metadata.go" },
+  { template: "add/auth/internal/app/user/application/session_metadata_test.go.hbs", output: "internal/app/user/application/session_metadata_test.go" },
   { template: "add/auth/internal/app/user/application/tokenstore_ports.go.hbs", output: "internal/app/user/application/tokenstore_ports.go" },
   { template: "add/auth/internal/app/user/application/user_query.go.hbs", output: "internal/app/user/application/user_query.go" },
 
@@ -50,6 +56,7 @@ const SHARED: Entry[] = [
 
   { template: "add/auth/internal/app/user/adapters/outbound/password/bcrypt.go.hbs", output: "internal/app/user/adapters/outbound/password/bcrypt.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/password/bcrypt_test.go.hbs", output: "internal/app/user/adapters/outbound/password/bcrypt_test.go" },
+  { template: "add/auth/internal/app/user/adapters/outbound/password/policy.go.hbs", output: "internal/app/user/adapters/outbound/password/policy.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/postgres/model.go.hbs", output: "internal/app/user/adapters/outbound/postgres/model.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/postgres/mfa_store.go.hbs", output: "internal/app/user/adapters/outbound/postgres/mfa_store.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/postgres/mfa_store_test.go.hbs", output: "internal/app/user/adapters/outbound/postgres/mfa_store_test.go" },

@@ -1,0 +1,53 @@
+package password
+
+import (
+	"bufio"
+	"errors"
+	"os"
+	"strings"
+
+	"{{goModule}}/internal/app/user/ports"
+)
+
+type filePasswordPolicy struct {
+	passwords map[string]struct{}
+}
+
+// NewFilePasswordPolicy loads a newline-delimited password denylist. The file
+// is intentionally operator-owned: the scaffold does not ship a copied breach
+// corpus, and production must choose a source and refresh procedure suitable
+// for its data-handling policy.
+func NewFilePasswordPolicy(path string) (ports.PasswordPolicy, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("password denylist path is empty")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	passwords := make(map[string]struct{})
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		passwords[strings.ToLower(line)] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(passwords) == 0 {
+		return nil, errors.New("password denylist is empty")
+	}
+	return filePasswordPolicy{passwords: passwords}, nil
+}
+
+func (p filePasswordPolicy) Validate(password string) error {
+	if _, found := p.passwords[strings.ToLower(strings.TrimSpace(password))]; found {
+		return errors.New("password is present in the configured denylist")
+	}
+	return nil
+}

@@ -151,6 +151,9 @@ export async function generateModule(
     schemaName: naming.schemaName,
     auth: opts.auth,
     permission: opts.permission,
+    authSessionValidatorLine: opts.auth
+      ? `sessionValidator := user.NewSessionValidatorFromDB(db, cfg` + (config.features.authStore === "redis" ? ", rdb" : "") + `)`
+      : undefined,
   });
 
   let docsMessage = "";

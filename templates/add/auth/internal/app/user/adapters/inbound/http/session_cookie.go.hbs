@@ -1,6 +1,7 @@
 package httpadapter
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	"{{goModule}}/internal/app/user/application"
@@ -8,14 +9,69 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	legacyOAuthStateCookieName = "oauth_state"
+	hostOAuthStateCookieName   = "__Host-oauth_state"
+)
+
+func (h *Handler) refreshCookieName() string {
+	if h.cookieSecure {
+		return hostRefreshCookieName
+	}
+	return legacyRefreshCookieName
+}
+
+func (h *Handler) refreshCookie(c *gin.Context) (string, error) {
+	// Secure deployments intentionally read only the __Host- cookie. The
+	// legacy name remains a development-only compatibility mode and is cleared
+	// on logout, but never accepted as an authentication credential in prod.
+	name := h.refreshCookieName()
+	raw, err := c.Cookie(name)
+	if err == nil && raw != "" {
+		return raw, nil
+	}
+	return raw, err
+}
+
 func (h *Handler) setRefreshCookie(c *gin.Context, token string) {
 	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
-	c.SetCookie(refreshCookieName, token, int(h.refreshTTL.Seconds()), "/", "", h.cookieSecure, true)
+	c.SetCookie(h.refreshCookieName(), token, int(h.refreshTTL.Seconds()), "/", "", h.cookieSecure, true)
 }
 
 func (h *Handler) clearRefreshCookie(c *gin.Context) {
 	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
-	c.SetCookie(refreshCookieName, "", -1, "/", "", h.cookieSecure, true)
+	c.SetCookie(h.refreshCookieName(), "", -1, "/", "", h.cookieSecure, true)
+	if h.cookieSecure {
+		c.SetCookie(legacyRefreshCookieName, "", -1, "/", "", true, true)
+	}
+}
+
+func (h *Handler) oauthStateCookieName() string {
+	if h.cookieSecure {
+		return hostOAuthStateCookieName
+	}
+	return legacyOAuthStateCookieName
+}
+
+func (h *Handler) setOAuthStateCookie(c *gin.Context, state string) {
+	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
+	c.SetCookie(h.oauthStateCookieName(), state, int(h.oauthStateTTL.Seconds()), "/", "", h.cookieSecure, true)
+}
+
+func (h *Handler) clearOAuthStateCookie(c *gin.Context) {
+	c.SetSameSite(sameSiteFrom(h.cookieSameSite))
+	c.SetCookie(h.oauthStateCookieName(), "", -1, "/", "", h.cookieSecure, true)
+	if h.cookieSecure {
+		c.SetCookie(legacyOAuthStateCookieName, "", -1, "/", "", true, true)
+	}
+}
+
+func (h *Handler) oauthStateMatches(c *gin.Context, state string) bool {
+	// The same strict boundary applies to OAuth state: secure deployments do
+	// not accept the legacy unprefixed cookie from a sibling subdomain.
+	expected, err := c.Cookie(h.oauthStateCookieName())
+	h.clearOAuthStateCookie(c)
+	return err == nil && expected != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(state)) == 1
 }
 
 // Token responses must not be retained by browsers, shared caches, or
@@ -26,6 +82,10 @@ func setNoStoreHeaders(c *gin.Context) {
 }
 
 func (h *Handler) writeAuthResult(c *gin.Context, status int, result *application.AuthResult) {
+	if result.MFAEnrollmentToken != "" {
+		c.JSON(http.StatusOK, mfaEnrollmentRequiredResponse{MFAEnrollmentRequired: true, EnrollmentToken: result.MFAEnrollmentToken})
+		return
+	}
 	if result.MFAChallenge != "" {
 		c.JSON(http.StatusOK, mfaChallengeResponse{MFARequired: true, Challenge: result.MFAChallenge})
 		return

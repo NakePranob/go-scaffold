@@ -1,9 +1,16 @@
 package application
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"{{goModule}}/internal/app/user/domain"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -11,6 +18,8 @@ import (
 
 const (
 	tokenTypeAccess = "access"
+	mfaEnrollmentTokenType = "mfa_enrollment"
+	mfaEnrollmentTTL = 10 * time.Minute
 )
 
 // accessClaims — see internal/shared/middleware/auth.go for why this struct
@@ -20,6 +29,11 @@ type accessClaims struct {
 	Role      string    `json:"role,omitempty"`
 	SessionID uuid.UUID `json:"sid,omitempty"`
 	// go-scaffold:jwt-claims
+	jwt.RegisteredClaims
+}
+
+type mfaEnrollmentClaims struct {
+	Typ string `json:"typ"`
 	jwt.RegisteredClaims
 }
 
@@ -37,6 +51,8 @@ func (s *Service) issueAccessToken(
 		// go-scaffold:jwt-claims-values
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
+			Issuer:    s.config.JWTIssuer,
+			Audience:  jwt.ClaimStrings{s.config.JWTAudience},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.config.JWTAccessTTL)),
 		},
@@ -58,4 +74,146 @@ func randomToken() (string, error) {
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func (s *Service) issueMFAEnrollmentToken(userID uuid.UUID) (string, error) {
+	now := s.clock()
+	claims := mfaEnrollmentClaims{
+		Typ: mfaEnrollmentTokenType,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			Issuer:    s.config.JWTIssuer,
+			Audience:  jwt.ClaimStrings{s.config.JWTAudience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(mfaEnrollmentTTL)),
+			ID:        uuid.NewString(),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.config.JWTSecret))
+}
+
+func (s *Service) parseMFAEnrollmentToken(raw string) (uuid.UUID, error) {
+	var claims mfaEnrollmentClaims
+	options := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}),
+		jwt.WithIssuer(s.config.JWTIssuer),
+		jwt.WithAudience(s.config.JWTAudience),
+	}
+	token, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) {
+		return []byte(s.config.JWTSecret), nil
+	}, options...)
+	if err != nil || token == nil || !token.Valid || claims.Typ != mfaEnrollmentTokenType || claims.Subject == "" {
+		return uuid.Nil, errInvalidToken()
+	}
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil || userID == uuid.Nil {
+		return uuid.Nil, errInvalidToken()
+	}
+	return userID, nil
+}
+const (
+	reauthTokenType = "reauth"
+	reauthTTL      = 5 * time.Minute
+)
+
+type reauthClaims struct {
+	Typ string `json:"typ"`
+	jwt.RegisteredClaims
+}
+// Reauthenticate verifies a factor appropriate for the account and returns a
+// short-lived proof for sensitive account-management operations. A local
+// password is required when one exists; enrolled MFA is an additional factor.
+func (s *Service) Reauthenticate(ctx context.Context, userID uuid.UUID, password, code string) (string, error) {
+	if userID == uuid.Nil {
+		return "", errReauthRequired()
+	}
+	if _, err := s.repo.FindByID(ctx, userID); err != nil {
+		return "", wrapFindErr(err)
+	}
+
+	local, err := s.repo.FindIdentity(ctx, userID, domain.ProviderLocal)
+	hasLocal := err == nil && local != nil && local.PasswordHash != nil
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return "", fmt.Errorf("find local identity for reauthentication: %w", err)
+	}
+	passwordVerified := false
+	if hasLocal {
+		if strings.TrimSpace(password) == "" || s.passwords.Compare(*local.PasswordHash, password) != nil {
+			return "", errInvalidCredentials()
+		}
+		passwordVerified = true
+	}
+
+	settings := s.mfaSettings()
+	if settings.Enabled && s.mfa != nil {
+		enrollment, found, enrollmentErr := s.mfa.GetEnrollment(ctx, userID)
+		if enrollmentErr != nil {
+			return "", fmt.Errorf("read MFA enrollment for reauthentication: %w", enrollmentErr)
+		}
+		if found && enrollment.Enabled {
+			secret, decryptErr := decryptMFASecret(settings.EncryptionKey, enrollment.EncryptedSecret)
+			if decryptErr != nil {
+				return "", errMFAConfig()
+			}
+			if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+				return "", errMFAInvalid()
+			}
+			if settings.RequireForReauth && !passwordVerified {
+				return "", errLocalIdentityRequired()
+			}
+			if settings.RequireForReauth {
+				return s.issueReauthToken(userID)
+			}
+		}
+	}
+
+	if settings.RequireForReauth {
+		return "", errMFASetupRequired()
+	}
+	if !passwordVerified {
+		return "", errLocalIdentityRequired()
+	}
+	return s.issueReauthToken(userID)
+}
+func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, newPassword string) error {
+	if err := s.validatePassword(newPassword); err != nil {
+		return err
+	}
+	identity, err := s.repo.FindIdentity(ctx, userID, domain.ProviderLocal)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return errLocalIdentityRequired()
+		}
+		return fmt.Errorf("find local identity for password change: %w", err)
+	}
+	hash, err := s.passwords.Hash(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash changed password: %w", err)
+	}
+	// Revoke first: if the session store is unavailable, leave the old
+	// password and all existing sessions untouched so the operation is
+	// retryable and never reports a failed password change with live sessions.
+	if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
+		return fmt.Errorf("revoke sessions before password change: %w", err)
+	}
+	identity.PasswordHash = &hash
+	if err := s.repo.UpdateIdentity(ctx, identity); err != nil {
+		return fmt.Errorf("save changed password: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) issueReauthToken(userID uuid.UUID) (string, error) {
+	now := s.clock()
+	claims := reauthClaims{
+		Typ: reauthTokenType,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			Issuer:    s.config.JWTIssuer,
+			Audience:  jwt.ClaimStrings{s.config.JWTAudience},
+			IssuedAt: jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(reauthTTL)),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.config.JWTSecret))
 }

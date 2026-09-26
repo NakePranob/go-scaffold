@@ -13,12 +13,12 @@ export function parseAsvsLevel(raw: string): AsvsLevel {
 
 export async function promptAsvsLevel(): Promise<AsvsLevel> {
   return select<AsvsLevel>({
-    message: "Which OWASP ASVS 5.0.0 level should this project target for verification?",
+    message: "Which OWASP ASVS 5.0.0 generated security profile should this project use?",
     default: DEFAULT_ASVS_LEVEL,
     choices: [
-      { name: "L1 — baseline", value: 1, description: "minimum security verification target" },
-      { name: "L2 — most applications", value: 2, description: "includes L1; requires further auth controls and review" },
-      { name: "L3 — high assurance", value: 3, description: "includes L1 and L2; requires phishing-resistant MFA and review" },
+      { name: "L1 — baseline", value: 1, description: "generated common-password screening profile" },
+      { name: "L2 — most applications", value: 2, description: "generated breached-password and stronger re-auth profile" },
+      { name: "L3 — unavailable", value: 3, description: "requires a generated WebAuthn/passkey adapter" },
     ],
   });
 }

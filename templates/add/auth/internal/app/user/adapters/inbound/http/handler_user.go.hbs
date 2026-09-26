@@ -3,6 +3,7 @@ package httpadapter
 import (
 	"net/http"
 
+	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/httpx"
 	"{{goModule}}/internal/shared/middleware"
 
@@ -22,6 +23,10 @@ func (h *Handler) resendVerification(c *gin.Context) {
 // logoutAll ends every session for the caller, including the cookie used by
 // this request.
 func (h *Handler) logoutAll(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
 	if err := h.svc.LogoutAll(c.Request.Context(), userID); err != nil {
 		c.Error(toHTTPError(err))
@@ -46,6 +51,10 @@ func (h *Handler) sessions(c *gin.Context) {
 }
 
 func (h *Handler) revokeSession(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
 	sessionID, ok := httpx.ParseID(c)
 	if !ok {
 		return
@@ -60,6 +69,42 @@ func (h *Handler) revokeSession(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h *Handler) reauthenticate(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in reauthInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	token, err := h.svc.Reauthenticate(c.Request.Context(), currentUserID(c), in.Password, in.Code)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, reauthResponse{Token: token, ExpiresIn: 300})
+}
+
+func (h *Handler) changePassword(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in changePasswordInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.ChangePassword(c.Request.Context(), currentUserID(c), in.NewPassword); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.clearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}
+
 func (h *Handler) me(c *gin.Context) {
 	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
 	u, err := h.svc.Get(c.Request.Context(), userID)
@@ -68,4 +113,25 @@ func (h *Handler) me(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, toMeResponse(u))
+}
+
+func (h *Handler) adminRevokeSession(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	userID, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	sessionID, err := uuid.Parse(c.Param("session_id"))
+	if err != nil {
+		c.Error(apperror.NewValidation("invalid session_id", nil))
+		return
+	}
+	if err := h.svc.RevokeSessionForUser(c.Request.Context(), userID, sessionID); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

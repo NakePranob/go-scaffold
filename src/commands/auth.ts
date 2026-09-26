@@ -36,6 +36,8 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/auth/{provider}/login", file: "./auth/provider-login.yaml" },
   { urlPath: "/auth/{provider}/exchange", file: "./auth/provider-exchange.yaml" },
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
+  { urlPath: "/users/me/reauth", file: "./auth/users-me-reauth.yaml" },
+  { urlPath: "/users/me/password", file: "./auth/users-me-password.yaml" },
   { urlPath: "/users/me/identities", file: "./auth/users-me-identities.yaml" },
   { urlPath: "/users/me/identities/local", file: "./auth/users-me-identity-local-link.yaml" },
   { urlPath: "/users/me/identities/{provider}/link", file: "./auth/users-me-identity-link.yaml" },
@@ -45,11 +47,14 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
   { urlPath: "/users/me/sessions", file: "./auth/users-me-sessions.yaml" },
   { urlPath: "/users/me/sessions/{id}", file: "./auth/users-me-session.yaml" },
+  { urlPath: "/users/{id}/sessions/{session_id}", file: "./auth/users-session.yaml" },
   { urlPath: "/users/me/mfa", file: "./auth/users-me-mfa.yaml" },
   { urlPath: "/users/me/mfa/setup", file: "./auth/users-me-mfa-setup.yaml" },
   { urlPath: "/users/me/mfa/confirm", file: "./auth/users-me-mfa-confirm.yaml" },
   { urlPath: "/users/me/mfa/disable", file: "./auth/users-me-mfa-disable.yaml" },
   { urlPath: "/auth/mfa/verify", file: "./auth/mfa-verify.yaml" },
+  { urlPath: "/auth/mfa/enroll/setup", file: "./auth/mfa-enroll-setup.yaml" },
+  { urlPath: "/auth/mfa/enroll/confirm", file: "./auth/mfa-enroll-confirm.yaml" },
 ];
 
 // addAuth scaffolds email/password authentication: an account plus separate
@@ -69,6 +74,9 @@ export async function addAuth(
   const config = readConfig(projectDir);
   const browser = validateBrowserTopology(browserTopology);
   if (![1, 2, 3].includes(asvsLevel)) throw new Error("ASVS level must be 1, 2, or 3");
+  if (asvsLevel === 3) {
+    throw new Error("ASVS L3 generated security profile is unavailable until a phishing-resistant WebAuthn/passkey adapter is generated; choose L1 or L2");
+  }
   const lockoutPolicy = validateLockoutPolicy(lockout);
 
   // No longer a prerequisite. Without a worker the verification and reset mail
@@ -99,6 +107,10 @@ export async function addAuth(
     goModule: config.goModule,
     redis: store === "redis",
     worker,
+    asvsLevel,
+    asvsL1: asvsLevel >= 1,
+    asvsL2: asvsLevel >= 2,
+    asvsL3: false,
     // one flag rather than the policy name: the templates only ever ask
     // "which shape", and a second policy name in Handlebars would need an
     // equality helper the renderer does not have
@@ -230,7 +242,7 @@ export async function addAuth(
   }
 
   gofmtTree(projectDir);
-  // parse-only: jwt/oauth2/bcrypt aren't in go.mod until the `go mod tidy`
+  // parse-only: jwt/oauth2/argon2/bcrypt aren't in go.mod until the `go mod tidy`
   // printed below, so `go vet` can't be the gate here.
   assertStillParses(projectDir, parsedBefore, "added auth");
 
@@ -248,7 +260,7 @@ export async function addAuth(
   });
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
-  console.log(`OWASP ASVS 5.0.0 L${asvsLevel} verification target recorded; review docs/security/asvs-auth.md before making any compliance claim`);
+  console.log(`OWASP ASVS 5.0.0 L${asvsLevel} generated security profile recorded; review docs/security/asvs-auth.md before making any compliance claim`);
   console.log(
     worker
       ? "verification + password-reset mail goes through the queue"
@@ -262,9 +274,9 @@ export async function addAuth(
   console.log(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
-      "POST /users/me/{resend-verification,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
+      "POST /users/me/{resend-verification,reauth,password,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
       "GET /users/me/{identities,sessions,mfa}, POST /users/me/identities/local, POST /users/me/identities/{provider}/{link,link/exchange}, " +
-      "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, " +
+      "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, DELETE /users/{id}/sessions/{session_id}, " +
       "POST /auth/mfa/verify in cmd/api/wiring.go" +
       docsMessage
   );
@@ -320,6 +332,10 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     content.replace(/\n?$/, "\n") +
     "\n# HS256 signing secret for access tokens — change this before deploying with APP_ENV=production\n" +
     "JWT_SECRET=dev-secret-change-me\n" +
+    "AUTH_METADATA_KEY=dev-metadata-key-change-me\n" +
+    "# Stable service-specific JWT claim values — change these before deploying with APP_ENV=production\n" +
+    "JWT_ISSUER=go-scaffold\n" +
+    "JWT_AUDIENCE=api\n" +
     "JWT_ACCESS_TTL_MIN=15\n" +
     "JWT_REFRESH_TTL_MIN=43200\n" +
     "JWT_REFRESH_MAX_TTL_MIN=43200\n" +
@@ -346,11 +362,17 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "# AES-256 key (for example: openssl rand -base64 32). Users still opt in\n" +
     "# individually through /users/me/mfa/setup and /users/me/mfa/confirm.\n" +
     "AUTH_MFA_ENABLED=false\n" +
+    "# L2 production: require this to be true so every login completes MFA before receiving an application session.\n" +
+    "AUTH_MFA_REQUIRED_FOR_LOGIN=false\n" +
     "MFA_ISSUER=go-scaffold\n" +
     "MFA_ENCRYPTION_KEY=\n" +
     "MFA_CHALLENGE_TTL_MIN=5\n" +
     "MFA_TOTP_WINDOW=1\n" +
-    "MFA_RECOVERY_CODE_COUNT=10\n";
+    "MFA_RECOVERY_CODE_COUNT=10\n" +
+    "# Maximum active refresh-token sessions per user; the oldest session is evicted on a new login.\n" +
+    "AUTH_MAX_SESSIONS=10\n" +
+    "\n# L2 only: newline-delimited breached-password denylist. Production L2 refuses to boot when unset.\n" +
+    "AUTH_BREACHED_PASSWORDS_FILE=\n";
   fs.writeFileSync(envExamplePath, content);
 }
 

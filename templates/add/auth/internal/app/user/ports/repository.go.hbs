@@ -64,6 +64,7 @@ type RefreshTokenRecord struct {
 	UserID            uuid.UUID `json:"user_id"`
 	SessionID         uuid.UUID `json:"session_id"`
 	UserAgent         string    `json:"user_agent"`
+	IPAddress         string    `json:"ip_address"`
 	CreatedAt         time.Time `json:"created_at"`
 	LastUsedAt        time.Time `json:"last_used_at"`
 	ExpiresAt         time.Time `json:"expires_at"`
@@ -73,6 +74,7 @@ type RefreshTokenRecord struct {
 type RefreshSession struct {
 	ID         uuid.UUID
 	UserAgent  string
+	IPAddress  string
 	CreatedAt  time.Time
 	LastUsedAt time.Time
 	ExpiresAt  time.Time
@@ -80,12 +82,14 @@ type RefreshSession struct {
 
 type RefreshTokenStore interface {
 	SetRefreshToken(context.Context, string, RefreshTokenRecord) error
+	SetRefreshTokenWithLimit(context.Context, string, RefreshTokenRecord, int) error
 	GetRefreshToken(context.Context, string) (uuid.UUID, bool, error)
 	ConsumeRefreshToken(context.Context, string) (RefreshTokenRecord, bool, error)
 	DeleteRefreshToken(context.Context, string, uuid.UUID) error
 	RevokeAllRefreshTokens(context.Context, uuid.UUID) error
 	ListRefreshSessions(context.Context, uuid.UUID) ([]RefreshSession, error)
 	RevokeRefreshSession(context.Context, uuid.UUID, uuid.UUID) error
+	IsSessionActive(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	IsRefreshTokenUsed(context.Context, string) (uuid.UUID, bool, error)
 }
 

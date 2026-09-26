@@ -15,6 +15,7 @@ type Dependencies struct {
 	RefreshTokens     ports.RefreshTokenStore
 	OAuthTransactions ports.OAuthTransactionStore
 	RecoveryTokens    ports.RecoveryTokenStore
+	PasswordPolicy    ports.PasswordPolicy
 	MFA               ports.MFAStore
 	Mailer            ports.AuthMailer
 	Providers         ProviderRegistry
@@ -24,6 +25,8 @@ type Dependencies struct {
 
 type MFASettings struct {
 	Enabled           bool
+	RequireForReauth  bool
+	RequireForLogin   bool
 	Issuer            string
 	EncryptionKey     string
 	ChallengeTTL      time.Duration
@@ -33,6 +36,13 @@ type MFASettings struct {
 
 type AuthConfig struct {
 	JWTSecret        string
+	// MetadataKey is separate from JWTSecret because it protects derived
+	// device identifiers and login-throttle fingerprints, not JWT signatures.
+	// A blank value is accepted only for backwards-compatible tests; generated
+	// production wiring must provide a distinct key.
+	MetadataKey      string
+	JWTIssuer        string
+	JWTAudience      string
 	JWTAccessTTL     time.Duration
 	JWTRefreshTTL    time.Duration
 	JWTRefreshMaxTTL time.Duration
@@ -41,6 +51,8 @@ type AuthConfig struct {
 	PasswordResetURL string
 	EmailVerifyTTL   time.Duration
 	EmailVerifyURL   string
+	MaxSessions      int
+	SecurityProfile  SecurityProfile
 	MFA              MFASettings
 }
 

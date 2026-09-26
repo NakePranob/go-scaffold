@@ -219,7 +219,7 @@ func (r *Repository) UpdateIdentity(ctx context.Context, identity *domain.Identi
 		if identity.PasswordHash == nil {
 			return errors.New("local identity password is required")
 		}
-		row := PasswordCredential{ID: identity.ID, UserID: identity.UserID, PasswordHash: *identity.PasswordHash, HashAlgorithm: "bcrypt", PasswordChangedAt: time.Now(), CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt}
+		row := PasswordCredential{ID: identity.ID, UserID: identity.UserID, PasswordHash: *identity.PasswordHash, HashAlgorithm: "argon2id", PasswordChangedAt: time.Now(), CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt}
 		return persistenceError(db.Save(&row).Error)
 	}
 	row, err := externalIdentityFromDomain(identity)
@@ -487,7 +487,7 @@ func createIdentity(db *gorm.DB, identity *domain.Identity) error {
 		}
 		return db.Create(&PasswordCredential{
 			ID: identity.ID, UserID: identity.UserID, PasswordHash: *identity.PasswordHash,
-			HashAlgorithm: "bcrypt", PasswordChangedAt: time.Now(),
+			HashAlgorithm: "argon2id", PasswordChangedAt: time.Now(),
 			CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt,
 		}).Error
 	}

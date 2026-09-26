@@ -77,6 +77,14 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "internal/shared/middleware/error.go",
   },
   {
+    template: "create/base/internal/shared/middleware/security_headers.go.hbs",
+    output: "internal/shared/middleware/security_headers.go",
+  },
+  {
+    template: "create/base/internal/shared/middleware/security_headers_test.go.hbs",
+    output: "internal/shared/middleware/security_headers_test.go",
+  },
+  {
     template: "create/base/internal/shared/middleware/logger.go.hbs",
     output: "internal/shared/middleware/logger.go",
   },

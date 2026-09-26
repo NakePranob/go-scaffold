@@ -490,7 +490,7 @@ async function runAddAuth(
     [
       "add internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed",
       `browser OAuth: frontend-owned callback with server-side provider redirect URI (${browserTopology})`,
-      `OWASP ASVS 5.0.0 L${asvsLevel}: verification target and assessment worksheet (not a compliance claim)`,
+      `OWASP ASVS 5.0.0 L${asvsLevel}: generated security profile and assessment worksheet (not a compliance claim)`,
       store === "postgres"
         ? "refresh + recovery tokens: Postgres (user_svc.auth_tokens), rate-limit counters in-process — no extra service"
         : pc.yellow("refresh tokens + rate-limit counters: Redis; recovery tokens: Postgres — requires Redis"),
@@ -623,7 +623,7 @@ add
     "--browser-topology <topology>",
     "browser deployment topology for cookie/CORS policy: same-origin, same-site (different origin), or cross-site (requires HTTPS deployment)"
   )
-  .option("--asvs-level <level>", "OWASP ASVS 5.0.0 verification target: 1, 2, or 3; does not certify the generated app")
+  .option("--asvs-level <level>", "generated OWASP ASVS 5.0.0 security profile: 1 or 2; L3 requires a WebAuthn/passkey adapter and is fail-closed")
   .option(
     "--lockout <policy>",
     'how repeated failed logins are refused: "progressive" (default, 3 free then a doubling wait to 15 minutes) or "fixed" (10 attempts, 5 minute lock, count cleared after 15 quiet minutes)'

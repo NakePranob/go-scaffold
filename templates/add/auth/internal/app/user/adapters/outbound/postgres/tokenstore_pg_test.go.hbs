@@ -46,11 +46,20 @@ func tokenStoreDBForTest(t *testing.T) *gorm.DB {
 	return db
 }
 
+func ensureTokenTestUser(t *testing.T, db *gorm.DB, userID uuid.UUID) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO user_svc.users (id) VALUES (?) ON CONFLICT (id) DO NOTHING", userID).Error; err != nil {
+		t.Fatalf("seed token test user: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Exec("DELETE FROM user_svc.users WHERE id = ?", userID).Error })
+}
+
 func TestPgTokenStore_ConsumeRefreshToken_ConcurrentRealDatabase(t *testing.T) {
 	db := tokenStoreDBForTest(t)
 	store := NewPgTokenStore(db)
 	ctx := context.Background()
 	userID := uuid.New()
+	ensureTokenTestUser(t, db, userID)
 	hash := "real-pg-refresh-" + uuid.NewString()
 	if err := store.SetRefreshToken(ctx, hash, refreshTokenRecordForTest(userID)); err != nil {
 		t.Fatalf("seed refresh token: %v", err)
@@ -107,6 +116,7 @@ func TestPgTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	store := NewPgTokenStore(db)
 	ctx := context.Background()
 	userID := uuid.New()
+	ensureTokenTestUser(t, db, userID)
 	currentID := uuid.New()
 	remoteID := uuid.New()
 	now := time.Now()
@@ -114,6 +124,7 @@ func TestPgTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	for i, sessionID := range []uuid.UUID{currentID, remoteID} {
 		if err := store.SetRefreshToken(ctx, hashes[i], ports.RefreshTokenRecord{
 			UserID: userID, SessionID: sessionID, UserAgent: "test-device",
+			IPAddress: []string{"203.0.113.10", "203.0.113.11"}[i],
 			CreatedAt: now.Add(-time.Hour), LastUsedAt: now.Add(-time.Duration(i) * time.Minute),
 			ExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour),
 		}); err != nil {
@@ -126,8 +137,16 @@ func TestPgTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	if err != nil || len(sessions) != 2 {
 		t.Fatalf("list sessions = %+v, err=%v", sessions, err)
 	}
-	if sessions[0].ID != currentID || sessions[0].UserAgent != "test-device" {
+	if sessions[0].ID != currentID || sessions[0].UserAgent != "test-device" || sessions[0].IPAddress != "203.0.113.10" {
 		t.Fatalf("sessions were not ordered/decoded correctly: %+v", sessions)
+	}
+	active, err := store.IsSessionActive(ctx, userID, currentID)
+	if err != nil || !active {
+		t.Fatalf("current session should be active: active=%t err=%v", active, err)
+	}
+	active, err = store.IsSessionActive(ctx, userID, remoteID)
+	if err != nil || !active {
+		t.Fatalf("remote session should be active: active=%t err=%v", active, err)
 	}
 	if err := store.RevokeRefreshSession(ctx, userID, remoteID); err != nil {
 		t.Fatalf("revoke session: %v", err)
@@ -135,5 +154,57 @@ func TestPgTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	sessions, err = store.ListRefreshSessions(ctx, userID)
 	if err != nil || len(sessions) != 1 || sessions[0].ID != currentID {
 		t.Fatalf("sessions after revoke = %+v, err=%v", sessions, err)
+	}
+	active, err = store.IsSessionActive(ctx, userID, remoteID)
+	if err != nil || active {
+		t.Fatalf("revoked remote session should be inactive: active=%t err=%v", active, err)
+	}
+	active, err = store.IsSessionActive(ctx, userID, currentID)
+	if err != nil || !active {
+		t.Fatalf("current session should remain active: active=%t err=%v", active, err)
+	}
+}
+
+func TestPgTokenStore_SetRefreshTokenWithLimitEvictsOldestAtomically(t *testing.T) {
+	db := tokenStoreDBForTest(t)
+	store := NewPgTokenStore(db)
+	ctx := context.Background()
+	userID := uuid.New()
+	ensureTokenTestUser(t, db, userID)
+	oldestID := uuid.New()
+	newerID := uuid.New()
+	newID := uuid.New()
+	now := time.Now()
+	hashes := []string{
+		"real-pg-session-limit-oldest-" + uuid.NewString(),
+		"real-pg-session-limit-newer-" + uuid.NewString(),
+		"real-pg-session-limit-new-" + uuid.NewString(),
+	}
+	for i, sessionID := range []uuid.UUID{oldestID, newerID} {
+		lastUsedAt := now.Add(-time.Duration(2-i) * time.Hour)
+		if err := store.SetRefreshToken(ctx, hashes[i], ports.RefreshTokenRecord{
+			UserID: userID, SessionID: sessionID, CreatedAt: lastUsedAt, LastUsedAt: lastUsedAt,
+			ExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour),
+		}); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+	t.Cleanup(func() { _ = store.RevokeAllRefreshTokens(ctx, userID) })
+
+	if err := store.SetRefreshTokenWithLimit(ctx, hashes[2], ports.RefreshTokenRecord{
+		UserID: userID, SessionID: newID, CreatedAt: now, LastUsedAt: now,
+		ExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour),
+	}, 2); err != nil {
+		t.Fatalf("insert limited session: %v", err)
+	}
+	active, err := store.IsSessionActive(ctx, userID, oldestID)
+	if err != nil || active {
+		t.Fatalf("oldest session should be evicted: active=%t err=%v", active, err)
+	}
+	for _, sessionID := range []uuid.UUID{newerID, newID} {
+		active, err := store.IsSessionActive(ctx, userID, sessionID)
+		if err != nil || !active {
+			t.Fatalf("session %s should remain active: active=%t err=%v", sessionID, active, err)
+		}
 	}
 }

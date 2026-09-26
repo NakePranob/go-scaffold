@@ -1,0 +1,53 @@
+package application
+
+import "errors"
+
+// SecurityProfile is generated from the selected ASVS level. It is runtime
+// policy, not a certification result: the deployed application still needs
+// the operator-supplied configuration and evidence described in the docs.
+type SecurityProfile struct {
+	Version                         string
+	Level                           int
+	CommonPasswordScreening        bool
+	BreachedPasswordScreening      bool
+	RequireMFAForSensitiveActions  bool
+	RequireMFAForApplicationAccess bool
+	PhishingResistantMFA           bool
+	SuspiciousLoginNotifications   bool
+}
+
+func GeneratedSecurityProfile() SecurityProfile {
+	return SecurityProfile{
+		Version:                        "5.0.0",
+		Level:                          {{asvsLevel}},
+		CommonPasswordScreening:       true,
+		BreachedPasswordScreening:     {{#if asvsL2}}true{{else}}false{{/if}},
+		RequireMFAForSensitiveActions: {{#if asvsL2}}true{{else}}false{{/if}},
+		RequireMFAForApplicationAccess: {{#if asvsL2}}true{{else}}false{{/if}},
+		PhishingResistantMFA:          false,
+		SuspiciousLoginNotifications:  false,
+	}
+}
+
+// ValidateRuntime keeps a generated L2 profile from silently degrading in
+// production when its operator-owned controls were never configured. Local
+// development is intentionally allowed to start so a fresh scaffold remains
+// inspectable before deployment secrets and policy data exist.
+func (p SecurityProfile) ValidateRuntime(production, mfaEnabled, breachListConfigured, requireMFAForApplicationAccess bool) error {
+	if p.Level >= 2 && production && p.BreachedPasswordScreening && !breachListConfigured {
+		return errors.New("ASVS L2 requires AUTH_BREACHED_PASSWORDS_FILE in production")
+	}
+	if p.Level >= 2 && production && p.RequireMFAForSensitiveActions && !mfaEnabled {
+		return errors.New("ASVS L2 requires AUTH_MFA_ENABLED=true in production")
+	}
+	if p.RequireMFAForApplicationAccess && requireMFAForApplicationAccess && !mfaEnabled {
+		return errors.New("AUTH_MFA_REQUIRED_FOR_LOGIN=true requires AUTH_MFA_ENABLED=true")
+	}
+	if p.Level >= 2 && production && p.RequireMFAForApplicationAccess && !requireMFAForApplicationAccess {
+		return errors.New("ASVS L2 requires AUTH_MFA_REQUIRED_FOR_LOGIN=true in production")
+	}
+	if p.Level >= 3 {
+		return errors.New("ASVS L3 is not generated: a phishing-resistant WebAuthn/passkey adapter is required")
+	}
+	return nil
+}

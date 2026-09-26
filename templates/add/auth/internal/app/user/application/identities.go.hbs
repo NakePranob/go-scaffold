@@ -32,7 +32,7 @@ func (s *Service) LinkLocalIdentity(ctx context.Context, userID uuid.UUID, passw
 	if userID == uuid.Nil || strings.TrimSpace(password) == "" {
 		return fmt.Errorf("authenticated user and password are required")
 	}
-	if err := validatePassword(password); err != nil {
+	if err := s.validatePassword(password); err != nil {
 		return err
 	}
 	if _, err := s.repo.FindByID(ctx, userID); err != nil {

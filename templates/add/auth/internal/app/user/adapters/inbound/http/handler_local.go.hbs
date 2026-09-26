@@ -20,7 +20,7 @@ func (h *Handler) register(c *gin.Context) {
 		return
 	}
 	input := toRegisterInput(in)
-	input.Session = sessionContext(c.GetHeader("User-Agent"))
+	input.Session = sessionContext(c.GetHeader("User-Agent"), c.ClientIP())
 	auth, err := h.svc.Register(c.Request.Context(), input)
 	if err != nil {
 		c.Error(toHTTPError(err))
@@ -40,7 +40,7 @@ func (h *Handler) login(c *gin.Context) {
 		return
 	}
 	input := toLoginInput(in)
-	input.Session = sessionContext(c.GetHeader("User-Agent"))
+	input.Session = sessionContext(c.GetHeader("User-Agent"), c.ClientIP())
 	auth, err := h.svc.Login(c.Request.Context(), input)
 	if err != nil {
 		c.Error(toHTTPError(err))
@@ -54,12 +54,12 @@ func (h *Handler) refresh(c *gin.Context) {
 	if !h.requireBrowserOrigin(c) {
 		return
 	}
-	raw, err := c.Cookie(refreshCookieName)
+	raw, err := h.refreshCookie(c)
 	if err != nil || raw == "" {
 		c.Error(toHTTPError(domain.Rule("AUTH_INVALID_TOKEN", "invalid or expired token", domain.ErrInvalidToken)))
 		return
 	}
-	auth, err := h.svc.Refresh(c.Request.Context(), raw)
+	auth, err := h.svc.Refresh(c.Request.Context(), raw, c.ClientIP())
 	if err != nil {
 		h.clearRefreshCookie(c)
 		c.Error(toHTTPError(err))
@@ -73,7 +73,7 @@ func (h *Handler) logout(c *gin.Context) {
 	if !h.requireBrowserOrigin(c) {
 		return
 	}
-	raw, _ := c.Cookie(refreshCookieName)
+	raw, _ := h.refreshCookie(c)
 	_ = h.svc.Logout(c.Request.Context(), raw)
 	h.clearRefreshCookie(c)
 	c.Status(http.StatusNoContent)

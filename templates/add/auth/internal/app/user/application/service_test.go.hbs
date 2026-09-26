@@ -53,11 +53,47 @@ func newFakeTokenStore() *fakeTokenStore {
 func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, token RefreshTokenRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.setRefreshTokenLocked(hash, token)
+	return nil
+}
+
+func (f *fakeTokenStore) setRefreshTokenLocked(hash string, token RefreshTokenRecord) {
 	f.active[hash] = token
 	if f.sessions[token.UserID] == nil {
 		f.sessions[token.UserID] = map[string]struct{}{}
 	}
 	f.sessions[token.UserID][hash] = struct{}{}
+}
+
+func (f *fakeTokenStore) SetRefreshTokenWithLimit(_ context.Context, hash string, token RefreshTokenRecord, maxSessions int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if maxSessions <= 0 {
+		f.setRefreshTokenLocked(hash, token)
+		return nil
+	}
+	for {
+		count := 0
+		victimHash := ""
+		var victim RefreshTokenRecord
+		for candidateHash, candidate := range f.active {
+			if candidate.UserID != token.UserID || !candidate.ExpiresAt.After(time.Now()) {
+				continue
+			}
+			count++
+			if victimHash == "" || candidate.LastUsedAt.Before(victim.LastUsedAt) ||
+				(candidate.LastUsedAt.Equal(victim.LastUsedAt) && candidate.CreatedAt.Before(victim.CreatedAt)) {
+				victimHash = candidateHash
+				victim = candidate
+			}
+		}
+		if count < maxSessions {
+			break
+		}
+		delete(f.active, victimHash)
+		delete(f.sessions[token.UserID], victimHash)
+	}
+	f.setRefreshTokenLocked(hash, token)
 	return nil
 }
 func (f *fakeTokenStore) GetRefreshToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
@@ -119,6 +155,17 @@ func (f *fakeTokenStore) ListRefreshSessions(_ context.Context, userID uuid.UUID
 	}
 	return out, nil
 }
+func (f *fakeTokenStore) IsSessionActive(_ context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, token := range f.active {
+		if token.UserID == userID && token.SessionID == sessionID && token.ExpiresAt.After(time.Now()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeTokenStore) RevokeRefreshSession(_ context.Context, userID, sessionID uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -556,6 +603,45 @@ func newTestService(repo repository, tokens testTokenStore) *Service {
 	})
 }
 
+func TestService_SetRoleRevokesSessionsBeforeChangingRole(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	if err := seedRefreshToken(ctx, tokens, "role-refresh", userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "admin@example.com", Role: "admin"}}
+	svc := newTestService(repo, tokens)
+
+	if _, err := svc.SetRole(ctx, userID, "staff"); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	if repo.user.Role != "staff" {
+		t.Fatalf("role = %q, want staff", repo.user.Role)
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, uuid.Nil); err != nil {
+		t.Fatalf("check session: %v", err)
+	} else if active {
+		t.Fatal("role change left the old refresh session active")
+	}
+}
+
+func TestService_SetRoleDoesNotChangeRoleWhenSessionRevocationFails(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	tokens.revokeAllErr = errors.New("session store unavailable")
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "admin@example.com", Role: "admin"}}
+	svc := newTestService(repo, tokens)
+
+	if _, err := svc.SetRole(ctx, userID, "staff"); err == nil {
+		t.Fatal("expected role change to fail when sessions cannot be revoked")
+	}
+	if repo.user.Role != "admin" {
+		t.Fatalf("role = %q, want admin after failed revocation", repo.user.Role)
+	}
+}
+
 func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, userID uuid.UUID, ttl time.Duration) error {
 	now := time.Now()
 	return tokens.SetRefreshToken(ctx, hashToken(raw), RefreshTokenRecord{
@@ -563,6 +649,89 @@ func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, u
 		ExpiresAt:         now.Add(ttl),
 		AbsoluteExpiresAt: now.Add(24 * time.Hour),
 	})
+}
+
+func seedRefreshSession(ctx context.Context, tokens *fakeTokenStore, raw string, userID, sessionID uuid.UUID, createdAt, lastUsedAt time.Time) error {
+	return tokens.SetRefreshToken(ctx, hashToken(raw), RefreshTokenRecord{
+		UserID:            userID,
+		SessionID:         sessionID,
+		CreatedAt:         createdAt,
+		LastUsedAt:        lastUsedAt,
+		ExpiresAt:         createdAt.Add(24 * time.Hour),
+		AbsoluteExpiresAt: createdAt.Add(48 * time.Hour),
+	})
+}
+
+func TestService_NewLoginEvictsLeastRecentlyUsedSession(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	userID := uuid.New()
+	oldestSession := uuid.New()
+	newerSession := uuid.New()
+	tokens := newFakeTokenStore()
+	if err := seedRefreshSession(ctx, tokens, "oldest", userID, oldestSession, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("seed oldest session: %v", err)
+	}
+	if err := seedRefreshSession(ctx, tokens, "newer", userID, newerSession, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed newer session: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "a@example.com"}}, tokens)
+	svc.config.MaxSessions = 2
+	svc.now = func() time.Time { return now }
+
+	if _, err := svc.issueTokens(ctx, &domain.User{ID: userID, Email: "a@example.com"}, SessionContext{IsNew: true}); err != nil {
+		t.Fatalf("issue new login tokens: %v", err)
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, oldestSession); err != nil {
+		t.Fatalf("check oldest session: %v", err)
+	} else if active {
+		t.Fatal("expected the least recently used session to be evicted")
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, newerSession); err != nil {
+		t.Fatalf("check newer session: %v", err)
+	} else if !active {
+		t.Fatal("expected the newer session to remain active")
+	}
+	items, err := tokens.ListRefreshSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("active session count = %d, want 2", len(items))
+	}
+}
+
+func TestService_ListSessionsKeepsCurrentSessionWhenCapped(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	userID := uuid.New()
+	currentSession := uuid.New()
+	tokens := newFakeTokenStore()
+	for i, sessionID := range []uuid.UUID{currentSession, uuid.New(), uuid.New()} {
+		lastUsedAt := now.Add(-time.Duration(3-i) * time.Hour)
+		if err := seedRefreshSession(ctx, tokens, fmt.Sprintf("session-%d", i), userID, sessionID, lastUsedAt, lastUsedAt); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "a@example.com"}}, tokens)
+	svc.config.MaxSessions = 2
+
+	items, err := svc.ListSessions(ctx, userID, currentSession)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("session count = %d, want 2", len(items))
+	}
+	foundCurrent := false
+	for _, item := range items {
+		if item.ID == currentSession {
+			foundCurrent = item.Current
+		}
+	}
+	if !foundCurrent {
+		t.Fatal("expected the current session to remain visible when the list is capped")
+	}
 }
 
 func status(t *testing.T, err error) int {
@@ -776,6 +945,26 @@ func TestService_LogoutAll_RevokesEverySessionButLeavesOthersAlone(t *testing.T)
 	}
 	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(rawOther)); !ok {
 		t.Fatal("expected a different user's session to be untouched by LogoutAll")
+	}
+}
+
+func TestService_ChangePassword_RevocationFailureLeavesPasswordUnchanged(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	oldHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &domain.User{ID: userID},
+		identity: &domain.Identity{ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &oldHash},
+	}
+	tokens := newFakeTokenStore()
+	tokens.revokeAllErr = errors.New("session store unavailable")
+	svc := newTestService(repo, tokens)
+
+	if err := svc.ChangePassword(ctx, userID, "new-password"); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("expected a 500 while revocation is unavailable, got %v", err)
+	}
+	if repo.identity == nil || repo.identity.PasswordHash == nil || *repo.identity.PasswordHash != oldHash {
+		t.Fatalf("password changed even though session revocation failed: %+v", repo.identity)
 	}
 }
 

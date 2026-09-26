@@ -281,19 +281,33 @@ export function checkProject(projectDir: string = process.cwd()): void {
       "internal/shared/middleware/auth.go",
       "internal/app/user/application/local_auth.go",
       "internal/app/user/application/mfa_service.go",
+      "internal/app/user/application/security_profile.go",
+      "internal/app/user/application/password_policy.go",
+      "internal/app/user/adapters/outbound/password/policy.go",
     ];
     const missing = required.filter((file) => !fs.existsSync(path.join(projectDir, file)));
-    if (missing.length) throw new Error(`ASVS target check failed: missing ${missing.join(", ")}`);
+    if (missing.length) throw new Error(`ASVS generated security profile check failed: missing ${missing.join(", ")}`);
     const worksheet = fs.readFileSync(path.join(projectDir, required[0]), "utf8");
     if (!worksheet.includes(`OWASP ASVS ${config.asvs.version} Level ${config.asvs.level}`)) {
-      throw new Error("ASVS target check failed: docs/security/asvs-auth.md does not match the ASVS target recorded in go-scaffold.config.json");
+      throw new Error("ASVS generated security profile check failed: docs/security/asvs-auth.md does not match the profile recorded in go-scaffold.config.json");
     }
-    const gaps = [
-      "L1: authenticated password change and common-password screening are not generated",
-      ...(config.asvs.level >= 2 ? ["L2: breached-password screening and an enforced stronger-authentication policy are not generated"] : []),
-      ...(config.asvs.level >= 3 ? ["L3: phishing-resistant MFA and suspicious-login notices are not generated"] : []),
-    ];
-    console.log(`ASVS ${config.asvs.version} L${config.asvs.level} target: unverified; docs/security/asvs-auth.md lists assessment work`);
-    for (const gap of gaps) console.log(`  - ${gap}`);
+    if (config.asvs.level >= 3) {
+      throw new Error("ASVS generated security profile check failed: L3 requires a generated phishing-resistant WebAuthn/passkey adapter");
+    }
+    const profile = fs.readFileSync(path.join(projectDir, "internal/app/user/application/security_profile.go"), "utf8");
+    if (!new RegExp(`Level:\\s+${config.asvs.level},`).test(profile)) {
+      throw new Error("ASVS generated security profile check failed: security_profile.go does not match the selected level");
+    }
+    if (!/CommonPasswordScreening:\s+true/.test(profile)) {
+      throw new Error("ASVS generated security profile check failed: common-password screening is disabled");
+    }
+    if (config.asvs.level === 2 && (!/BreachedPasswordScreening:\s+true/.test(profile) || !/RequireMFAForSensitiveActions:\s+true/.test(profile))) {
+      throw new Error("ASVS generated security profile check failed: L2 controls are disabled");
+    }
+    console.log(`ASVS ${config.asvs.version} L${config.asvs.level} generated security profile: present; runtime and deployment evidence still require review`);
+    if (config.asvs.level === 2) {
+      console.log("  - L2 production guard: configure AUTH_BREACHED_PASSWORDS_FILE and AUTH_MFA_ENABLED=true");
+    }
+    console.log("  - L3 is intentionally unavailable until a phishing-resistant WebAuthn/passkey adapter is generated");
   }
 }

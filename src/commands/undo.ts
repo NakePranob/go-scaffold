@@ -124,6 +124,9 @@ export async function undoModule(
     schemaName: naming.schemaName,
     auth,
     permission,
+    authSessionValidatorLine: auth
+      ? "sessionValidator := user.NewSessionValidatorFromDB(db, cfg" + (config.features.authStore === "redis" ? ", rdb" : "") + ")"
+      : undefined,
   });
 
   unpatchGolangciForModule(path.join(projectDir, ".golangci.yml"), modulePath);

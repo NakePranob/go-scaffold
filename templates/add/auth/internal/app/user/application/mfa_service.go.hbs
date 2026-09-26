@@ -68,6 +68,9 @@ func (s *Service) mfaSettings() MFASettings {
 // enables MFA, so a bad encryption key fails at boot rather than after the
 // first user clicks "enable MFA".
 func ValidateMFASettings(settings MFASettings) error {
+	if settings.RequireForReauth && !settings.Enabled {
+		return errors.New("MFA is required for reauthentication but AUTH_MFA_ENABLED is false")
+	}
 	if !settings.Enabled {
 		return nil
 	}
@@ -92,9 +95,26 @@ func (s *Service) completeLogin(ctx context.Context, u *domain.User, sessions ..
 		session = sessions[0]
 	}
 	if session.ID == uuid.Nil {
+		session.IsNew = true
 		session.ID = uuid.New()
 	}
 	settings := s.mfaSettings()
+	if settings.RequireForLogin {
+		if s.mfa == nil {
+			return nil, errors.New("MFA is required for login but no MFA store was configured")
+		}
+		enrollment, found, err := s.mfa.GetEnrollment(ctx, u.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read MFA enrollment: %w", err)
+		}
+		if !found || !enrollment.Enabled {
+			token, err := s.issueMFAEnrollmentToken(u.ID)
+			if err != nil {
+				return nil, fmt.Errorf("create MFA enrollment token: %w", err)
+			}
+			return MFAEnrollmentResult(token), nil
+		}
+	}
 	if !settings.Enabled {
 		auth, err := s.issueTokens(ctx, u, session)
 		if err != nil {
@@ -130,6 +150,38 @@ func (s *Service) completeLogin(ctx context.Context, u *domain.User, sessions ..
 		return nil, fmt.Errorf("store MFA challenge: %w", err)
 	}
 	return ChallengeResult(rawChallenge), nil
+}
+
+// SetupMFAEnrollment is the restricted onboarding path used when a generated
+// L2 production profile requires MFA before issuing an application session.
+// The signed token carries only a short-lived user-bound capability; it never
+// grants access to protected application routes.
+func (s *Service) SetupMFAEnrollment(ctx context.Context, rawToken string) (*MFASetup, error) {
+	userID, err := s.parseMFAEnrollmentToken(rawToken)
+	if err != nil {
+		return nil, err
+	}
+	return s.SetupMFA(ctx, userID)
+}
+
+func (s *Service) ConfirmMFAEnrollment(ctx context.Context, rawToken, code string, session SessionContext) ([]string, *AuthResponse, error) {
+	userID, err := s.parseMFAEnrollmentToken(rawToken)
+	if err != nil {
+		return nil, nil, err
+	}
+	codes, err := s.ConfirmMFA(ctx, userID, code)
+	if err != nil {
+		return nil, nil, err
+	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, nil, errInvalidToken()
+	}
+	auth, err := s.issueTokens(ctx, u, SessionContext{IsNew: true, UserAgent: session.UserAgent, IPAddress: session.IPAddress})
+	if err != nil {
+		return nil, nil, err
+	}
+	return codes, auth, nil
 }
 
 func (s *Service) MFAStatus(ctx context.Context, userID uuid.UUID) (MFAStatus, error) {
@@ -250,7 +302,7 @@ func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string)
 // VerifyMFA consumes the challenge before checking the code. This makes every
 // challenge single-use, including a failed attempt, and prevents an attacker
 // from turning a leaked challenge into an unlimited six-digit guessing oracle.
-func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string) (*AuthResponse, error) {
+func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAddress ...string) (*AuthResponse, error) {
 	settings, err := s.requireMFA()
 	if err != nil {
 		return nil, err
@@ -294,7 +346,11 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string) (*Au
 	if err != nil {
 		return nil, errInvalidCredentials()
 	}
-	return s.issueTokens(ctx, u, SessionContext{ID: challenge.SessionID, UserAgent: challenge.UserAgent})
+	var address string
+	if len(ipAddress) > 0 {
+		address = ipAddress[0]
+	}
+	return s.issueTokens(ctx, u, SessionContext{ID: challenge.SessionID, IsNew: true, UserAgent: challenge.UserAgent, IPAddress: address})
 }
 
 func (s *Service) requireMFA() (MFASettings, error) {

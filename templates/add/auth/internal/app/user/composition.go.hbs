@@ -2,6 +2,7 @@ package user
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	httpadapter "{{goModule}}/internal/app/user/adapters/inbound/http"
@@ -70,10 +71,23 @@ func NewHandlerFromDB(
 	if cfg.OAuthStateTTL <= 0 {
 		panic(fmt.Errorf("OAUTH_STATE_TTL_MIN must be positive"))
 	}
+	profile := application.GeneratedSecurityProfile()
+	if err := profile.ValidateRuntime(cfg.IsProd(), cfg.AuthMFAEnabled, strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "", cfg.AuthMFARequiredForLogin); err != nil {
+		panic(err)
+	}
+	passwordPolicy := application.NewCommonPasswordPolicy()
+	if profile.BreachedPasswordScreening && strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "" {
+		breachedPolicy, err := userpassword.NewFilePasswordPolicy(cfg.AuthBreachedPasswordsFile)
+		if err != nil {
+			panic(fmt.Errorf("load AUTH_BREACHED_PASSWORDS_FILE: %w", err))
+		}
+		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, breachedPolicy)
+	}
 
 	service := application.NewService(application.Dependencies{
 		Repository:        userpostgres.NewRepository(db),
-		Passwords:         userpassword.NewBCryptHasher(),
+		Passwords:         userpassword.NewArgon2idHasher(),
+		PasswordPolicy:    passwordPolicy,
 		RefreshTokens:     tokens,
 		OAuthTransactions: tokens,
 		RecoveryTokens:    tokens,
@@ -84,6 +98,9 @@ func NewHandlerFromDB(
 		Clock:             time.Now,
 	}, application.AuthConfig{
 		JWTSecret:        cfg.JWTSecret,
+		MetadataKey:      cfg.AuthMetadataKey,
+		JWTIssuer:        cfg.JWTIssuer,
+		JWTAudience:      cfg.JWTAudience,
 		JWTAccessTTL:     cfg.JWTAccessTTL,
 		JWTRefreshTTL:    cfg.JWTRefreshTTL,
 		JWTRefreshMaxTTL: cfg.JWTRefreshMaxTTL,
@@ -92,8 +109,12 @@ func NewHandlerFromDB(
 		PasswordResetURL: cfg.PasswordResetURL,
 		EmailVerifyTTL:   cfg.EmailVerifyTTL,
 		EmailVerifyURL:   cfg.EmailVerifyURL,
+		MaxSessions:      cfg.AuthMaxSessions,
+		SecurityProfile:  profile,
 		MFA: application.MFASettings{
 			Enabled:           cfg.AuthMFAEnabled,
+			RequireForReauth:  profile.RequireMFAForSensitiveActions && cfg.AuthMFAEnabled,
+			RequireForLogin:   profile.RequireMFAForApplicationAccess && cfg.AuthMFARequiredForLogin,
 			Issuer:            cfg.MFAIssuer,
 			EncryptionKey:     cfg.MFAEncryptionKey,
 			ChallengeTTL:      cfg.MFAChallengeTTL,
@@ -106,16 +127,33 @@ func NewHandlerFromDB(
 {{else}}
 	limiter := middleware.NewMemoryLimiter()
 {{/if}}
-	return httpadapter.NewHandlerWithOrigins(
+	return httpadapter.NewHandlerWithOriginsAndOAuthTTLAndJWT(
 		service,
 		cfg.JWTSecret,
+		cfg.JWTIssuer,
+		cfg.JWTAudience,
 		cfg.JWTRefreshTTL,
 		cfg.CookieSecure,
 		cfg.CookieSameSite,
 		cfg.CORSAllowedOrigins,
+		cfg.OAuthStateTTL,
 		limiter,
 		authz,
 	)
+}
+
+// NewSessionValidatorFromDB lets the process root give every protected feature
+// the same session-revocation boundary as the user routes. It intentionally
+// returns the narrow shared contract, not the concrete token-store adapter.
+func NewSessionValidatorFromDB(
+	db *gorm.DB,
+	cfg config.Config,
+{{#if redis}}	rdb *redis.Client,
+{{/if}}
+) middleware.SessionValidator {
+{{#if redis}}	return userredis.NewRedisTokenStore(rdb, db)
+{{else}}	return userpostgres.NewPgTokenStore(db)
+{{/if}}
 }
 
 // Public aliases keep the composition surface small for cmd/seed and for

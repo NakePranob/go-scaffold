@@ -47,6 +47,11 @@ function assertAuthMigrations(app) {
   ]) {
     assert.ok(files.includes(`_${table}.up.sql`), `missing migration ${table}`);
   }
+  const authTokensMigration = readFileSync(
+    path.join(app, "migrations", files.split("\n").find((file) => file.includes("_create_auth_tokens.up.sql"))),
+    "utf8",
+  );
+  assert.match(authTokensMigration, /ip_address\s+INET/);
 }
 
 test("--store postgres writes the Postgres store and no Redis anywhere", (t) => {
@@ -61,8 +66,11 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
 
   const main = read(app, "cmd/api/wiring.go");
   const composition = read(app, "internal/app/user/composition.go");
+  const seed = read(app, "cmd/seed/main.go");
   assert.match(composition, /NewPgTokenStore\(db\)/);
   assert.match(composition, /middleware\.NewMemoryLimiter\(\)/);
+  assert.match(seed, /userpostgres\.NewPgTokenStore\(db\)/);
+  assert.match(seed, /RefreshTokens:\s+tokens/);
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.doesNotMatch(main, /rdb/, "wiring.go must not reference a Redis client");
@@ -89,8 +97,12 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
 
   const main = read(app, "cmd/api/wiring.go");
   const composition = read(app, "internal/app/user/composition.go");
+  const seed = read(app, "cmd/seed/main.go");
   assert.match(composition, /NewRedisTokenStore\(rdb, db\)/);
   assert.match(composition, /middleware\.NewRedisLimiter\(rdb\)/);
+  assert.match(seed, /cache\.Open\(cfg\)/);
+  assert.match(seed, /user\.NewRedisTokenStore\(rdb, db\)/);
+  assert.match(seed, /RefreshTokens:\s+tokens/);
   assert.doesNotMatch(composition, /type PgTokenStore = userpostgres\.PgTokenStore/);
   assert.doesNotMatch(composition, /func NewPgTokenStore\(db \*gorm\.DB\)/);
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
@@ -116,9 +128,11 @@ for (const store of ["postgres", "redis"]) {
 
     const main = read(app, "cmd/api/wiring.go");
     const authArgs = store === "postgres" ? "db, cfg, q" : "db, cfg, rdb, q";
+    const sessionArgs = store === "postgres" ? "db, cfg" : "db, cfg, rdb";
     assert.ok(
-      main.includes(`roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.AuthzCacheTTL)`) &&
-        main.includes(`user.NewHandlerFromDB(${authArgs}, roleComposition.Service, roleComposition.Authz).Register(api)`),
+      main.includes(`sessionValidator := user.NewSessionValidatorFromDB(${sessionArgs})`) &&
+      main.includes(`roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.AuthzCacheTTL, sessionValidator)`) &&
+      main.includes(`user.NewHandlerFromDB(${authArgs}, roleComposition.Service, roleComposition.Authz).Register(api)`),
       `expected feature-local auth/RBAC composition, got:\n${main.split("\n").filter((l) => l.includes("Composition") || l.includes("user.NewHandler")).join("\n")}`
     );
     assert.match(main, /roleComposition\.Handler\.Register\(api\)/);
@@ -222,7 +236,8 @@ test("add rbac composes auth and role locally on a project that never ran add wo
   cli(app, "add", "rbac", "--yes");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(main, /roleComposition := role\.NewCompositionFromDB\(db, cfg\.JWTSecret, cfg\.AuthzCacheTTL\)/);
+  assert.match(main, /sessionValidator := user\.NewSessionValidatorFromDB\(db, cfg\)/);
+  assert.match(main, /roleComposition := role\.NewCompositionFromDB\(db, cfg\.JWTSecret, cfg\.JWTIssuer, cfg\.JWTAudience, cfg\.AuthzCacheTTL, sessionValidator\)/);
   assert.match(main, /user\.NewHandlerFromDB\(db, cfg, roleComposition\.Service, roleComposition\.Authz\)\.Register\(api\)/);
   assert.match(main, /roleComposition\.Handler\.Register\(api\)/);
   assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
@@ -245,6 +260,7 @@ for (const store of ["postgres", "redis"]) {
     const authArgs = store === "postgres" ? "db, cfg, q" : "db, cfg, rdb, q";
     assert.match(composition, /q queue\.Enqueuer/);
     assert.match(composition, /mail\.NewAsyncClient\(q\)/);
+    assert.match(main, new RegExp(`sessionValidator := user\\.NewSessionValidatorFromDB\\(${store === "postgres" ? "db, cfg" : "db, cfg, rdb"}\\)`));
     assert.match(main, new RegExp(`user\\.NewHandlerFromDB\\(${authArgs}, roleComposition\\.Service, roleComposition\\.Authz\\)\\.Register\\(api\\)`));
     assert.doesNotMatch(main, /user\.NewService\(|role\.NewService\(|mail\.NewAsyncClient/);
   });

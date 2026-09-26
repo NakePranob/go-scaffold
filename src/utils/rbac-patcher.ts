@@ -1,6 +1,6 @@
 import { AuthStore } from "../types";
 import fs from "fs-extra";
-import { authHandlerLineFor } from "./auth-patcher";
+import { authHandlerLineFor, authSessionValidatorLine } from "./auth-patcher";
 import { hasMarker, insertBeforeMarker, insertBeforeMarkerOnce } from "./marker-patch";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
@@ -158,6 +158,7 @@ export function patchUserHandlerForRbac(handlerGoPath: string): void {
     'usersGroup.GET("", h.authz.Require(PermUserRead), h.adminListUsers)',
     'usersGroup.GET("/:id", h.authz.Require(PermUserRead), h.adminGetUser)',
     'usersGroup.PATCH("/:id/set-role", h.authz.Require(PermUserManageRole), h.setRole)',
+    'usersGroup.DELETE("/:id/sessions/:session_id", h.authz.Require(PermUserManageSession), h.adminRevokeSession)',
   ]) {
     if (!content.includes(required)) {
       throw new Error(`${handlerGoPath} is missing the canonical auth role route (${required}); regenerate auth before adding RBAC`);
@@ -217,7 +218,8 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
 
   const wiring = { goModule, queueBackend: "river" as const, store, worker };
   const authRouteLine = authHandlerLineFor(wiring);
-  const roleCompositionLine = "roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.AuthzCacheTTL)";
+  const roleCompositionLine = "roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.AuthzCacheTTL, sessionValidator)";
+  const sessionValidatorLine = authSessionValidatorLine(wiring);
   const roleHandlerLine = "roleComposition.Handler.Register(api)";
 
   if (!content.includes(authRouteLine)) {
@@ -228,7 +230,10 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
     );
   }
   const authWithRoleLine = authHandlerLineFor(wiring, ["roleComposition.Service", "roleComposition.Authz"]);
-  content = content.replace(authRouteLine, [roleCompositionLine, authWithRoleLine, roleHandlerLine].join("\n"));
+  const replacementLines = content.includes(sessionValidatorLine)
+    ? [roleCompositionLine, authWithRoleLine, roleHandlerLine]
+    : [sessionValidatorLine, roleCompositionLine, authWithRoleLine, roleHandlerLine];
+  content = content.replace(authRouteLine, replacementLines.join("\n"));
 
   fs.writeFileSync(mainGoPath, content);
 }

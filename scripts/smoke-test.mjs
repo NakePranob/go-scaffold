@@ -266,6 +266,8 @@ function runtimeEnv(db, overrides = {}) {
     // Go source. The smoke runtime supplies its same-site fixture values
     // explicitly, just as a deployment environment must.
     AUTH_BROWSER_TOPOLOGY: "same-site",
+    JWT_ISSUER: "smoke-api",
+    JWT_AUDIENCE: "smoke-users",
     // A dummy but complete provider config exercises the configured-provider
     // route without ever exchanging a real Google authorization code.
     GOOGLE_CLIENT_ID: "smoke-client-id",
@@ -1025,7 +1027,12 @@ func main() {
 step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logout/me/forgot-reset-password/verify-email/google-oauth-redirect/rate-limiting against a real server" : "add auth: skipped (needs Docker for add worker's Redis)", () => {
   if (!hasDocker) return;
 
-  goScaffold(["add", "auth", "--defaults"], fullApp);
+  // The end-to-end auth flow below intentionally exercises optional MFA
+  // enrollment before any sensitive reauthentication. Use the L1 generated
+  // profile here; L2's production guard is covered by the generated profile
+  // and integration tests without making this long-running smoke flow depend
+  // on an operator enrollment bootstrap.
+  goScaffold(["add", "auth", "--defaults", "--asvs-level", "1"], fullApp);
   run("go", ["mod", "tidy"], fullApp);
   run("go", ["build", "./..."], fullApp);
   run("go", ["vet", "./..."], fullApp);
@@ -1048,6 +1055,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const status = (out) => (out.match(/HTTPSTATUS:(\d+)/) ?? [])[1];
   const field = (out, key) => (out.match(new RegExp(`"${key}":"([^"]*)"`)) ?? [])[1];
   const cookie = (out) => (out.match(/Set-Cookie: refresh_token=([^;]*);/) ?? [])[1];
+  const oauthCookie = (out) => (out.match(/Set-Cookie: oauth_state=([^;]*);/) ?? [])[1];
 
   const register = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/register`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery","name":"Alice"}']);
   if (!/^HTTP\/1\.1 201/.test(register)) throw new Error(`expected 201 on register, got:\n${register}`);
@@ -1062,7 +1070,7 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
 
   const login = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery"}']);
   if (!/^HTTP\/1\.1 200/.test(login)) throw new Error(`expected 200 on login, got:\n${login}`);
-  const access = field(login, "access_token");
+  let access = field(login, "access_token");
   const loginCookie = cookie(login);
   if (!access || !loginCookie) throw new Error(`expected access_token + refresh_token cookie on login, got:\n${login}`);
 
@@ -1087,7 +1095,11 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     throw new Error(`expected 200 with alice's email on /me, got:\n${meWithToken}`);
   }
 
-  const duplicateLocalLink = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/identities/local`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", '{"password":"anotherpassword123"}']);
+  const duplicateLocalReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", '{"password":"correcthorsebattery"}']);
+  if (status(duplicateLocalReauth) !== "200") throw new Error(`expected successful reauthentication before a sensitive identity mutation, got:\n${duplicateLocalReauth}`);
+  const duplicateLocalReauthToken = field(duplicateLocalReauth, "reauth_token");
+  if (!duplicateLocalReauthToken) throw new Error(`expected a short-lived reauth token, got:\n${duplicateLocalReauth}`);
+  const duplicateLocalLink = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/identities/local`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${duplicateLocalReauthToken}`, "-d", '{"password":"anotherpassword123"}']);
   if (status(duplicateLocalLink) !== "409" || !duplicateLocalLink.includes("AUTH_IDENTITY_ALREADY_LINKED")) {
     throw new Error(`expected linking a second local credential to be rejected, got:\n${duplicateLocalLink}`);
   }
@@ -1105,6 +1117,15 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   // not just refused the replay itself.
   const reuseRotated = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${rotatedCookie}`]);
   if (status(reuseRotated) !== "401") throw new Error(`expected replaying a rotated-out token to revoke the whole session family (rotated token should now 401 too), got:\n${reuseRotated}`);
+  const revokedAccess = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "GET", B + "/users/me", "-H", "Authorization: Bearer " + access]);
+  if (status(revokedAccess) !== "401") {
+    throw new Error("expected the access token from the revoked session family to be rejected, got:\n" + revokedAccess);
+  }
+  const freshLogin = run("curl", ["-s", "-i", "-X", "POST", B + "/auth/login", ...jsonHeader, "-d", '{"email":"alice@example.com","password":"correcthorsebattery"}']);
+  if (!/^HTTP\/1\.1 200/.test(freshLogin)) throw new Error("expected a fresh login after session-family revocation, got:\n" + freshLogin);
+  access = field(freshLogin, "access_token");
+  if (!access) throw new Error("expected a fresh access token after session-family revocation");
+
 
   // forgot-password/reset-password go through the real async queue. Track the
   // direct worker binary so top-level cleanup can stop it even if an assertion
@@ -1176,31 +1197,36 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
 
   const loginNewPassword = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
   if (status(loginNewPassword) !== "200") throw new Error(`expected 200 logging in with the post-reset password, got:\n${loginNewPassword}`);
+  access = field(loginNewPassword, "access_token");
+  if (!access) throw new Error("expected a fresh access token after password reset");
+
 
 
   // Generic provider OAuth: only what's testable without a live Google app —
-  // the login redirect targets Google with browser-supplied state + PKCE
+  // the login redirect targets Google with server-generated state + PKCE
   // params, and the browser-owned callback uses the JSON exchange endpoint.
-  const googleState = "smoke-client-state";
+  const googleClientState = "smoke-client-state";
   const googleVerifier = "smoke-client-code-verifier-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const googleChallenge = createHash("sha256").update(googleVerifier).digest("base64url");
-  const googleLogin = run("curl", ["-s", "-i", `${B}/auth/google/login?state=${googleState}&code_challenge=${googleChallenge}&code_challenge_method=S256`]);
+  const googleLogin = run("curl", ["-s", "-i", `${B}/auth/google/login?state=${googleClientState}&code_challenge=${googleChallenge}&code_challenge_method=S256`]);
   if (!/^HTTP\/1\.1 302/.test(googleLogin)) throw new Error(`expected 302 on GET /auth/google/login, got:\n${googleLogin}`);
   const googleLocation = googleLogin.match(/^Location: (.+)$/m)?.[1]?.trim();
   const googleURL = googleLocation ? new URL(googleLocation) : null;
+  const googleStateCookie = oauthCookie(googleLogin);
   if (
     !googleURL ||
     googleURL.hostname !== "accounts.google.com" ||
+    !googleStateCookie ||
     !googleURL.searchParams.has("state") ||
     !googleURL.searchParams.has("code_challenge") ||
     googleURL.searchParams.get("code_challenge_method") !== "S256"
   ) {
-    throw new Error(`expected a redirect to accounts.google.com with state and S256 PKCE params, got:\n${googleLogin}`);
+    throw new Error(`expected a redirect to accounts.google.com with server state cookie and S256 PKCE params, got:\n${googleLogin}`);
   }
-  if (googleURL.searchParams.get("state") !== googleState || googleURL.searchParams.get("code_challenge") !== googleChallenge) {
-    throw new Error(`provider redirect did not preserve browser state/PKCE values, got:\n${googleLogin}`);
+  if (googleURL.searchParams.get("state") !== googleStateCookie || googleURL.searchParams.get("state") === googleClientState || googleURL.searchParams.get("code_challenge") !== googleChallenge) {
+    throw new Error(`provider redirect did not bind the server-issued state cookie and preserve PKCE values, got:\n${googleLogin}`);
   }
-  const googleExchangeMissingCode = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/google/exchange`, ...jsonHeader, "-d", JSON.stringify({ code: "", state: googleState, code_verifier: googleVerifier })]);
+  const googleExchangeMissingCode = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/google/exchange`, ...jsonHeader, "-H", `Cookie: oauth_state=${googleStateCookie}`, "-d", JSON.stringify({ code: "", state: googleURL.searchParams.get("state"), code_verifier: googleVerifier })]);
   if (status(googleExchangeMissingCode) !== "400" || !googleExchangeMissingCode.includes("oauth_failed") || googleExchangeMissingCode.includes("Location:")) {
     throw new Error(`expected controlled oauth_failed JSON from the Google exchange without a code, got:\n${googleExchangeMissingCode}`);
   }
@@ -1273,13 +1299,17 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   if (status(mfaStatusBefore) !== "200" || !mfaStatusBeforeBody.available || mfaStatusBeforeBody.enabled) {
     throw new Error(`expected MFA to be available but disabled before enrollment, got:\n${mfaStatusBefore}`);
   }
-  const mfaSetup = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/setup`, "-H", `Authorization: Bearer ${access}`]);
+  const mfaReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", '{"password":"brandnewpassword123"}']);
+  if (status(mfaReauth) !== "200") throw new Error(`expected successful reauthentication before MFA enrollment, got:\n${mfaReauth}`);
+  const mfaReauthToken = field(mfaReauth, "reauth_token");
+  if (!mfaReauthToken) throw new Error(`expected a short-lived reauth token before MFA enrollment, got:\n${mfaReauth}`);
+  const mfaSetup = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/setup`, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaReauthToken}`]);
   const mfaSetupBody = jsonBody(mfaSetup);
   if (status(mfaSetup) !== "200" || !mfaSetupBody.secret || !mfaSetupBody.otpauth_uri?.startsWith("otpauth://totp/")) {
     throw new Error(`expected an authenticator setup secret and URI, got:\n${mfaSetup}`);
   }
   const mfaCode = totpCode(mfaSetupBody.secret);
-  const mfaConfirm = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/confirm`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ code: mfaCode })]);
+  const mfaConfirm = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/confirm`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaReauthToken}`, "-d", JSON.stringify({ code: mfaCode })]);
   const mfaConfirmBody = jsonBody(mfaConfirm);
   if (status(mfaConfirm) !== "200" || !Array.isArray(mfaConfirmBody.recovery_codes) || mfaConfirmBody.recovery_codes.length !== 10) {
     throw new Error(`expected one-time recovery codes after MFA confirmation, got:\n${mfaConfirm}`);
@@ -1304,7 +1334,11 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const recoveryVerified = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: recoveryLoginBody.challenge, code: mfaConfirmBody.recovery_codes[0] })]);
   if (status(recoveryVerified) !== "200" || !field(recoveryVerified, "access_token")) throw new Error(`expected a recovery code to complete MFA login, got:\n${recoveryVerified}`);
 
-  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ code: totpCode(mfaSetupBody.secret) })]);
+  const mfaDisableReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ password: "brandnewpassword123", code: totpCode(mfaSetupBody.secret) })]);
+  if (status(mfaDisableReauth) !== "200") throw new Error(`expected password plus TOTP reauthentication before disabling MFA, got:\n${mfaDisableReauth}`);
+  const mfaDisableReauthToken = field(mfaDisableReauth, "reauth_token");
+  if (!mfaDisableReauthToken) throw new Error(`expected a short-lived reauth token before disabling MFA, got:\n${mfaDisableReauth}`);
+  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaDisableReauthToken}`, "-d", JSON.stringify({ code: totpCode(mfaSetupBody.secret) })]);
   if (status(mfaDisable) !== "204") throw new Error(`expected a valid TOTP to disable MFA, got:\n${mfaDisable}`);
   const mfaStatusDisabled = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
   if (status(mfaStatusDisabled) !== "200" || jsonBody(mfaStatusDisabled).enabled) throw new Error(`expected MFA to be disabled after the authenticated disable flow, got:\n${mfaStatusDisabled}`);
@@ -1378,6 +1412,8 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
     "/v1/auth/{provider}/exchange:",
     "/v1/users/me:",
     "/v1/users/me/resend-verification:",
+    "/v1/users/me/reauth:",
+    "/v1/users/me/password:",
     "/v1/users/me/logout-all:",
     "/v1/users/me/identities/local:",
     "/v1/users/me/mfa:",
@@ -1771,7 +1807,11 @@ step(
     const noAuthLogoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/logout-all`]);
     if (status(noAuthLogoutAll) !== "401") throw new Error(`expected 401 calling logout-all with no token, got:\n${noAuthLogoutAll}`);
 
-    const logoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/logout-all`, "-H", `Authorization: Bearer ${laAccess1}`]);
+    const logoutAllReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${laAccess1}`, "-d", '{"password":"correcthorsebattery"}']);
+    if (status(logoutAllReauth) !== "200") throw new Error(`expected successful reauthentication before logout-all, got:\n${logoutAllReauth}`);
+    const logoutAllReauthToken = field(logoutAllReauth, "reauth_token");
+    if (!logoutAllReauthToken) throw new Error(`expected a short-lived reauth token before logout-all, got:\n${logoutAllReauth}`);
+    const logoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/logout-all`, "-H", `Authorization: Bearer ${laAccess1}`, "-H", `X-Reauth-Token: ${logoutAllReauthToken}`]);
     if (status(logoutAll) !== "204") throw new Error(`expected 204 from logout-all, got:\n${logoutAll}`);
 
     const refreshOtherSessionAfterLogoutAll = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${laCookie2}`]);
@@ -1862,7 +1902,10 @@ step(
     const noteOut = goScaffold(["generate", "module", "note", "--full", "--defaults"], fullApp);
     if (!noteOut.includes("PUBLIC")) throw new Error(`expected a PUBLIC-route reminder since fullApp already has auth installed, got:\n${noteOut}`);
 
-    assertFileContains(path.join(fullApp, "internal", "app", "cart", "adapters", "inbound", "http", "handler.go"), "middleware.RequireAuth(h.jwtSecret)");
+    assertFileContains(
+      path.join(fullApp, "internal", "app", "cart", "adapters", "inbound", "http", "handler.go"),
+      "middleware.RequireAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience, h.sessionValidators...)",
+    );
     assertFileContains(path.join(fullApp, "internal", "app", "secret", "adapters", "inbound", "http", "handler.go"), 'h.authz.Require("secret:manage")');
 
     const permMigration = readdirSync(path.join(fullApp, "migrations")).find((f) => f.endsWith("_add_secrets_permission.up.sql"));
@@ -2058,6 +2101,9 @@ step(
     let envContent = readFileSync(path.join(fullApp, ".env.example"), "utf8")
       .replace(/^APP_ENV=.*/m, "APP_ENV=production")
       .replace(/^JWT_SECRET=.*/m, "JWT_SECRET=smoke-test-secret-01234567890123456789")
+      .replace(/^AUTH_METADATA_KEY=.*/m, "AUTH_METADATA_KEY=smoke-metadata-key-01234567890123456789")
+      .replace(/^JWT_ISSUER=.*/m, "JWT_ISSUER=smoke-api")
+      .replace(/^JWT_AUDIENCE=.*/m, "JWT_AUDIENCE=smoke-users")
       .replace(/^SMTP_HOST=.*/m, "SMTP_HOST=localhost")
       .replace(/^COOKIE_SECURE=.*/m, "COOKIE_SECURE=true")
       .replace(/^DB_DSN=.*/m, `DB_DSN=${fullDb.dbDsn}`)
@@ -2092,6 +2138,7 @@ step(
         ...runtimeEnv(fullDb, {
           APP_ENV: "production",
           JWT_SECRET: "smoke-test-secret-01234567890123456789",
+          AUTH_METADATA_KEY: "smoke-metadata-key-01234567890123456789",
           SMTP_HOST: "localhost",
           COOKIE_SECURE: "true",
           CORS_ALLOWED_ORIGINS: "https://frontend.example",

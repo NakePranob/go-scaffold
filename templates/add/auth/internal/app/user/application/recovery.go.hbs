@@ -15,16 +15,17 @@ type Recovery struct {
 	repo   ports.UserRepository
 	tokens ports.RecoveryTokenStore
 	hasher PasswordHasher
+	policy ports.PasswordPolicy
 }
 
-func NewRecovery(repo ports.UserRepository, tokens ports.RecoveryTokenStore, hasher PasswordHasher) *Recovery {
-	return &Recovery{repo: repo, tokens: tokens, hasher: hasher}
+func NewRecovery(repo ports.UserRepository, tokens ports.RecoveryTokenStore, hasher PasswordHasher, policy ports.PasswordPolicy) *Recovery {
+	return &Recovery{repo: repo, tokens: tokens, hasher: hasher, policy: policy}
 }
 
 // ResetPassword consumes the token and updates the local identity in one
 // unit of work. The token adapter owns the transaction boundary.
 func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword string) (uuid.UUID, error) {
-	if err := validatePassword(newPassword); err != nil {
+	if err := r.policy.Validate(newPassword); err != nil {
 		return uuid.Nil, err
 	}
 	hash, err := r.hasher.Hash(newPassword)

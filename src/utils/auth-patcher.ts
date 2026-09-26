@@ -20,6 +20,9 @@ export function patchConfigForAuth(configGoPath: string): void {
 
   const fieldsBlock = [
     "JWTSecret string",
+    "AuthMetadataKey string",
+    "JWTIssuer string",
+    "JWTAudience string",
     "JWTAccessTTL time.Duration",
     "JWTRefreshTTL time.Duration",
     "JWTRefreshMaxTTL time.Duration",
@@ -39,16 +42,22 @@ export function patchConfigForAuth(configGoPath: string): void {
     "GoogleOAuthRedirectURI string",
     "",
     "AuthMFAEnabled bool",
+    "AuthMFARequiredForLogin bool",
     "MFAIssuer string",
     "MFAEncryptionKey string",
     "MFAChallengeTTL time.Duration",
     "MFATOTPWindow int",
     "MFARecoveryCodeCount int",
+    "AuthMaxSessions int",
+    "AuthBreachedPasswordsFile string",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
 
   const loadBlock = [
     'JWTSecret:     env("JWT_SECRET", "dev-secret-change-me"),',
+    'AuthMetadataKey: env("AUTH_METADATA_KEY", "dev-metadata-key-change-me"),',
+    'JWTIssuer:     env("JWT_ISSUER", "go-scaffold"),',
+    'JWTAudience:   env("JWT_AUDIENCE", "api"),',
     'JWTAccessTTL:  time.Duration(envInt("JWT_ACCESS_TTL_MIN", 15)) * time.Minute,',
     'JWTRefreshTTL: time.Duration(envInt("JWT_REFRESH_TTL_MIN", 43200)) * time.Minute,',
     'JWTRefreshMaxTTL: time.Duration(envInt("JWT_REFRESH_MAX_TTL_MIN", 43200)) * time.Minute,',
@@ -68,11 +77,14 @@ export function patchConfigForAuth(configGoPath: string): void {
     'GoogleOAuthRedirectURI: env("GOOGLE_OAUTH_REDIRECT_URI", ""),',
     "",
     'AuthMFAEnabled: env("AUTH_MFA_ENABLED", "false") == "true",',
+    'AuthMFARequiredForLogin: env("AUTH_MFA_REQUIRED_FOR_LOGIN", "false") == "true",',
     'MFAIssuer: env("MFA_ISSUER", "go-scaffold"),',
     'MFAEncryptionKey: env("MFA_ENCRYPTION_KEY", ""),',
     'MFAChallengeTTL: time.Duration(envInt("MFA_CHALLENGE_TTL_MIN", 5)) * time.Minute,',
     'MFATOTPWindow: envInt("MFA_TOTP_WINDOW", 1),',
     'MFARecoveryCodeCount: envInt("MFA_RECOVERY_CODE_COUNT", 10),',
+    'AuthMaxSessions: envInt("AUTH_MAX_SESSIONS", 10),',
+    'AuthBreachedPasswordsFile: env("AUTH_BREACHED_PASSWORDS_FILE", ""),',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');
 
@@ -113,6 +125,12 @@ export function authWiringLines(w: AuthWiring) {
 // authHandlerLineFor is the one root-level auth route shape. The feature owns
 // construction; wiring.go only hands it shared infrastructure and, when RBAC
 // is present, the role feature's public capabilities.
+export function authSessionValidatorLine(w: AuthWiring): string {
+  const args = ["db", "cfg"];
+  if (w.store === "redis") args.push("rdb");
+  return `sessionValidator := user.NewSessionValidatorFromDB(${args.join(", ")})`;
+}
+
 export function authHandlerLineFor(w: AuthWiring, roleDependencies: [string, string] = ["nil", "nil"]): string {
   const args = ["db", "cfg"];
   if (w.store === "redis") args.push("rdb");
@@ -144,6 +162,21 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
     'if cfg.IsProd() && len([]byte(cfg.JWTSecret)) < 32 {',
     '\treturn errors.New("JWT_SECRET must be at least 32 bytes before deploying with APP_ENV=production")',
     "}",
+    'if cfg.JWTIssuer == "" || cfg.JWTAudience == "" {',
+    '\treturn errors.New("JWT_ISSUER and JWT_AUDIENCE must be configured")',
+    "}",
+    'if cfg.IsProd() && (cfg.JWTIssuer == "go-scaffold" || cfg.JWTAudience == "api") {',
+    '\treturn errors.New("JWT_ISSUER and JWT_AUDIENCE must be changed from their development defaults before deploying with APP_ENV=production")',
+    "}",
+    'if cfg.IsProd() && cfg.AuthMetadataKey == "dev-metadata-key-change-me" {',
+    '\treturn errors.New("AUTH_METADATA_KEY is still the dev default — set a separate key before deploying with APP_ENV=production")',
+    "}",
+    'if cfg.IsProd() && len([]byte(cfg.AuthMetadataKey)) < 32 {',
+    '\treturn errors.New("AUTH_METADATA_KEY must be at least 32 bytes before deploying with APP_ENV=production")',
+    "}",
+    'if cfg.IsProd() && cfg.AuthMetadataKey == cfg.JWTSecret {',
+    '\treturn errors.New("AUTH_METADATA_KEY must be different from JWT_SECRET before deploying with APP_ENV=production")',
+    "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
 
@@ -174,6 +207,13 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, mfaCheckBlock, "invalid MFA configuration");
+
+  const sessionCheckBlock = [
+    "if cfg.AuthMaxSessions < 1 || cfg.AuthMaxSessions > 100 {",
+    '\treturn fmt.Errorf("AUTH_MAX_SESSIONS must be between 1 and 100")',
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, sessionCheckBlock, "AUTH_MAX_SESSIONS must be between 1 and 100");
 
   // The enqueuer is built from whatever backend `add worker` chose — the
   // constructor differs, everything downstream of it (mail.NewAsyncClient)

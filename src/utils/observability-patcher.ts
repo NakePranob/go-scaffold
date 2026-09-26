@@ -8,11 +8,13 @@ const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 const OPENAPI_PATHS_MARKER = "# go-scaffold:paths";
 
-// The exact line `create` renders — matched literally rather than through a
-// marker because it's a single call in the middle of other middleware, not a
-// standalone line a marker comment can sit next to.
-const USE_LINE =
-  "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))";
+// The exact lines `create` has rendered across scaffold versions. Keep the
+// older shape accepted so `add observability` remains usable on projects
+// generated before the baseline security-header middleware was introduced.
+const USE_LINES = [
+  "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.SecurityHeaders(cfg.IsProd()), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))",
+  "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))",
+];
 
 // patchMainGoForObservability wires telemetry init, the tracing/metrics
 // middleware, and the /metrics route into cmd/api/wiring.go — the same
@@ -40,14 +42,15 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   ].join("\n");
   content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, initBlock, "shutdownTelemetry, err := telemetry.Init(");
 
-  if (!content.includes(USE_LINE)) {
+  const useLine = USE_LINES.find((candidate) => content.includes(candidate));
+  if (!useLine) {
     throw new Error(
       "cmd/api/wiring.go's r.Use(...) call doesn't match the text this command expects — " +
-        "it looks like it's been hand-edited. Add middleware.Metrics() and middleware.Tracing(\"<project>\") to it yourself."
+      "it looks like it's been hand-edited. Add middleware.Metrics() and middleware.Tracing(\"<project>\") to it yourself."
     );
   }
-  const newUseLine = `${USE_LINE.slice(0, -1)}, middleware.Metrics(), middleware.Tracing("${projectName}"))`;
-  content = content.replace(USE_LINE, () => newUseLine);
+  const newUseLine = `${useLine.slice(0, -1)}, middleware.Metrics(), middleware.Tracing("${projectName}"))`;
+  content = content.replace(useLine, () => newUseLine);
 
   // This used to be registered in every environment, on the reasoning that
   // production is exactly where you want a scrape target and Prometheus

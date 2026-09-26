@@ -1,0 +1,50 @@
+package application
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestDescribeSessionReturnsSafeStructuredMetadata(t *testing.T) {
+	userAgent := "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+	metadata := describeSession("test-secret", userAgent, "203.0.113.42")
+
+	if metadata.DeviceType != "mobile" || metadata.DeviceName != "iPhone" || metadata.DeviceModel != "iPhone" {
+		t.Fatalf("unexpected device metadata: %+v", metadata)
+	}
+	if metadata.BrowserName != "Safari" || metadata.BrowserVersion != "17" {
+		t.Fatalf("unexpected browser metadata: %+v", metadata)
+	}
+	if metadata.OSName != "iOS" || metadata.OSVersion != "17.5" {
+		t.Fatalf("unexpected operating system metadata: %+v", metadata)
+	}
+	if metadata.DeviceKey == "" || strings.Contains(metadata.DeviceKey, userAgent) || strings.Contains(metadata.DeviceKey, "203.0.113.42") {
+		t.Fatalf("device key must be opaque: %q", metadata.DeviceKey)
+	}
+}
+
+func TestDescribeSessionGroupsSameDeviceAndSeparatesNetworks(t *testing.T) {
+	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"
+	sameDevice := describeSession("test-secret", userAgent, "198.51.100.10")
+	retry := describeSession("test-secret", userAgent, "198.51.100.10")
+	newNetwork := describeSession("test-secret", userAgent, "198.51.100.11")
+
+	if sameDevice.DeviceKey != retry.DeviceKey {
+		t.Fatalf("same device should have a stable key: %q != %q", sameDevice.DeviceKey, retry.DeviceKey)
+	}
+	if sameDevice.DeviceKey == newNetwork.DeviceKey {
+		t.Fatalf("different network should not share the same device key")
+	}
+}
+
+func TestDescribeSessionParsesAndroidModelAndBrowser(t *testing.T) {
+	userAgent := "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
+	metadata := describeSession("test-secret", userAgent, "2001:db8:abcd:1234:5678::1")
+
+	if metadata.DeviceType != "mobile" || metadata.DeviceName != "Android" || metadata.DeviceModel != "SM-S918B" {
+		t.Fatalf("unexpected Android metadata: %+v", metadata)
+	}
+	if metadata.BrowserName != "Chrome" || metadata.BrowserVersion != "139" {
+		t.Fatalf("unexpected Android browser metadata: %+v", metadata)
+	}
+}

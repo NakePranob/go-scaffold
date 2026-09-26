@@ -184,21 +184,29 @@ make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql befo
 | `DB_MAX_IDLE_CONNS` | `10` | |
 | `DB_CONN_MAX_LIFETIME_MIN` | `5` | minutes |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | comma-separated frontend origins allowed to call this API with credentials (cookies) |
+| `JWT_ISSUER`, `JWT_AUDIENCE` | `go-scaffold`, `api` | claims that bind access and reauthentication JWTs to this application/resource server |
 
 After `go-scaffold add auth`, `.env.example` also contains
 `GOOGLE_OAUTH_REDIRECT_URI` (the exact browser callback URI registered with
-Google), `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_TTL_MIN`, and
+Google), `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_TTL_MIN`, and
 `AUTH_BROWSER_TOPOLOGY`. Refresh rotation uses the configured inactivity TTL
 but never moves a token past its absolute lifetime. The backend stores a
-one-time OAuth transaction binding provider, state, S256 challenge, and OIDC
-nonce; the frontend still owns the callback route and sends the code to the
-exchange endpoint. The provider redirect URI is separate from
+one-time OAuth transaction binding provider, server-generated state, S256
+challenge, and OIDC nonce; the state is also bound to an HttpOnly browser
+cookie. The frontend still owns the callback route and sends the code and
+returned state to the exchange endpoint. The provider redirect URI is separate from
 `CORS_ALLOWED_ORIGINS`; the latter remains an exact-origin credentialed API
 policy. Token responses use `Cache-Control: no-store` and `Pragma: no-cache`.
 Authenticated users can list active device sessions with
 `GET /users/me/sessions` and revoke an individual session with
-`DELETE /users/me/sessions/:id`; only User-Agent and session lifecycle
-timestamps are returned.
+`DELETE /users/me/sessions/:id`; safe parsed device metadata and session
+lifecycle timestamps are returned, never the raw User-Agent or IP address. Protected
+bearer routes also validate that the access token's session is still active, so
+logout, session revoke, password change, and password reset invalidate existing
+access tokens immediately. If the session store is unavailable, protected
+requests fail closed. In production, secure mode reads only the `__Host-`
+cookie names; the legacy unprefixed names are development-only and are cleared
+during logout.
 They can also list safe login-provider metadata with
 `GET /users/me/identities`, link a provider through the authenticated
 `/users/me/identities/:provider/link` start/exchange flow, and unlink a
@@ -206,6 +214,10 @@ provider with `DELETE /users/me/identities/:provider`. For a Google/OIDC-only
 account, `POST /users/me/identities/local` adds an email/password credential to
 the same account; it does not create a second user. The last login method
 cannot be removed.
+Sensitive account operations require a short-lived `X-Reauth-Token` from
+`POST /users/me/reauth`; password changes, session revocation, MFA changes, and
+identity changes revoke or protect the affected session state as documented in
+the generated OpenAPI files.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
 guard independently of CORS.
@@ -308,12 +320,12 @@ Before the first deploy of a release:
 |---|---|
 | `APP_ENV` | `production` | production hides internal error details; the applied migration version is required in every environment |
 | migrations | `migrate -path migrations -database "$DB_DSN" up` as its own step, before the new binaries roll |
-| `TRUSTED_PROXIES` | the CIDRs of your ingress, or the auth rate limiter keys on a header anyone can send |
+| `TRUSTED_PROXIES` | the CIDRs of your ingress; otherwise ClientIP-based rate limiting and audit decisions may be spoofable |
 | `COOKIE_SECURE` | `true` · `COOKIE_SAMESITE=none` as well if your frontend is on a different site |
 | `JWT_REFRESH_MAX_TTL_MIN` | `43200` | absolute refresh-token lifetime; rotation cannot extend beyond it |
 | `OAUTH_STATE_TTL_MIN` | `10` | lifetime of the one-time server-side OAuth state transaction |
 | `/metrics` | reachable in-cluster for Prometheus, blocked at the ingress |
-| `JWT_SECRET`, `SMTP_HOST` | the app refuses to start in production without real values |
+| `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `SMTP_HOST` | the app refuses to start in production without real, service-specific values |
 
 The migration check is what makes the rollout order safe: a binary whose
 embedded migrations are ahead of the database refuses to start, while one

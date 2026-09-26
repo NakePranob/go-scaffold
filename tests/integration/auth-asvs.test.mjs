@@ -20,8 +20,8 @@ function project(t) {
   return path.join(scratch, "app");
 }
 
-for (const level of [1, 2, 3]) {
-  test(`add auth records ASVS L${level} target and check reports applicable gaps`, (t) => {
+for (const level of [1, 2]) {
+  test(`add auth generates the ASVS L${level} security profile`, (t) => {
     const app = project(t);
     run(app, "add", "auth", "--store", "postgres", "--browser-topology", "same-site", "--asvs-level", String(level), "--yes");
     assert.deepEqual(config(app).asvs, { version: "5.0.0", level });
@@ -29,14 +29,26 @@ for (const level of [1, 2, 3]) {
     assert.match(worksheet, new RegExp(`OWASP ASVS 5\\.0\\.0 Level ${level}`));
     assert.match(worksheet, /6\.2\.4: common passwords/);
     assert.equal(worksheet.includes("6.2.12: breached passwords"), level >= 2);
-    assert.equal(worksheet.includes("phishing-resistant factor"), level >= 3);
+    const profile = readFileSync(path.join(app, "internal/app/user/application/security_profile.go"), "utf8");
+    assert.match(profile, new RegExp(`Level:\\s+${level},`));
+    assert.match(profile, /CommonPasswordScreening:\s+true/);
+    assert.equal(/BreachedPasswordScreening:\s+true/.test(profile), level >= 2);
     const output = run(app, "check");
     assert.match(output, /architecture check passed/);
-    assert.match(output, new RegExp(`ASVS 5\\.0\\.0 L${level} target: unverified`));
-    assert.equal(output.includes("L2: breached-password"), level >= 2);
-    assert.equal(output.includes("L3: phishing-resistant"), level >= 3);
+    assert.match(output, new RegExp(`ASVS 5\\.0\\.0 L${level} generated security profile: present`));
+    assert.equal(output.includes("L2 production guard"), level >= 2);
+    assert.match(output, /L3 is intentionally unavailable/);
   });
 }
+
+test("ASVS L3 fails closed before auth writes", (t) => {
+  const app = project(t);
+  assert.throws(
+    () => run(app, "add", "auth", "--asvs-level", "3", "--defaults"),
+    /ASVS L3 generated security profile is unavailable.*WebAuthn\/passkey/
+  );
+  assert.equal(existsSync(path.join(app, "internal/app/user")), false);
+});
 
 test("--defaults resolves to L2; bad level is rejected before auth writes", (t) => {
   const app = project(t);
@@ -46,18 +58,18 @@ test("--defaults resolves to L2; bad level is rejected before auth writes", (t) 
   assert.deepEqual(config(app).asvs, { version: "5.0.0", level: 2 });
 });
 
-test("config and check reject an invalid or mismatched ASVS target", (t) => {
+test("config and check reject an invalid or mismatched ASVS profile", (t) => {
   const app = project(t);
   run(app, "add", "auth", "--defaults");
   const configPath = path.join(app, "go-scaffold.config.json");
   const current = config(app);
   current.asvs.level = 3;
   writeFileSync(configPath, JSON.stringify(current, null, 2));
-  assert.throws(() => run(app, "check"), /does not match the ASVS target/);
+  assert.throws(() => run(app, "check"), /does not match the profile/);
   current.asvs.level = 2;
   writeFileSync(configPath, JSON.stringify(current, null, 2));
   rmSync(path.join(app, "docs/security/asvs-auth.md"));
-  assert.throws(() => run(app, "check"), /ASVS target check failed: missing docs\/security\/asvs-auth\.md/);
+  assert.throws(() => run(app, "check"), /ASVS generated security profile check failed: missing docs\/security\/asvs-auth\.md/);
   current.asvs.level = 4;
   writeFileSync(configPath, JSON.stringify(current, null, 2));
   assert.throws(() => run(app, "config", "validate"), /asvs must contain version/);

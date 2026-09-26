@@ -41,6 +41,10 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const service = read(project, ...application, "service.go");
   const identities = read(project, ...application, "identities.go");
   const applicationDTO = read(project, ...application, "dto.go");
+  const sessions = read(project, ...application, "sessions.go");
+  const sessionMetadata = read(project, ...application, "session_metadata.go");
+  const sessionMetadataTest = read(project, ...application, "session_metadata_test.go");
+  const repositoryPorts = read(project, "internal", "app", "user", "ports", "repository.go");
   const contracts = read(project, ...application, "contracts.go");
   const passwordPorts = read(project, "internal", "app", "user", "ports", "password.go");
   const passwordAdapter = read(project, "internal", "app", "user", "adapters", "outbound", "password", "bcrypt.go");
@@ -57,15 +61,18 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const env = read(project, ".env.example");
   const openapi = read(project, "docs", "openapi.yaml");
 
-  assert.match(handler, /GET\("\/:provider\/login", h\.providerLogin\)/);
-  assert.match(handler, /POST\("\/:provider\/exchange", h\.providerExchange\)/);
-  assert.match(handler, /GET\("\/me\/sessions", h\.sessions\)/);
-  assert.match(handler, /DELETE\("\/me\/sessions\/:id", h\.revokeSession\)/);
+  assert.match(handler, /GET\("\/:provider\/login",[^\n]*h\.providerLogin\)/);
+  assert.match(handler, /POST\("\/me\/reauth", reauthLimit, h\.reauthenticate\)/);
+  assert.match(handler, /POST\("\/me\/password", reauthLimit, recentAuth, h\.changePassword\)/);
+  assert.match(handler, /POST\("\/:provider\/exchange", oauthExchangeLimit, h\.providerExchange\)/);
+  assert.match(handler, /GET\("\/me\/sessions", recentAuth, h\.sessions\)/);
+  assert.match(handler, /DELETE\("\/me\/sessions\/:id",[^\n]*h\.revokeSession\)/);
+  assert.match(handler, /DELETE\("\/:id\/sessions\/:session_id", h\.authz\.Require\(PermUserManageSession\), h\.adminRevokeSession\)/);
   assert.match(identityHandler, /GET\("\/me\/identities", h\.listIdentities\)/);
-  assert.match(identityHandler, /POST\("\/me\/identities\/local", linkLimiter, h\.linkLocalIdentity\)/);
-  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link", linkLimiter, h\.beginIdentityLink\)/);
-  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link\/exchange", linkLimiter, h\.exchangeIdentityLink\)/);
-  assert.match(identityHandler, /DELETE\("\/me\/identities\/:provider", h\.unlinkIdentity\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/local", linkLimiter, recentAuth, h\.linkLocalIdentity\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link", linkLimiter, recentAuth, h\.beginIdentityLink\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link\/exchange", linkLimiter, recentAuth, h\.exchangeIdentityLink\)/);
+  assert.match(identityHandler, /DELETE\("\/me\/identities\/:provider", recentAuth, h\.unlinkIdentity\)/);
   assert.match(identities, /func \(s \*Service\) ExchangeIdentityLink\(/);
   assert.match(identities, /func \(s \*Service\) LinkLocalIdentity\(/);
   assert.match(postgresModel, /type UserEmail struct/);
@@ -114,15 +121,22 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(config, /GOOGLE_OAUTH_REDIRECT_URI/);
   assert.match(config, /AUTH_BROWSER_TOPOLOGY/);
   assert.match(config, /JWT_REFRESH_MAX_TTL_MIN/);
+  assert.match(config, /JWT_ISSUER/);
+  assert.match(config, /JWT_AUDIENCE/);
   assert.match(config, /OAUTH_STATE_TTL_MIN/);
   assert.match(config, /AUTH_MFA_ENABLED/);
+  assert.match(config, /AuthMaxSessions/);
+  assert.match(config, /AUTH_MAX_SESSIONS/);
   assert.match(env, /^AUTH_MFA_ENABLED=false$/m);
+  assert.match(env, /^AUTH_MAX_SESSIONS=10$/m);
   assert.match(env, /^MFA_TOTP_WINDOW=1$/m);
   assert.doesNotMatch(config, /AUTH_FRONTEND_SUCCESS_URL|AUTH_FRONTEND_ERROR_URL|AuthFrontend|RedirectTarget/);
   assert.doesNotMatch(config, /https:\/\/app\.example\.com/);
   assert.match(env, /^GOOGLE_OAUTH_REDIRECT_URI=$/m);
   assert.match(env, /^AUTH_BROWSER_TOPOLOGY=same-site$/m);
   assert.match(env, /^JWT_REFRESH_MAX_TTL_MIN=43200$/m);
+  assert.match(env, /^JWT_ISSUER=go-scaffold$/m);
+  assert.match(env, /^JWT_AUDIENCE=api$/m);
   assert.match(env, /^OAUTH_STATE_TTL_MIN=10$/m);
   assert.doesNotMatch(env, /AUTH_FRONTEND_SUCCESS_URL|AUTH_FRONTEND_ERROR_URL|GOOGLE_REDIRECT_URL/);
   assert.match(openapi, /\/auth\/\{provider\}\/login:/);
@@ -132,16 +146,23 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(sessionCookie, /Cache-Control/);
   assert.match(browserPolicy, /requireBrowserOrigin/);
   assert.match(read(project, "docs", "auth", "provider-exchange.yaml"), /providerExchange/);
+  assert.match(read(project, "docs", "auth", "mfa-enroll-setup.yaml"), /setupRequiredMFA/);
+  assert.match(read(project, "docs", "auth", "mfa-enroll-confirm.yaml"), /confirmRequiredMFA/);
   assert.match(read(project, "docs", "auth", "provider-login.yaml"), /minLength: 43/);
   assert.match(read(project, "docs", "auth", "users-me-sessions.yaml"), /listMySessions/);
   assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
+  assert.match(read(project, "docs", "auth", "users-session.yaml"), /revokeUserSession/);
   assert.match(read(project, "docs", "auth", "users-me-identities.yaml"), /listMyIdentities/);
   assert.match(read(project, "docs", "auth", "users-me-identity-local-link.yaml"), /linkMyLocalIdentity/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link.yaml"), /startIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link-exchange.yaml"), /exchangeIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity.yaml"), /unlinkMyIdentity/);
-  assert.match(read(project, "docs", "auth", "schemas.yaml"), /SessionResponse:/);
+  const schemas = read(project, "docs", "auth", "schemas.yaml");
+  assert.match(schemas, /SessionResponse:/);
+  assert.match(schemas, /device_key:/);
+  assert.doesNotMatch(schemas, /user_agent:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /IdentityResponse:/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /MFAEnrollmentRequiredResponse:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));
@@ -150,9 +171,15 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "identities.go")));
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "ports", "repository.go")));
   assert.ok(existsSync(path.join(project, "internal", "platform", "authprovider", "google", "google.go")));
+  assert.match(sessions, /describeSession/);
+  assert.match(sessionMetadata, /func describeSession\(/);
+  assert.match(sessionMetadataTest, /TestDescribeSessionReturnsSafeStructuredMetadata/);
+  assert.match(repositoryPorts, /IPAddress\s+string/);
   for (const file of [
     "local_auth.go",
     "sessions.go",
+    "session_metadata.go",
+    "session_metadata_test.go",
     "recovery_service.go",
     "external_login.go",
     "identities.go",

@@ -55,19 +55,27 @@ func (s *PgTokenStore) lookup(ctx context.Context, hash, kind string) (uuid.UUID
 	if err != nil {
 		return uuid.Nil, false, err
 	}
-	return row.UserID, true, nil
+	if row.UserID == nil || *row.UserID == uuid.Nil {
+		return uuid.Nil, false, nil
+	}
+	return *row.UserID, true, nil
 }
 
-func (s *PgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
+func validateRefreshTokenRecord(token ports.RefreshTokenRecord) error {
 	if token.UserID == uuid.Nil || token.ExpiresAt.IsZero() || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
-		return fmt.Errorf("refresh token record expiry is invalid")
+		return fmt.Errorf("refresh token expiry is invalid")
 	}
+	return nil
+}
+
+func (s *PgTokenStore) setRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
 	row := AuthToken{
 		TokenHash:         tokenHash,
-		UserID:            token.UserID,
+		UserID:            authTokenUserID(token.UserID),
 		Kind:              kindRefresh,
 		SessionID:         token.SessionID,
 		UserAgent:         token.UserAgent,
+		IPAddress:         nullableIPAddress(token.IPAddress),
 		ExpiresAt:         token.ExpiresAt,
 		AbsoluteExpiresAt: &token.AbsoluteExpiresAt,
 		CreatedAt:         token.CreatedAt,
@@ -76,10 +84,11 @@ func (s *PgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, to
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("token_hash = ?", tokenHash).
 		Assign(map[string]any{
-			"user_id":             token.UserID,
+			"user_id":             authTokenUserID(token.UserID),
 			"kind":                kindRefresh,
 			"session_id":          token.SessionID,
 			"user_agent":          token.UserAgent,
+			"ip_address":          nullableIPAddress(token.IPAddress),
 			"expires_at":          token.ExpiresAt,
 			"absolute_expires_at": token.AbsoluteExpiresAt,
 			"last_used_at":        token.LastUsedAt,
@@ -87,6 +96,56 @@ func (s *PgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, to
 			"code_challenge":      "",
 			"nonce":               "",
 		}).FirstOrCreate(&row).Error
+}
+
+func (s *PgTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
+	if err := validateRefreshTokenRecord(token); err != nil {
+		return err
+	}
+	return s.setRefreshToken(ctx, tokenHash, token)
+}
+
+// SetRefreshTokenWithLimit inserts a new login session while evicting the
+// least-recently-used active sessions in the same database transaction. The
+// advisory lock serializes concurrent logins for one user without leaking a
+// database transaction into the application layer.
+func (s *PgTokenStore) SetRefreshTokenWithLimit(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord, maxSessions int) error {
+	if err := validateRefreshTokenRecord(token); err != nil {
+		return err
+	}
+	if maxSessions <= 0 {
+		return s.setRefreshToken(ctx, tokenHash, token)
+	}
+	return tx.Do(ctx, s.db, func(txCtx context.Context) error {
+		db := tx.From(txCtx, s.db).WithContext(txCtx)
+		if err := db.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", token.UserID.String()).Error; err != nil {
+			return fmt.Errorf("lock user sessions: %w", err)
+		}
+		var count int64
+		if err := db.Model(&AuthToken{}).
+			Where("user_id = ? AND kind = ? AND expires_at > now() AND (absolute_expires_at IS NULL OR absolute_expires_at > now())", token.UserID, kindRefresh).
+			Count(&count).Error; err != nil {
+			return fmt.Errorf("count active sessions: %w", err)
+		}
+		evict := count - int64(maxSessions) + 1
+		if evict > 0 {
+			var victims []AuthToken
+			if err := db.Where("user_id = ? AND kind = ? AND expires_at > now() AND (absolute_expires_at IS NULL OR absolute_expires_at > now())", token.UserID, kindRefresh).
+				Order("last_used_at ASC, created_at ASC").Limit(int(evict)).Find(&victims).Error; err != nil {
+				return fmt.Errorf("find oldest sessions: %w", err)
+			}
+			hashes := make([]string, 0, len(victims))
+			for _, victim := range victims {
+				hashes = append(hashes, victim.TokenHash)
+			}
+			if len(hashes) > 0 {
+				if err := db.Where("token_hash IN ? AND kind = ?", hashes, kindRefresh).Delete(&AuthToken{}).Error; err != nil {
+					return fmt.Errorf("evict oldest sessions: %w", err)
+				}
+			}
+		}
+		return s.setRefreshToken(txCtx, tokenHash, token)
+	})
 }
 
 func (s *PgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
@@ -98,18 +157,19 @@ func (s *PgTokenStore) GetRefreshToken(ctx context.Context, tokenHash string) (u
 // active row or the tombstone, never the gap between separate operations.
 func (s *PgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string) (ports.RefreshTokenRecord, bool, error) {
 	var token ports.RefreshTokenRecord
+	var ipAddress sql.NullString
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
 		`WITH consumed AS (
 			DELETE FROM user_svc.auth_tokens
 				 WHERE token_hash = ? AND kind = ? AND expires_at > now()
 				   AND (absolute_expires_at IS NULL OR absolute_expires_at > now())
-			RETURNING user_id, session_id, user_agent, created_at, last_used_at, expires_at, absolute_expires_at
+			RETURNING user_id, session_id, user_agent, ip_address, created_at, last_used_at, expires_at, absolute_expires_at
 		)
-		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, session_id, user_agent, expires_at, absolute_expires_at, created_at, last_used_at)
-		SELECT ?, user_id, ?, session_id, user_agent, expires_at, COALESCE(absolute_expires_at, expires_at), created_at, last_used_at FROM consumed
-		RETURNING user_id, session_id, user_agent, created_at, last_used_at, expires_at, absolute_expires_at`,
+		INSERT INTO user_svc.auth_tokens (token_hash, user_id, kind, session_id, user_agent, ip_address, expires_at, absolute_expires_at, created_at, last_used_at)
+		SELECT ?, user_id, ?, session_id, user_agent, ip_address, expires_at, COALESCE(absolute_expires_at, expires_at), created_at, last_used_at FROM consumed
+		RETURNING user_id, session_id, user_agent, ip_address, created_at, last_used_at, expires_at, absolute_expires_at`,
 		tokenHash, kindRefresh, tokenHash, kindRefreshUsed).Row().Scan(
-		&token.UserID, &token.SessionID, &token.UserAgent, &token.CreatedAt, &token.LastUsedAt,
+		&token.UserID, &token.SessionID, &token.UserAgent, &ipAddress, &token.CreatedAt, &token.LastUsedAt,
 		&token.ExpiresAt, &token.AbsoluteExpiresAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -117,6 +177,9 @@ func (s *PgTokenStore) ConsumeRefreshToken(ctx context.Context, tokenHash string
 	}
 	if err != nil {
 		return ports.RefreshTokenRecord{}, false, err
+	}
+	if ipAddress.Valid {
+		token.IPAddress = ipAddress.String
 	}
 	return token, true, nil
 }
@@ -150,11 +213,38 @@ func (s *PgTokenStore) ListRefreshSessions(ctx context.Context, userID uuid.UUID
 	out := make([]ports.RefreshSession, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, ports.RefreshSession{
-			ID: row.SessionID, UserAgent: row.UserAgent, CreatedAt: row.CreatedAt,
+			ID: row.SessionID, UserAgent: row.UserAgent, IPAddress: stringValue(row.IPAddress), CreatedAt: row.CreatedAt,
 			LastUsedAt: row.LastUsedAt, ExpiresAt: row.ExpiresAt,
 		})
 	}
 	return out, nil
+}
+
+func nullableIPAddress(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func (s *PgTokenStore) IsSessionActive(ctx context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return false, nil
+	}
+	var count int64
+	err := tx.From(ctx, s.db).WithContext(ctx).
+		Model(&AuthToken{}).
+		Where("user_id = ? AND kind = ? AND session_id = ? AND expires_at > now() AND (absolute_expires_at IS NULL OR absolute_expires_at > now())", userID, kindRefresh, sessionID).
+		Count(&count).Error
+	return count > 0, err
 }
 
 func (s *PgTokenStore) RevokeRefreshSession(ctx context.Context, userID, sessionID uuid.UUID) error {
@@ -174,9 +264,13 @@ func (s *PgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string
 	if strings.TrimSpace(stateHash) == "" || strings.TrimSpace(transaction.Provider) == "" || strings.TrimSpace(transaction.CodeChallenge) == "" || strings.TrimSpace(transaction.Nonce) == "" || !transaction.ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("oauth login transaction is invalid")
 	}
+	var userID *uuid.UUID
+	if transaction.UserID != uuid.Nil {
+		userID = authTokenUserID(transaction.UserID)
+	}
 	row := AuthToken{
 		TokenHash:     stateHash,
-		UserID:        transaction.UserID,
+		UserID:        userID,
 		Kind:          kindOAuthState,
 		ExpiresAt:     transaction.ExpiresAt,
 		Provider:      transaction.Provider,
@@ -186,7 +280,7 @@ func (s *PgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("token_hash = ?", stateHash).
 		Assign(map[string]any{
-			"user_id":        transaction.UserID,
+			"user_id":        userID,
 			"kind":           kindOAuthState,
 			"expires_at":     transaction.ExpiresAt,
 			"provider":       transaction.Provider,
@@ -197,12 +291,13 @@ func (s *PgTokenStore) SetLoginTransaction(ctx context.Context, stateHash string
 
 func (s *PgTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash string) (ports.LoginTransaction, bool, error) {
 	var transaction ports.LoginTransaction
+	var userID sql.NullString
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
 		`DELETE FROM user_svc.auth_tokens
 		 WHERE token_hash = ? AND kind = ? AND expires_at > now()
 		 RETURNING user_id, provider, code_challenge, nonce, expires_at`,
 		stateHash, kindOAuthState).Row().Scan(
-		&transaction.UserID,
+		&userID,
 		&transaction.Provider,
 		&transaction.CodeChallenge,
 		&transaction.Nonce,
@@ -213,6 +308,13 @@ func (s *PgTokenStore) ConsumeLoginTransaction(ctx context.Context, stateHash st
 	}
 	if err != nil {
 		return ports.LoginTransaction{}, false, err
+	}
+	if userID.Valid {
+		parsed, parseErr := uuid.Parse(userID.String)
+		if parseErr != nil {
+			return ports.LoginTransaction{}, false, fmt.Errorf("decode oauth user id: %w", parseErr)
+		}
+		transaction.UserID = parsed
 	}
 	return transaction, true, nil
 }

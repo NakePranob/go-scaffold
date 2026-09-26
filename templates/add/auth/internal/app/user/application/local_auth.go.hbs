@@ -57,12 +57,12 @@ func throttleKey(purpose, email string) string {
 // lock the account out on its own, while an attacker gains nothing: guessing
 // means sending something new each time.
 //
-// It is an HMAC under the signing secret rather than a bare hash. The value
+// It is an HMAC under the dedicated metadata key rather than a bare hash. The value
 // is derived from a real password — often the user's password somewhere else,
 // or one character away from the right one — so a leak of this table alone
 // must not be crackable offline.
 func (s *Service) attemptFingerprint(password string) string {
-	mac := hmac.New(sha256.New, []byte(s.config.JWTSecret))
+	mac := hmac.New(sha256.New, []byte(s.metadataKey()))
 	mac.Write([]byte(password))
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -79,7 +79,7 @@ func (s *Service) throttled(ctx context.Context, key string) bool {
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput) (*AuthResult, error) {
-	if err := validatePassword(in.Password); err != nil {
+	if err := s.validatePassword(in.Password); err != nil {
 		return nil, err
 	}
 	hash, err := s.passwords.Hash(in.Password)
@@ -132,6 +132,17 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error)
 	}
 	if err := s.passwords.Compare(*ident.PasswordHash, in.Password); err != nil {
 		return fail()
+	}
+
+	if migrator, ok := s.passwords.(interface{ NeedsRehash(string) bool }); ok && migrator.NeedsRehash(*ident.PasswordHash) {
+		if upgraded, hashErr := s.passwords.Hash(in.Password); hashErr == nil {
+			ident.PasswordHash = &upgraded
+			if updateErr := s.repo.UpdateIdentity(ctx, ident); updateErr != nil {
+				slog.Warn("upgrade password hash after login", "error", updateErr)
+			}
+		} else {
+			slog.Warn("hash password during login migration", "error", hashErr)
+		}
 	}
 
 	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
