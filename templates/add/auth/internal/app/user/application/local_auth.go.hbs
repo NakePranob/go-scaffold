@@ -126,6 +126,9 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error)
 	if err != nil {
 		return fail()
 	}
+	if u.IsDisabled() {
+		return fail()
+	}
 	ident, err := s.repo.FindIdentity(ctx, u.ID, domain.ProviderLocal)
 	if err != nil || ident.PasswordHash == nil {
 		return fail()

@@ -66,6 +66,8 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(handler, /POST\("\/me\/password", reauthLimit, recentAuth, h\.changePassword\)/);
   assert.match(handler, /POST\("\/:provider\/exchange", oauthExchangeLimit, h\.providerExchange\)/);
   assert.match(handler, /GET\("\/me\/sessions", recentAuth, h\.sessions\)/);
+  assert.match(handler, /DELETE\("\/me", reauthLimit, recentAuth, h\.disableMe\)/);
+  assert.match(handler, /PATCH\("\/:id\/status", h\.authz\.Require\(PermUserManageStatus\), recentAuth, h\.setAccountStatus\)/);
   assert.match(handler, /DELETE\("\/me\/sessions\/:id",[^\n]*h\.revokeSession\)/);
   assert.match(handler, /DELETE\("\/:id\/sessions\/:session_id", h\.authz\.Require\(PermUserManageSession\), h\.adminRevokeSession\)/);
   assert.match(identityHandler, /GET\("\/me\/identities", h\.listIdentities\)/);
@@ -78,6 +80,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(postgresModel, /type UserEmail struct/);
   assert.match(postgresModel, /type PasswordCredential struct/);
   assert.match(postgresModel, /type ExternalIdentity struct/);
+  assert.match(postgresModel, /DisabledAt\s+\*time\.Time/);
   assert.match(postgresModel, /Issuer\s+string[^\n]*type:text/);
   assert.match(postgresModel, /UserID\s+uuid\.UUID[^\n]*uniqueIndex:idx_user_emails_primary,where:is_primary/);
   assert.doesNotMatch(postgresModel, /IsPrimary\s+bool[^\n]*uniqueIndex:idx_user_emails_primary/);
@@ -85,6 +88,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(migrations, /_create_user_emails\.up\.sql/);
   assert.match(migrations, /_create_password_credentials\.up\.sql/);
   assert.match(migrations, /_create_external_identities\.up\.sql/);
+  assert.match(migrations, /_add_user_lifecycle\.up\.sql/);
   assert.doesNotMatch(migrations, /_create_identities\.up\.sql/);
   const userEmailsMigration = readFileSync(
     path.join(project, "migrations", migrations.split("\n").find((file) => file.includes("_create_user_emails.up.sql"))),
@@ -118,6 +122,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(composition, /application\.NewProviderRegistry/);
   assert.match(composition, /authprovider\/google/);
   assert.match(composition, /NewHandlerWithOrigins/);
+  assert.match(composition, /activeSessionValidator/);
   assert.match(composition, /JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN/);
   assert.match(config, /GOOGLE_OAUTH_REDIRECT_URI/);
   assert.match(config, /AUTH_BROWSER_TOPOLOGY/);
@@ -154,6 +159,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
   assert.match(read(project, "docs", "auth", "users-session.yaml"), /revokeUserSession/);
   assert.match(read(project, "docs", "auth", "users-me-identities.yaml"), /listMyIdentities/);
+  assert.match(read(project, "docs", "auth", "users-me.yaml"), /disableMyAccount/);
   assert.match(read(project, "docs", "auth", "users-me-identity-local-link.yaml"), /linkMyLocalIdentity/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link.yaml"), /startIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link-exchange.yaml"), /exchangeIdentityLink/);
@@ -176,6 +182,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(sessionMetadata, /func describeSession\(/);
   assert.match(sessionMetadataTest, /TestDescribeSessionReturnsSafeStructuredMetadata/);
   assert.match(repositoryPorts, /IPAddress\s+string/);
+  assert.match(repositoryPorts, /SetDisabled\(context\.Context, uuid\.UUID, \*time\.Time\) error/);
   for (const file of [
     "local_auth.go",
     "sessions.go",

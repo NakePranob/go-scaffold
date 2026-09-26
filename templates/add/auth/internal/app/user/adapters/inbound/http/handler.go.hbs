@@ -25,6 +25,7 @@ const (
 const PermUserManageRole = "user:manage-role"
 const PermUserRead = "user:read"
 const PermUserManageSession = "user:manage-session"
+const PermUserManageStatus = "user:manage-status"
 
 // go-scaffold:user-handler-consts
 
@@ -191,6 +192,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	usersGroup.POST("/me/reauth", reauthLimit, h.reauthenticate)
 	usersGroup.POST("/me/password", reauthLimit, recentAuth, h.changePassword)
 	usersGroup.POST("/me/logout-all", recentAuth, h.logoutAll)
+	usersGroup.DELETE("/me", reauthLimit, recentAuth, h.disableMe)
 	usersGroup.GET("/me/sessions", recentAuth, h.sessions)
 	usersGroup.DELETE("/me/sessions/:id", recentAuth, h.revokeSession)
 	usersGroup.GET("/me/mfa", h.mfaStatus)
@@ -205,6 +207,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 		usersGroup.GET("", h.authz.Require(PermUserRead), h.adminListUsers)
 		usersGroup.GET("/:id", h.authz.Require(PermUserRead), h.adminGetUser)
 		usersGroup.PATCH("/:id/set-role", h.authz.Require(PermUserManageRole), h.setRole)
+		usersGroup.PATCH("/:id/status", h.authz.Require(PermUserManageStatus), recentAuth, h.setAccountStatus)
 		usersGroup.DELETE("/:id/sessions/:session_id", h.authz.Require(PermUserManageSession), h.adminRevokeSession)
 	}
 	// go-scaffold:handler-routes
@@ -256,6 +259,28 @@ func (h *Handler) setRole(c *gin.Context) {
 		return
 	}
 	u, err := h.svc.SetRole(c.Request.Context(), id, in.Role)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, toMeResponse(u))
+}
+
+func (h *Handler) setAccountStatus(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	var in setAccountStatusInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.SetAccountDisabled(c.Request.Context(), id, in.Disabled); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	u, err := h.svc.Get(c.Request.Context(), id)
 	if err != nil {
 		c.Error(toHTTPError(err))
 		return

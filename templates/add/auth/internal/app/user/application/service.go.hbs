@@ -97,6 +97,13 @@ func (s *Service) IsSessionActive(ctx context.Context, userID, sessionID uuid.UU
 	if userID == uuid.Nil || sessionID == uuid.Nil {
 		return false, nil
 	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if u.IsDisabled() {
+		return false, nil
+	}
 	return s.refreshTokens.IsSessionActive(ctx, userID, sessionID)
 }
 
@@ -157,6 +164,35 @@ func (s *Service) RevokeSessionForUser(ctx context.Context, userID, sessionID uu
 	return s.RevokeSession(ctx, userID, sessionID)
 }
 
+// DisableAccount revokes every refresh session before marking the account
+// disabled. The order is deliberate: if the shared token store is unavailable,
+// the account remains usable and the caller can retry without a half-applied
+// lifecycle change.
+func (s *Service) DisableAccount(ctx context.Context, userID uuid.UUID) error {
+	return s.SetAccountDisabled(ctx, userID, true)
+}
+
+// SetAccountDisabled is the application boundary used by self-service and the
+// optional RBAC admin route. Re-enabling never creates a session; the user must
+// authenticate again through the normal login flow.
+func (s *Service) SetAccountDisabled(ctx context.Context, userID uuid.UUID, disabled bool) error {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return wrapFindErr(err)
+	}
+	if u.IsDisabled() == disabled {
+		return nil
+	}
+	if disabled {
+		if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
+			return fmt.Errorf("revoke sessions before disabling account: %w", err)
+		}
+		now := s.clock()
+		return s.repo.SetDisabled(ctx, userID, &now)
+	}
+	return s.repo.SetDisabled(ctx, userID, nil)
+}
+
 // ServicePort is the inbound application boundary. HTTP, jobs, and future
 // transports depend on this capability set instead of the concrete service.
 type ServicePort interface {
@@ -176,6 +212,8 @@ type ServicePort interface {
 	IsSessionActive(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	RevokeSession(context.Context, uuid.UUID, uuid.UUID) error
 	RevokeSessionForUser(context.Context, uuid.UUID, uuid.UUID) error
+	DisableAccount(context.Context, uuid.UUID) error
+	SetAccountDisabled(context.Context, uuid.UUID, bool) error
 	ChangePassword(context.Context, uuid.UUID, string) error
 	ForgotPassword(context.Context, string) error
 	ResetPassword(context.Context, string, string) error

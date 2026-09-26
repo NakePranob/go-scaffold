@@ -229,6 +229,7 @@ type meResponse struct {
 	AvatarURL     string    `json:"avatar_url"`
 	EmailVerified bool      `json:"email_verified"`
 	Role          string    `json:"role"`
+	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
 	// go-scaffold:user-me-fields
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -242,6 +243,7 @@ func toMeResponse(user *userdomain.User) meResponse {
 		EmailVerified: user.EmailVerified,
 		CreatedAt:     user.CreatedAt,
 		Role:          user.Role,
+		DisabledAt:    user.DisabledAt,
 		// go-scaffold:user-me-values
 	}
 }
@@ -257,6 +259,7 @@ type response struct {
 	AvatarURL     string    `json:"avatar_url"`
 	EmailVerified bool      `json:"email_verified"`
 	Role          string    `json:"role"`
+	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -266,12 +269,17 @@ func toResponse(out userapp.Response) response {
 	return response{
 		ID: out.ID, Email: out.Email, Name: out.Name, AvatarURL: out.AvatarURL,
 		EmailVerified: out.EmailVerified, Role: out.Role, CreatedAt: out.CreatedAt,
+		DisabledAt: out.DisabledAt,
 		UpdatedAt: out.UpdatedAt,
 	}
 }
 
 type setRoleInput struct {
 	Role string `json:"role" binding:"required"`
+}
+
+type setAccountStatusInput struct {
+	Disabled bool `json:"disabled"`
 }
 
 // go-scaffold:dto

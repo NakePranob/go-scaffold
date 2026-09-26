@@ -90,6 +90,9 @@ func ValidateMFASettings(settings MFASettings) error {
 }
 
 func (s *Service) completeLogin(ctx context.Context, u *domain.User, sessions ...SessionContext) (*AuthResult, error) {
+	if u == nil || u.IsDisabled() {
+		return nil, errInvalidCredentials()
+	}
 	var session SessionContext
 	if len(sessions) > 0 {
 		session = sessions[0]

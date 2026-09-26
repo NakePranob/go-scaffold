@@ -104,6 +104,7 @@ type Response struct {
 	AvatarURL     string
 	EmailVerified bool
 	Role          string
+	DisabledAt    *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
@@ -116,6 +117,7 @@ func ToResponse(user *domain.User) Response {
 		AvatarURL:     user.AvatarURL,
 		EmailVerified: user.EmailVerified,
 		Role:          user.Role,
+		DisabledAt:    user.DisabledAt,
 		CreatedAt:     user.CreatedAt,
 		UpdatedAt:     user.UpdatedAt,
 	}

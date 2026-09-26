@@ -14,9 +14,12 @@ type User struct {
 	AvatarURL     string
 	EmailVerified bool
 	Role          string
+	DisabledAt    *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
+
+func (u User) IsDisabled() bool { return u.DisabledAt != nil }
 
 // DefaultRole is part of auth's persisted user contract. RBAC may add the
 // role catalog later, but every newly issued access token must carry the same

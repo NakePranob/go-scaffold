@@ -35,6 +35,7 @@ type UserRepository interface {
 	FindByEmail(context.Context, string) (*domain.User, error)
 	FindByID(context.Context, uuid.UUID) (*domain.User, error)
 	UpdateUser(context.Context, *domain.User) error
+	SetDisabled(context.Context, uuid.UUID, *time.Time) error
 	// FindAll answers one page and the total the filter matched, which is what
 	// a client needs to draw "page 3 of 12".
 	FindAll(context.Context, ListFilter) ([]domain.User, int64, error)

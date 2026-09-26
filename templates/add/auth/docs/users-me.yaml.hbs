@@ -10,3 +10,18 @@ get:
         application/json:
           schema: { $ref: './schemas.yaml#/MeResponse' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+delete:
+  summary: Disable the current user account
+  description: Requires the X-Reauth-Token proof from POST /users/me/reauth. This is a soft-disable, not a hard delete; all refresh sessions are revoked before disabled_at is recorded.
+  operationId: disableMyAccount
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
+  responses:
+    "204": { description: account disabled and refresh sessions revoked }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }

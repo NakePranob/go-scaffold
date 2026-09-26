@@ -66,7 +66,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [~] มี common-password screening และ production guard บังคับ `AUTH_COMMON_PASSWORDS_FILE` ที่สั้นกว่า 3,000 policy-matching entries ไม่ผ่าน แต่ยังต้องยืนยัน provenance, update procedure และ test ของรายการที่ deploy
 - [x] password change/reset มีการ rotate หรือ revoke session ตาม flow ที่ generated ไว้
 - [~] default operator/admin ไม่ได้ถูกสร้างด้วย credential เดียวแบบ hard-coded แต่ deployment ต้องพิสูจน์ว่า secret ถูกส่งผ่าน secret manager/env ที่ปลอดภัย
-- [ ] ต้องตรวจให้ครบว่าการสร้าง account, disable account และ delete account มี lifecycle policy และ audit ที่สอดคล้องกัน
+- [~] generated account disable lifecycle and session termination are present; hard-delete/anonymization, re-enable policy, audit trail, and retention remain application/deployment responsibilities
 
 อ้างอิงหลัก: ASVS V6.2.1–V6.2.8, V6.3.1–V6.3.2
 
@@ -88,7 +88,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] refresh-token rotation มี atomic limit/eviction path สำหรับ PostgreSQL และ Redis adapter
 - [x] new login evict session ที่เก่าที่สุดเมื่อเกิน `AUTH_MAX_SESSIONS`
 - [x] generated policy กำหนด inactivity TTL (`JWT_REFRESH_TTL_MIN`) และ absolute lifetime (`JWT_REFRESH_MAX_TTL_MIN`); rotation ต่ออายุได้ไม่เกิน absolute lifetime และ boot จะ fail-closed หาก absolute สั้นกว่า inactivity — deployment ยังต้องเลือกค่าและเก็บ evidence
-- [~] ถ้ามี account disable/delete ต้อง invalidate active sessions ทั้งหมดเมื่อ lifecycle event เกิดขึ้น
+- [~] generated `DELETE /users/me` and RBAC status mutation revoke active refresh sessions before disabling; hard-delete lifecycle and operational audit still remain
 - [~] generated `cmd/auth-cleanup` / `make auth-cleanup` ล้าง expired token/MFA state และ stale Redis session indexes ได้แล้ว; ยังต้อง schedule และเก็บ production run/metric evidence
 
 อ้างอิงหลัก: ASVS V7.2.1–V7.2.4, V7.4.1–V7.4.2
@@ -293,7 +293,7 @@ go vet ./...
 
 - [x] กำหนด generated L2 production policy ให้ MFA ต้องผ่าน enrollment ก่อนออก application session; product ยังต้องเลือก UX/recovery ที่เหมาะสม
 - [~] generated code ตรวจว่า common-password corpus มีอย่างน้อย 3,000 policy-matching entries; ยังต้องบันทึก source/provenance, refresh และ sign-off ของรายการที่ deploy
-- [ ] กำหนด account disable/delete และ session termination behavior
+- [~] กำหนด generated disable + session termination behavior; hard-delete/retention/anonymization policy ยังต้องกำหนดใน generated application
 - [x] กำหนด generated inactivity/absolute timeout policy พร้อม cap และ regression tests; deployment-specific values/evidence ยังเหลือ
 - [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง
 - [x] บังคับ recent-auth ก่อน session list/revoke และเพิ่ม admin session termination ภายใต้ RBAC

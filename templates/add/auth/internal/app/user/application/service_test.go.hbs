@@ -458,6 +458,13 @@ func (f *fakeRepo) UpdateUser(_ context.Context, u *domain.User) error {
 	f.user = u
 	return nil
 }
+func (f *fakeRepo) SetDisabled(_ context.Context, id uuid.UUID, disabledAt *time.Time) error {
+	if f.user == nil || f.user.ID != id {
+		return domain.ErrNotFound
+	}
+	f.user.DisabledAt = disabledAt
+	return nil
+}
 func (f *fakeRepo) FindAll(context.Context, ports.ListFilter) ([]domain.User, int64, error) {
 	return nil, 0, nil
 }
@@ -698,6 +705,35 @@ func TestService_NewLoginEvictsLeastRecentlyUsedSession(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Fatalf("active session count = %d, want 2", len(items))
+	}
+}
+
+func TestService_DisableAccountRevokesSessionsBeforeMarkingDisabled(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	sessionID := uuid.New()
+	now := time.Now().UTC()
+	tokens := newFakeTokenStore()
+	if err := seedRefreshSession(ctx, tokens, "disable-me", userID, sessionID, now.Add(-time.Hour), now.Add(-time.Minute)); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "disable@example.com"}}
+	svc := newTestService(repo, tokens)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.DisableAccount(ctx, userID); err != nil {
+		t.Fatalf("disable account: %v", err)
+	}
+	if repo.user.DisabledAt == nil || !repo.user.DisabledAt.Equal(now) {
+		t.Fatalf("disabled_at = %v, want %s", repo.user.DisabledAt, now)
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, sessionID); err != nil {
+		t.Fatalf("check revoked session: %v", err)
+	} else if active {
+		t.Fatal("disabling an account left its refresh session active")
+	}
+	if _, err := svc.issueTokens(ctx, repo.user, SessionContext{IsNew: true}); code(err) != "AUTH_INVALID_TOKEN" {
+		t.Fatalf("disabled account received new tokens: %v", err)
 	}
 }
 

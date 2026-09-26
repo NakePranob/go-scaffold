@@ -158,6 +158,7 @@ export function patchUserHandlerForRbac(handlerGoPath: string): void {
     'usersGroup.GET("", h.authz.Require(PermUserRead), h.adminListUsers)',
     'usersGroup.GET("/:id", h.authz.Require(PermUserRead), h.adminGetUser)',
     'usersGroup.PATCH("/:id/set-role", h.authz.Require(PermUserManageRole), h.setRole)',
+    'usersGroup.PATCH("/:id/status", h.authz.Require(PermUserManageStatus), recentAuth, h.setAccountStatus)',
     'usersGroup.DELETE("/:id/sessions/:session_id", h.authz.Require(PermUserManageSession), h.adminRevokeSession)',
   ]) {
     if (!content.includes(required)) {

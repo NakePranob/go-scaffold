@@ -123,6 +123,9 @@ func (s *Service) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID
 }
 
 func (s *Service) issueTokens(ctx context.Context, u *domain.User, session SessionContext, absoluteExpiresAt ...time.Time) (*AuthResponse, error) {
+	if u == nil || u.IsDisabled() {
+		return nil, errInvalidToken()
+	}
 	clock := s.now
 	if clock == nil {
 		clock = time.Now

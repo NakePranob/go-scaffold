@@ -36,6 +36,22 @@ func (h *Handler) logoutAll(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// disableMe is an explicit soft-disable, not a hard delete. The application
+// revokes every refresh session before recording disabled_at; the access token
+// used for this request is rejected on the next protected request as well.
+func (h *Handler) disableMe(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	if err := h.svc.DisableAccount(c.Request.Context(), currentUserID(c)); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	h.clearRefreshCookie(c)
+	c.Status(http.StatusNoContent)
+}
+
 func (h *Handler) sessions(c *gin.Context) {
 	setNoStoreHeaders(c)
 	items, err := h.svc.ListSessions(c.Request.Context(), currentUserID(c), currentSessionID(c))

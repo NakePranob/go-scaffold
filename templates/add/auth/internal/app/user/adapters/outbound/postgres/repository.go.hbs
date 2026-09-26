@@ -77,6 +77,24 @@ func (r *Repository) UpdateUser(ctx context.Context, user *domain.User) error {
 	}))
 }
 
+// SetDisabled changes only the lifecycle state. The application revokes
+// sessions before calling this method, so a failed database write never leaves
+// a disabled account with live sessions and a successful response.
+func (r *Repository) SetDisabled(ctx context.Context, userID uuid.UUID, disabledAt *time.Time) error {
+	if userID == uuid.Nil {
+		return errors.New("user id is required")
+	}
+	result := tx.From(ctx, r.db).WithContext(ctx).Model(&User{}).
+		Where("id = ?", userID).Updates(map[string]any{"disabled_at": disabledAt})
+	if result.Error != nil {
+		return persistenceError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 // sortable is the whole of what ?sort= may say on the admin user list: dbq.Sort
 // resolves the requested name against Columns, so nothing off the request is
 // ever interpolated into the ORDER BY.
@@ -438,6 +456,7 @@ func toDomainUserWithEmail(row *User, emailRow *UserEmail) *domain.User {
 		AvatarURL:     row.AvatarURL,
 		EmailVerified: verified,
 		Role:          row.Role,
+		DisabledAt:    row.DisabledAt,
 		CreatedAt:     row.CreatedAt,
 		UpdatedAt:     row.UpdatedAt,
 	}
@@ -449,6 +468,7 @@ func fromDomainUser(user *domain.User) User {
 		Name:      user.Name,
 		AvatarURL: user.AvatarURL,
 		Role:      user.Role,
+		DisabledAt: user.DisabledAt,
 		CreatedAt:     user.CreatedAt,
 		UpdatedAt:     user.UpdatedAt,
 	}

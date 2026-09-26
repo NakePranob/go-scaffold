@@ -29,6 +29,9 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	if err != nil {
 		return nil
 	}
+	if u.IsDisabled() {
+		return nil
+	}
 	ident, err := s.repo.FindIdentity(ctx, u.ID, domain.ProviderLocal)
 	if err != nil || ident.PasswordHash == nil {
 		return nil

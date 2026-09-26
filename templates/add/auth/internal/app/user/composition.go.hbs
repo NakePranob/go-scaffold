@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/redis/go-redis/v9"
 {{/if}}
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -164,9 +166,28 @@ func NewSessionValidatorFromDB(
 {{#if redis}}	rdb *redis.Client,
 {{/if}}
 ) middleware.SessionValidator {
-{{#if redis}}	return userredis.NewRedisTokenStore(rdb, db)
-{{else}}	return userpostgres.NewPgTokenStore(db)
-{{/if}}
+{{#if redis}}	var tokens ports.RefreshTokenStore = userredis.NewRedisTokenStore(rdb, db)
+{{else}}	var tokens ports.RefreshTokenStore = userpostgres.NewPgTokenStore(db)
+{{/if}}	return &activeSessionValidator{tokens: tokens, users: userpostgres.NewRepository(db)}
+}
+
+// activeSessionValidator keeps account lifecycle state in the same protected
+// request boundary as refresh-session state. A disabled account therefore
+// loses both refresh and already-issued access-token use immediately.
+type activeSessionValidator struct {
+	tokens ports.RefreshTokenStore
+	users  ports.UserRepository
+}
+
+func (v *activeSessionValidator) IsSessionActive(ctx context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	u, err := v.users.FindByID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if u.IsDisabled() {
+		return false, nil
+	}
+	return v.tokens.IsSessionActive(ctx, userID, sessionID)
 }
 
 // NewAuthCleanupFromDB exposes the maintenance composition without leaking

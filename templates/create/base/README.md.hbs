@@ -224,7 +224,12 @@ cannot be removed.
 Sensitive account operations require a short-lived `X-Reauth-Token` from
 `POST /users/me/reauth`; password changes, session revocation, MFA changes, and
 identity changes revoke or protect the affected session state as documented in
-the generated OpenAPI files.
+the generated OpenAPI files. `DELETE /users/me` is a recent-authenticated
+soft-disable: it revokes every refresh session before setting `disabled_at`,
+and protected requests fail closed after the state change. Hard deletion,
+retention, anonymization, and any helpdesk/admin re-enable policy remain
+application-specific; when RBAC is enabled, `PATCH /users/:id/status` is
+available to a recent-authenticated caller with `user:manage-status`.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
 guard independently of CORS.

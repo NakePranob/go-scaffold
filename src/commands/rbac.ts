@@ -35,6 +35,7 @@ const RBAC_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users", file: "./rbac/users.yaml" },
   { urlPath: "/users/{id}", file: "./rbac/user.yaml" },
   { urlPath: "/users/{id}/set-role", file: "./rbac/user-set-role.yaml" },
+  { urlPath: "/users/{id}/status", file: "./rbac/user-status.yaml" },
 ];
 
 // addRbac layers role-based access control on top of `add auth`: a role

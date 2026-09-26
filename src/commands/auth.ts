@@ -132,6 +132,16 @@ export async function addAuth(
     {}
   );
 
+  const lifecycleVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/add_user_lifecycle.up.sql.hbs", output: path.join("migrations", `${lifecycleVersion}_add_user_lifecycle.up.sql`) },
+      { template: "add/auth/migrations/add_user_lifecycle.down.sql.hbs", output: path.join("migrations", `${lifecycleVersion}_add_user_lifecycle.down.sql`) },
+    ],
+    {}
+  );
+
   const emailVersion = newMigrationVersion(migrationsDir);
   await applyTemplateEntries(
     projectDir,
