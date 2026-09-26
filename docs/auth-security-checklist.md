@@ -87,7 +87,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] session list จำกัดจำนวนรายการและ preserve current session ได้
 - [x] refresh-token rotation มี atomic limit/eviction path สำหรับ PostgreSQL และ Redis adapter
 - [x] new login evict session ที่เก่าที่สุดเมื่อเกิน `AUTH_MAX_SESSIONS`
-- [~] ต้องตรวจว่า inactivity timeout และ absolute session lifetime ถูกกำหนดเป็น policy ชัดเจนและทดสอบในทุก deployment
+- [x] generated policy กำหนด inactivity TTL (`JWT_REFRESH_TTL_MIN`) และ absolute lifetime (`JWT_REFRESH_MAX_TTL_MIN`); rotation ต่ออายุได้ไม่เกิน absolute lifetime และ boot จะ fail-closed หาก absolute สั้นกว่า inactivity — deployment ยังต้องเลือกค่าและเก็บ evidence
 - [~] ถ้ามี account disable/delete ต้อง invalidate active sessions ทั้งหมดเมื่อ lifecycle event เกิดขึ้น
 - [~] generated `cmd/auth-cleanup` / `make auth-cleanup` ล้าง expired token/MFA state และ stale Redis session indexes ได้แล้ว; ยังต้อง schedule และเก็บ production run/metric evidence
 
@@ -162,7 +162,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 - [x] `AUTH_MAX_SESSIONS` มี validation, bounded value และ atomic eviction เพื่อลด race condition
 - [x] session list และ revoke current/selected session มี generated API/DTO/doc
-- [~] ต้องประกาศ inactivity timeout, absolute timeout และ behavior เมื่อ max sessions ถึง limit เป็น product policy ที่ตรวจได้
+- [~] generated code บังคับ inactivity/absolute timeout และมี regression tests; product/deployment ยังต้องประกาศค่าที่เลือกและ behavior เมื่อ max sessions ถึง limit
 - [x] session list บังคับ short-lived recent-auth proof และ revoke route ใช้ boundary เดียวกัน
 - [x] เมื่อเปิด RBAC มี `DELETE /users/{id}/sessions/{session_id}` พร้อม `user:manage-session` permission สำหรับ admin termination
 - [~] password change มี session revocation แต่ MFA factor change และ identity-link change ต้องตรวจว่าควร revoke ทั้งหมดหรือบังคับ re-auth ตาม risk หรือไม่
@@ -244,7 +244,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] MFA secret ถูกเข้ารหัส ส่วน MFA challenge/recovery code/refresh/recovery token เก็บเป็น hash หรือ one-time state
 - [x] auth token tables มี expiry/absolute-expiry/session indexes และ login throttle มี retention sweep ระหว่าง failed login
 - [~] ต้อง review ว่า user-agent/IP/device metadata มี minimization, retention และ privacy policy
-- [~] ต้องกำหนด inactivity/absolute expiry ของ access และ refresh session เป็นตัวเลขที่ audit ได้
+- [~] generated config ตรวจ positive TTL และความสัมพันธ์ inactivity <= absolute พร้อม test; deployment ยังต้องบันทึกค่าจริงที่ audit ได้
 - [x] `auth_tokens.user_id` มี FK + `ON DELETE CASCADE`; nullable เฉพาะ anonymous OAuth state ที่ยังไม่มี user
 - [x] `AUTH_METADATA_KEY` แยกจาก `JWT_SECRET` สำหรับ device/throttle metadata และ production guard ตรวจ default/length/equality
 - [~] JWT signing key และ `MFA_ENCRYPTION_KEY` ยังไม่มี key-version/rotation migration workflow ใน scaffold
@@ -294,7 +294,7 @@ go vet ./...
 - [x] กำหนด generated L2 production policy ให้ MFA ต้องผ่าน enrollment ก่อนออก application session; product ยังต้องเลือก UX/recovery ที่เหมาะสม
 - [~] generated code ตรวจว่า common-password corpus มีอย่างน้อย 3,000 policy-matching entries; ยังต้องบันทึก source/provenance, refresh และ sign-off ของรายการที่ deploy
 - [ ] กำหนด account disable/delete และ session termination behavior
-- [ ] กำหนด inactivity/absolute timeout เป็น policy พร้อม tests
+- [x] กำหนด generated inactivity/absolute timeout policy พร้อม cap และ regression tests; deployment-specific values/evidence ยังเหลือ
 - [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง
 - [x] บังคับ recent-auth ก่อน session list/revoke และเพิ่ม admin session termination ภายใต้ RBAC
 - [~] baseline security headers และ key separation ทำแล้ว; ยังต้องเติม trusted-proxy test และ key rotation workflow

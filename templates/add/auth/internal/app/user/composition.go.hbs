@@ -65,8 +65,8 @@ func NewHandlerFromDB(
 	if err := httpadapter.ValidateBrowserCookiePolicy(cfg.AuthBrowserTopology, cfg.CookieSameSite, cfg.CookieSecure, cfg.IsProd()); err != nil {
 		panic(err)
 	}
-	if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 {
-		panic(fmt.Errorf("JWT refresh token lifetimes must be positive"))
+	if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 || cfg.JWTRefreshMaxTTL < cfg.JWTRefreshTTL {
+		panic(fmt.Errorf("JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN"))
 	}
 	if cfg.OAuthStateTTL <= 0 {
 		panic(fmt.Errorf("OAUTH_STATE_TTL_MIN must be positive"))

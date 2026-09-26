@@ -211,11 +211,20 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, mfaCheckBlock, "invalid MFA configuration");
 
   const sessionCheckBlock = [
+    "if cfg.JWTAccessTTL <= 0 {",
+    '\treturn fmt.Errorf("JWT_ACCESS_TTL_MIN must be positive")',
+    "}",
+    "if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 {",
+    '\treturn fmt.Errorf("JWT refresh token lifetimes must be positive")',
+    "}",
+    "if cfg.JWTRefreshMaxTTL < cfg.JWTRefreshTTL {",
+    '\treturn fmt.Errorf("JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN")',
+    "}",
     "if cfg.AuthMaxSessions < 1 || cfg.AuthMaxSessions > 100 {",
     '\treturn fmt.Errorf("AUTH_MAX_SESSIONS must be between 1 and 100")',
     "}",
   ].join("\n");
-  content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, sessionCheckBlock, "AUTH_MAX_SESSIONS must be between 1 and 100");
+  content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, sessionCheckBlock, "JWT_ACCESS_TTL_MIN must be positive");
 
   // The enqueuer is built from whatever backend `add worker` chose — the
   // constructor differs, everything downstream of it (mail.NewAsyncClient)

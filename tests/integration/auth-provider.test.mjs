@@ -118,6 +118,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(composition, /application\.NewProviderRegistry/);
   assert.match(composition, /authprovider\/google/);
   assert.match(composition, /NewHandlerWithOrigins/);
+  assert.match(composition, /JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN/);
   assert.match(config, /GOOGLE_OAUTH_REDIRECT_URI/);
   assert.match(config, /AUTH_BROWSER_TOPOLOGY/);
   assert.match(config, /JWT_REFRESH_MAX_TTL_MIN/);
