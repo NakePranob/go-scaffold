@@ -71,7 +71,8 @@ test("--store postgres writes the Postgres store and no Redis anywhere", (t) => 
   assert.match(composition, /middleware\.NewMemoryLimiter\(\)/);
   assert.match(seed, /userpostgres\.NewPgTokenStore\(db\)/);
   assert.match(seed, /RefreshTokens:\s+tokens/);
-  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
+  assert.doesNotMatch(main, /queue\.NewRiverEnqueuer|NewAsynqEnqueuer/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.doesNotMatch(main, /rdb/, "wiring.go must not reference a Redis client");
   // The tables are the migrations' — wiring.go has no model list to register
@@ -105,7 +106,7 @@ test("--store redis keeps refresh wiring and uses Postgres recovery tokens", (t)
   assert.match(seed, /RefreshTokens:\s+tokens/);
   assert.doesNotMatch(composition, /type PgTokenStore = userpostgres\.PgTokenStore/);
   assert.doesNotMatch(composition, /func NewPgTokenStore\(db \*gorm\.DB\)/);
-  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, q, nil, nil\)\.Register\(api\)/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, rdb, nil, nil\)\.Register\(api\)/);
   assert.doesNotMatch(main, /user\.NewService\(|user\.NewHandler\(userSvc/);
   assert.doesNotMatch(main, /usermodel/, "the model alias existed only for the AutoMigrate list");
   assertAuthMigrations(app);
@@ -127,7 +128,7 @@ for (const store of ["postgres", "redis"]) {
     cli(app, "add", "rbac", "--yes");
 
     const main = read(app, "cmd/api/wiring.go");
-    const authArgs = store === "postgres" ? "db, cfg, q" : "db, cfg, rdb, q";
+    const authArgs = store === "postgres" ? "db, cfg" : "db, cfg, rdb";
     const sessionArgs = store === "postgres" ? "db, cfg" : "db, cfg, rdb";
     assert.ok(
       main.includes(`sessionValidator := user.NewSessionValidatorFromDB(${sessionArgs})`) &&
@@ -147,12 +148,11 @@ for (const store of ["postgres", "redis"]) {
   });
 }
 
-// `add auth` used to refuse without `add worker`, which meant a project that
-// only wanted login had to take a queue, a backend decision and a second
-// binary. Now it stands alone and sends inline — and `add worker` arriving
-// later has to actually move the mail onto the queue, or the message the CLI
-// prints when it wires the sync mailer is a lie.
-test("add auth stands alone, and a later add worker moves its mail onto the queue", (t) => {
+// `add auth` used to move bearer-bearing recovery mail into a queue whenever
+// a worker existed. Auth now stays synchronous so reset/verification links
+// are not persisted in queue payloads; the worker remains available for other
+// job kinds.
+test("add auth keeps recovery mail inline even after a worker is added", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-solo-auth-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cli(dir, "create", "app", "--defaults", "--no-docker");
@@ -170,11 +170,10 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
   cli(app, "add", "worker", "--queue", "postgres", "--yes");
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient\(q\)/, "the feature-local mailer must move onto the queue");
-  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient/, "the synchronous mailer must be gone");
-  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
-  assert.match(main, /q, err := queue\.NewRiverEnqueuer\(db\)/, "the enqueuer has to be built");
-  assert.match(main, /q\.Close\(\)/, "and closed on shutdown");
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/, "auth mail must stay inline");
+  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient|queue\.Enqueuer/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
+  assert.doesNotMatch(main, /queue\.NewRiverEnqueuer|NewAsynqEnqueuer|q\.Close\(\)/);
 
   // gofmt aligns struct fields into columns, so a sentinel written as
   // "SMTPHost string" stops matching the moment the block lands — which had
@@ -185,13 +184,9 @@ test("add auth stands alone, and a later add worker moves its mail onto the queu
 });
 
 // `add worker --queue redis` takes a materially different path than postgres:
-// a separate cache.Open(Redis) client, queue.NewAsynqEnqueuer instead of
-// queue.NewRiverEnqueuer, and an extra rdb.Ping in readyz. The postgres test
-// above doesn't exercise any of that, so it wouldn't catch a regression
-// specific to the redis queue backend — including the printed summary, which
-// used to unconditionally claim "cmd/api does not enqueue anything yet" even
-// when auth was already there and its mailer just got moved onto the queue.
-test("add auth stands alone, and a later add worker --queue redis moves its mail onto the queue", (t) => {
+// A Redis worker still changes cmd/api's readiness infrastructure, but it must
+// not change auth's mailer: bearer recovery links never enter Redis jobs.
+test("add auth keeps recovery mail inline after a Redis worker is added", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-solo-auth-redis-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cli(dir, "create", "app", "--defaults", "--no-docker");
@@ -202,16 +197,15 @@ test("add auth stands alone, and a later add worker --queue redis moves its mail
   assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
 
   const out = cli(app, "add", "worker", "--queue", "redis", "--yes");
-  assert.match(out, /auth's mailer now enqueues onto it/, "the printed summary must say the mailer actually moved, not that cmd/api still enqueues nothing");
+  assert.match(out, /auth verification\/reset mail stays inline/);
 
   const main = read(app, "cmd/api/wiring.go");
-  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient\(q\)/, "the feature-local mailer must move onto the queue");
-  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient/, "the synchronous mailer must be gone");
-  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, q, nil, nil\)\.Register\(api\)/);
-  assert.match(main, /q, err := queue\.NewAsynqEnqueuer\(cfg\.RedisURL\)/, "the asynq enqueuer has to be built");
+  assert.match(read(app, "internal/app/user/composition.go"), /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/, "auth mail must stay inline");
+  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient|queue\.Enqueuer/);
+  assert.match(main, /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
+  assert.doesNotMatch(main, /q, err := queue\.NewAsynqEnqueuer/);
   assert.match(main, /rdb, err := cache\.Open\(cfg\)/, "the redis client backing the queue has to be built");
   assert.match(main, /rdb\.Ping\(c\.Request\.Context\(\)\)/, "readyz must gain a redis check");
-  assert.match(main, /q\.Close\(\)/, "and the queue closed on shutdown");
   assert.match(main, /rdb\.Close\(\)/, "and the redis client closed on shutdown");
 
   const config = read(app, "internal/shared/config/config.go");
@@ -257,9 +251,9 @@ for (const store of ["postgres", "redis"]) {
 
     const main = read(app, "cmd/api/wiring.go");
     const composition = read(app, "internal/app/user/composition.go");
-    const authArgs = store === "postgres" ? "db, cfg, q" : "db, cfg, rdb, q";
-    assert.match(composition, /q queue\.Enqueuer/);
-    assert.match(composition, /mail\.NewAsyncClient\(q\)/);
+    const authArgs = store === "postgres" ? "db, cfg" : "db, cfg, rdb";
+    assert.doesNotMatch(composition, /q queue\.Enqueuer|mail\.NewAsyncClient/);
+    assert.match(composition, /mail\.NewSyncClient\(mail\.Open\(cfg\)\)/);
     assert.match(main, new RegExp(`sessionValidator := user\\.NewSessionValidatorFromDB\\(${store === "postgres" ? "db, cfg" : "db, cfg, rdb"}\\)`));
     assert.match(main, new RegExp(`user\\.NewHandlerFromDB\\(${authArgs}, roleComposition\\.Service, roleComposition\\.Authz\\)\\.Register\\(api\\)`));
     assert.doesNotMatch(main, /user\.NewService\(|role\.NewService\(|mail\.NewAsyncClient/);

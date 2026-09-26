@@ -35,13 +35,10 @@ func Open(cfg config.Config) *Client {
 	}
 }
 
-// Send delivers a plain-text email. If SMTP isn't configured (dev default —
-// SMTP_HOST unset), it logs the message instead of failing, so flows that
-// send email stay testable without a real mail server.
 // Send delivers a rendered message. If SMTP isn't configured (dev default —
-// SMTP_HOST unset), it logs the plain-text part instead of failing, so flows
-// that send email stay testable without a mail server and the link stays
-// readable in the log.
+// SMTP_HOST unset), it logs only non-sensitive metadata instead of the body.
+// Recovery and verification bodies contain bearer links and must never enter
+// application logs.
 func (c *Client) Send(to string, m emails.Message) error {
 	// build() skips a part whose body is empty, so a Message with neither half
 	// would go out as a multipart/alternative containing no parts at all —
@@ -51,7 +48,7 @@ func (c *Client) Send(to string, m emails.Message) error {
 		return fmt.Errorf("refusing to send an email with no body (subject %q)", m.Subject)
 	}
 	if c.host == "" {
-		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", m.Subject, "body", m.Text)
+		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", m.Subject)
 		return nil
 	}
 	// ParseAddress so SMTP_FROM can carry a display name. The envelope needs
@@ -117,14 +114,14 @@ func build(from, to string, m emails.Message) ([]byte, error) {
 }
 
 // SyncClient sends in the caller's goroutine, satisfying the same mailer
-// interface AsyncClient does. It exists so `add auth` can stand on its own:
-// a project that hasn't asked for a queue shouldn't be made to run a second
-// binary just to send a verification email.
+// interface AsyncClient does. Auth always uses it because recovery and
+// verification messages contain bearer links that must not be persisted in a
+// generic queue payload. The worker remains available for other job kinds.
 //
 // The trade is real — /auth/register and /auth/forgot-password block until
-// SMTP answers, where the async client returns as soon as the job is written.
-// Add a worker later and the wiring in cmd/api/wiring.go switches to
-// AsyncClient; nothing in the user service changes.
+// SMTP answers. This is the deliberate confidentiality/latency trade-off for
+// auth mail; nothing in the user service changes when other worker jobs are
+// added.
 type SyncClient struct{ c *Client }
 
 func NewSyncClient(c *Client) *SyncClient { return &SyncClient{c: c} }

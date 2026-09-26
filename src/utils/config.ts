@@ -57,6 +57,8 @@ export function writeConfig(projectDir: string, config: ProjectConfig): void {
 // CLI reported success over a project that no longer builds), while
 // `undo module user` read a missing `auth` key as "not auth's" and deleted the
 // whole auth domain. The tree always knew the answer; this stops the guessing.
+// Auth mail wiring is deliberately independent of the queue backend, so a
+// missing queue key cannot cause auth to construct an enqueuer either.
 //
 // The file still wins wherever it has a value — an explicit `false` is an
 // answer, not a hole.

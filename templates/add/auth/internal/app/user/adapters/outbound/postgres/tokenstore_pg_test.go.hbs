@@ -165,6 +165,49 @@ func TestPgTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	}
 }
 
+func TestPgTokenStore_ReplacePasswordResetTokenKeepsOnlyNewestResetLink(t *testing.T) {
+	db := tokenStoreDBForTest(t)
+	store := NewPgTokenStore(db)
+	ctx := context.Background()
+	userID := uuid.New()
+	otherUserID := uuid.New()
+	ensureTokenTestUser(t, db, userID)
+	ensureTokenTestUser(t, db, otherUserID)
+	oldHash := "real-pg-reset-old-" + uuid.NewString()
+	newHash := "real-pg-reset-new-" + uuid.NewString()
+	otherHash := "real-pg-reset-other-" + uuid.NewString()
+	verifyHash := "real-pg-verify-" + uuid.NewString()
+
+	if err := store.SetPasswordResetToken(ctx, oldHash, userID, time.Hour); err != nil {
+		t.Fatalf("seed old reset token: %v", err)
+	}
+	if err := store.SetPasswordResetToken(ctx, otherHash, otherUserID, time.Hour); err != nil {
+		t.Fatalf("seed other-user reset token: %v", err)
+	}
+	if err := store.SetEmailVerifyToken(ctx, verifyHash, userID, time.Hour); err != nil {
+		t.Fatalf("seed verification token: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Exec("DELETE FROM user_svc.auth_tokens WHERE token_hash IN ?", []string{oldHash, newHash, otherHash, verifyHash}).Error
+	})
+
+	if err := store.ReplacePasswordResetToken(ctx, newHash, userID, time.Hour); err != nil {
+		t.Fatalf("replace reset token: %v", err)
+	}
+	if _, ok, err := store.ConsumePasswordResetToken(ctx, oldHash); err != nil || ok {
+		t.Fatalf("old reset token remained consumable: ok=%t err=%v", ok, err)
+	}
+	if got, ok, err := store.ConsumePasswordResetToken(ctx, newHash); err != nil || !ok || got != userID {
+		t.Fatalf("new reset token = user=%s ok=%t err=%v, want user=%s and ok=true", got, ok, err, userID)
+	}
+	if got, ok, err := store.ConsumePasswordResetToken(ctx, otherHash); err != nil || !ok || got != otherUserID {
+		t.Fatalf("other user's reset token = user=%s ok=%t err=%v, want user=%s and ok=true", got, ok, err, otherUserID)
+	}
+	if got, ok, err := store.ConsumeEmailVerifyToken(ctx, verifyHash); err != nil || !ok || got != userID {
+		t.Fatalf("email verification token = user=%s ok=%t err=%v, want user=%s and ok=true", got, ok, err, userID)
+	}
+}
+
 func TestPgTokenStore_SetRefreshTokenWithLimitEvictsOldestAtomically(t *testing.T) {
 	db := tokenStoreDBForTest(t)
 	store := NewPgTokenStore(db)

@@ -48,14 +48,18 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string, ipAddress
 }
 
 // Logout is intentional, not reuse: a missing or already-gone token still
-// succeeds and leaves no tombstone.
+// succeeds and leaves no tombstone. Store failures are returned so callers do
+// not report a revocation that the server could not confirm.
 func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
 	if rawRefreshToken == "" {
 		return nil
 	}
 	hash := hashToken(rawRefreshToken)
 	userID, ok, err := s.refreshTokens.GetRefreshToken(ctx, hash)
-	if err != nil || !ok {
+	if err != nil {
+		return fmt.Errorf("read refresh token for logout: %w", err)
+	}
+	if !ok {
 		return nil
 	}
 	return s.refreshTokens.DeleteRefreshToken(ctx, hash, userID)

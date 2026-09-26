@@ -1,6 +1,6 @@
 # Auth / Security Checklist
 
-สถานะของระบบ auth ที่สร้างโดย `@nakedev/go-scaffold` ณ วันที่ **2026-09-26**
+สถานะของระบบ auth ที่สร้างโดย `@nakedev/go-scaffold` ณ วันที่ **2026-09-27**
 
 เอกสารนี้เป็น checklist สำหรับตรวจ generated project และ deployment จริง ไม่ใช่ใบรับรอง ASVS และไม่ควรใช้คำว่า “ผ่าน ASVS” จากการที่ source code หรือ test ผ่านเพียงอย่างเดียว
 
@@ -53,7 +53,8 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] CLI ตรวจ flag/profile ที่ไม่สอดคล้องกันและตรวจ profile ใน `go-scaffold check`
 - [~] profile เป็น **generated security baseline** ไม่ใช่ certification claim
 - [ ] ยังต้องกำหนดใน generated project ว่า profile ถูกบันทึกเป็น policy artifact ที่ทีม deploy/review ต้อง sign-off อย่างไร
-- [ ] ยังต้องมี acceptance test ที่ตรวจว่าแต่ละ profile สร้าง behavior ที่ product ตั้งใจจริงใน generated application
+- [x] generated profile มี unit test สำหรับ flags และ production guards (`security_profile_test.go`) รวมถึง CLI integration test สำหรับ L1/L2/L3/config validation
+- [~] ยังต้องทำ end-to-end acceptance test ของ product flow ทุก login/provider/recovery path ตาม policy ที่ deployจริง
 
 หลักฐานใน repository: `src/prompts/auth-wizard.ts`, `src/utils/auth-patcher.ts`, `templates/add/auth/internal/app/user/application/security_profile.go.hbs`, `templates/add/auth/docs/asvs-auth.md.hbs`
 
@@ -113,6 +114,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] reset token และ email-verification token เก็บเฉพาะ hash, เป็น one-time และมี TTL
 - [x] reset password consume token กับ update credential ใน transaction เดียว
 - [x] reset password revoke refresh sessions ทั้งหมด และ access-token rejection ขึ้นกับ session validator ที่ composition root ต้อง wire ให้ครบ
+- [x] password-reset request ใหม่ invalidate token เก่าของ user แบบ transaction + user-row lock; compensation จะ restore token เดิมเฉพาะเมื่อยังไม่มี token ใหม่ (`ReplacePasswordResetToken` / `RestorePasswordResetTokenIfAbsent`)
 - [x] forgot-password, reset-password, verify-email และ resend-verification มี rate-limit ตาม route
 - [~] registration ออก session ได้ก่อน email verification; product ต้องตัดสินใจว่าจะอนุญาต unverified session หรือบังคับ verify ก่อนใช้บาง capability
 - [~] email delivery เป็น best-effort ใน generated flow; ต้องมี retry/outbox/alert หาก email เป็น security-critical control
@@ -269,13 +271,13 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 ## 9. สถานะ verification ของ scaffold
 
-การตรวจล่าสุดของชุด auth หลัง hardening รอบนี้:
+การตรวจล่าสุดของชุด auth หลัง hardening รอบนี้ (2026-09-27):
 
-- `[x]` deterministic verification ผ่าน: build, unit 32/32, integration 107/107 และ targeted auth/provider/store integration 25/25; smoke 57/57 เคยผ่านก่อน lifecycle รอบล่าสุด
-- `[~]` smoke รอบล่าสุดหลัง account lifecycle เปลี่ยนยังไม่ได้ exercise auth/DB/RBAC เพราะ Docker daemon ไม่พร้อม (`Cannot connect to the Docker daemon`); จึงยังไม่ถือเป็น green ล่าสุด
-- `[~]` `pnpm run verify` รอบล่าสุดติด network timeout จาก `proxy.golang.org` ตอน generated smoke ดาวน์โหลด test-only modules; ไม่ใช่ test assertion หรือ generated compile failure
+- `[x]` deterministic verification ผ่าน: build, unit 32/32 และ integration 110/110
+- `[x]` generated Postgres auth project ผ่าน `gofmt` และ package tests สำหรับ application/Postgres adapters; generated Redis path compile/test ผ่านใน auth-store integration
+- `[~]` smoke รอบล่าสุดผ่าน 39 checks แต่ skip 18 checks เพราะ Docker/PostgreSQL/migrate ไม่พร้อม; จึงยังไม่ถือว่าเป็น full green
+- `[~]` live PostgreSQL concurrency/rollback และ live Redis adapter ยังไม่ได้ exercise ด้วย `TEST_DB_DSN` / `TEST_REDIS_URL`
 - `[x]` `git diff --check` ผ่าน
-- `[~]` Redis adapter live integration ไม่ได้ถูก exercise เมื่อไม่มี `TEST_REDIS_URL`; generated test compile และ skip ตาม environment
 - `[?]` ไม่ได้แปลว่า production deployment ผ่าน เพราะ verify ไม่ได้ตรวจ TLS, proxy, secret manager, SMTP, provider และ monitoring จริง
 
 คำสั่งที่ควรใช้กับ generated project:
@@ -297,6 +299,7 @@ go vet ./...
 - [~] กำหนด generated disable + session termination behavior; hard-delete/retention/anonymization policy ยังต้องกำหนดใน generated application
 - [x] กำหนด generated inactivity/absolute timeout policy พร้อม cap และ regression tests; deployment-specific values/evidence ยังเหลือ
 - [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง
+- [x] เพิ่ม single-active password-reset-token policy พร้อม atomic replacement และ race-safe compensation ใน generated auth
 - [x] บังคับ recent-auth ก่อน session list/revoke และเพิ่ม admin session termination ภายใต้ RBAC
 - [~] baseline security headers และ key separation ทำแล้ว; ยังต้องเติม trusted-proxy test และ key rotation workflow
 - [~] มี generated handler tests และ Playwright browser harness สำหรับ CORS, CSRF origin, cookie flags และ no-store แล้ว; ยังต้องรันใน frontend/proxy topology จริง

@@ -497,9 +497,7 @@ async function runAddAuth(
       lockout === "progressive"
         ? "failed logins: 3 free attempts, then a doubling wait up to 15 minutes"
         : "failed logins: locked for 5 minutes after 10 attempts, count cleared by 15 quiet minutes",
-      config.features.worker
-        ? "verification/reset mail: queued through the worker already installed"
-        : pc.yellow("verification/reset mail: sent inline over SMTP (no worker yet) — /auth/register and /auth/forgot-password block until it's sent"),
+      "verification/reset mail: sent inline over SMTP even when a worker exists — bearer links are not persisted in queue jobs; /auth/register and /auth/forgot-password block until it's sent",
     ],
     opts
   );
@@ -613,7 +611,7 @@ async function resolveQueueBackend(opts: { queue?: string; defaults?: boolean })
 add
   .command("auth")
   .description(
-    "add email/password auth: JWT access tokens, refresh rotation, device-session listing/revocation, register/login/refresh/logout/me (no prerequisites — without `add worker` the verification/reset mail is sent inline)"
+    "add email/password auth: JWT access tokens, refresh rotation, device-session listing/revocation, register/login/refresh/logout/me (no prerequisites — verification/reset mail stays inline so bearer links are never persisted in queue jobs)"
   )
   .option(
     "--store <store>",

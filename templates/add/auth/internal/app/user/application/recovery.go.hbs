@@ -54,6 +54,9 @@ func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword str
 		if err := r.repo.UpdateIdentity(txctx, identity); err != nil {
 			return fmt.Errorf("update password: %w", err)
 		}
+		if err := r.tokens.RevokePasswordResetTokens(txctx, id); err != nil {
+			return fmt.Errorf("revoke outstanding password reset tokens: %w", err)
+		}
 		userID = id
 		return nil
 	})

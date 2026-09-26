@@ -175,7 +175,7 @@ export function patchUserErrorsForRbac(errorsGoPath: string): void {
 }
 
 export function assertRbacPatchable(mainGoPath: string, goModule: string, store: AuthStore, worker: boolean): void {
-  const wiring = { goModule, queueBackend: "river" as const, store, worker };
+  const wiring = { goModule, store };
   const content = fs.readFileSync(mainGoPath, "utf8");
   const expected = authHandlerLineFor(wiring);
   if (content.includes(expected)) return;
@@ -217,7 +217,7 @@ export function patchMainGoForRbac(mainGoPath: string, goModule: string, store: 
     }
   }
 
-  const wiring = { goModule, queueBackend: "river" as const, store, worker };
+  const wiring = { goModule, store };
   const authRouteLine = authHandlerLineFor(wiring);
   const roleCompositionLine = "roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.AuthzCacheTTL, sessionValidator)";
   const sessionValidatorLine = authSessionValidatorLine(wiring);

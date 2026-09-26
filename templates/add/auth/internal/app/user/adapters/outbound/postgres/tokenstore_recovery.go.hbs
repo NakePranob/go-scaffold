@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -68,8 +69,65 @@ func (s *recoveryTokenStore) SetPasswordResetToken(ctx context.Context, tokenHas
 	return s.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
 }
 
+// ReplacePasswordResetToken makes the newest recovery request the only
+// outstanding password-reset link for the account. The user-row lock
+// serializes concurrent requests for the same account; the delete and insert
+// then commit together so a failed insert cannot leave the account without
+// its previous working link.
+func (s *recoveryTokenStore) ReplacePasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.withTransaction(ctx, func(txctx context.Context) error {
+		db := tx.From(txctx, s.db).WithContext(txctx)
+		var user User
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		if err := s.RevokePasswordResetTokens(txctx, userID); err != nil {
+			return err
+		}
+		return s.put(txctx, tokenHash, kindPasswordSet, userID, ttl)
+	})
+}
+
+// RestorePasswordResetTokenIfAbsent compensates for a cross-store session
+// revoke failure without reviving an older link after a newer request won the
+// user-row lock. It returns false when a live replacement already exists.
+func (s *recoveryTokenStore) RestorePasswordResetTokenIfAbsent(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) (bool, error) {
+	restored := false
+	err := s.withTransaction(ctx, func(txctx context.Context) error {
+		db := tx.From(txctx, s.db).WithContext(txctx)
+		var user User
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		var count int64
+		if err := db.Model(&AuthToken{}).
+			Where("user_id = ? AND kind = ? AND expires_at > now()", authTokenUserID(userID), kindPasswordSet).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := s.put(txctx, tokenHash, kindPasswordSet, userID, ttl); err != nil {
+			return err
+		}
+		restored = true
+		return nil
+	})
+	return restored, err
+}
+
 func (s *recoveryTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.consume(ctx, tokenHash, kindPasswordSet)
+}
+
+// RevokePasswordResetTokens invalidates every other outstanding reset link
+// after a successful password change. It runs on the caller's transaction so
+// a failed password update leaves all reset tokens retryable.
+func (s *recoveryTokenStore) RevokePasswordResetTokens(ctx context.Context, userID uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND kind = ?", authTokenUserID(userID), kindPasswordSet).
+		Delete(&AuthToken{}).Error
 }
 
 func (s *recoveryTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {

@@ -79,10 +79,10 @@ export async function addAuth(
   }
   const lockoutPolicy = validateLockoutPolicy(lockout);
 
-  // No longer a prerequisite. Without a worker the verification and reset mail
-  // goes out inline instead of through a queue — a real trade (those two
-  // endpoints then block on SMTP), but not one worth forcing a second binary
-  // and a queue-backend decision on someone who only wanted login.
+  // No longer a prerequisite. Verification and reset mail stays inline even
+  // when a worker exists because its bearer links must not be persisted in a
+  // generic queue payload. This keeps auth standalone without weakening the
+  // token confidentiality boundary.
   const worker = config.features.worker ?? false;
 
   const userDir = path.join(projectDir, "internal", "app", "user");
@@ -204,27 +204,11 @@ export async function addAuth(
     {}
   );
 
-  // Only meaningful when there is a worker; readConfig fills this from the
-  // adapter file on disk, so the only way it is still unknown is a project
-  // that has internal/platform/queue with neither adapter in it. Guessing
-  // here used to emit `queue.NewAsynqEnqueuer` into River-only projects —
-  // an undefined symbol that the parse-only gate below cannot see, so the
-  // command reported success over a project that no longer compiled.
-  const queueBackend = config.features.queue;
-  if (worker && !queueBackend) {
-    throw new Error(
-      "this project has internal/platform/queue but no river.go or asynq.go — can't tell which queue backend to wire auth's mailer onto.\n" +
-        "Restore the adapter file, or remove internal/platform/queue and re-run `go-scaffold add worker`."
-    );
-  }
-
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForAuth(path.join(projectDir, "cmd", "api", "wiring.go"), {
     goModule: config.goModule,
-    queueBackend: queueBackend ?? "river",
     store,
-    worker,
   });
   patchGoModRequires(path.join(projectDir, "go.mod"), [
     "github.com/golang-jwt/jwt/v5 v5.3.1",
@@ -273,9 +257,7 @@ export async function addAuth(
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, cmd/seed, and cmd/auth-cleanup"));
   console.log(`OWASP ASVS 5.0.0 L${asvsLevel} generated security profile recorded; review docs/security/asvs-auth.md before making any compliance claim`);
   console.log(
-    worker
-      ? "verification + password-reset mail goes through the queue"
-      : "verification + password-reset mail is sent inline (no worker) — run `add worker` later to move it onto the queue"
+    "verification + password-reset mail is sent inline even when a worker exists — bearer recovery tokens are never persisted in queue jobs"
   );
   console.log(
     store === "postgres"
@@ -451,7 +433,7 @@ function patchEnvExampleForSMTP(envExamplePath: string): void {
   fs.writeFileSync(
     envExamplePath,
     content.replace(/\n?$/, "\n") +
-      "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
+      "\n# leave SMTP_HOST unset to log email metadata instead of sending it (dev default)\n" +
       "SMTP_HOST=\n" +
       "SMTP_PORT=587\n" +
       "SMTP_USERNAME=\n" +

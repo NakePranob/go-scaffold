@@ -13,9 +13,6 @@ import (
 	"{{goModule}}/internal/app/user/ports"
 	googleprovider "{{goModule}}/internal/platform/authprovider/google"
 	"{{goModule}}/internal/platform/mail"
-{{#if worker}}
-	"{{goModule}}/internal/platform/queue"
-{{/if}}
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/internal/shared/middleware"
 
@@ -37,9 +34,6 @@ func NewHandlerFromDB(
 {{#if redis}}
 	rdb *redis.Client,
 {{/if}}
-{{#if worker}}
-	q queue.Enqueuer,
-{{/if}}
 	roleChecker RoleChecker,
 	authz Authorizer,
 ) *httpadapter.Handler {
@@ -49,11 +43,10 @@ func NewHandlerFromDB(
 	tokens := userpostgres.NewPgTokenStore(db)
 {{/if}}
 
-{{#if worker}}
-	mailer := mail.NewAsyncClient(q)
-{{else}}
+	// Recovery and verification messages contain bearer tokens. Keep auth mail
+	// out of the generic job queue so queue rows/payloads never persist a raw
+	// reset or verification link. The worker remains available for other jobs.
 	mailer := mail.NewSyncClient(mail.Open(cfg))
-{{/if}}
 
 	providers := make([]application.LoginProvider, 0, 1)
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleOAuthRedirectURI != "" {

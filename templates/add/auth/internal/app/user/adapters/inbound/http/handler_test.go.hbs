@@ -34,6 +34,7 @@ const handlerOAuthVerifier = "client-code-verifier-0123456789ABCDEFGHIJKLMNOPQRS
 
 type stubService struct {
 	application.ServicePort
+	logoutErr error
 }
 
 func (stubService) BeginLogin(_ context.Context, provider string, in application.LoginStartInput) (*application.Authorization, error) {
@@ -65,7 +66,7 @@ func (stubService) ExchangeLogin(_ context.Context, provider string, in applicat
 	}), nil
 }
 
-func (stubService) Logout(context.Context, string) error { return nil }
+func (s stubService) Logout(context.Context, string) error { return s.logoutErr }
 
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
@@ -335,6 +336,26 @@ func TestHandler_SetRefreshCookie_CrossSiteUsesNoneAndSecure(t *testing.T) {
 	cookies := response.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != h.refreshCookieName() || cookies[0].SameSite != http.SameSiteNoneMode || !cookies[0].Secure || !cookies[0].HttpOnly {
 		t.Fatalf("expected a cross-site None + Secure HttpOnly refresh cookie, got %#v", cookies)
+	}
+}
+
+func TestHandler_LogoutStoreFailureDoesNotReturnSuccess(t *testing.T) {
+	h := NewHandler(stubService{logoutErr: errors.New("session store unavailable")}, "test-secret", time.Hour, true, "strict", allowAllLimiter{}, allowAllAuthorizer{})
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(middleware.Error(false))
+	h.Register(router)
+
+	request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	request.AddCookie(&http.Cookie{Name: h.refreshCookieName(), Value: "refresh-token"})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("logout store failure status = %d, want 500; body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Header().Get("Set-Cookie"), "Max-Age=0") {
+		t.Fatalf("logout must clear the browser cookie even when revocation fails: %q", response.Header().Get("Set-Cookie"))
 	}
 }
 

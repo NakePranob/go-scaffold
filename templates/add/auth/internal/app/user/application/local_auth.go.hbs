@@ -67,13 +67,14 @@ func (s *Service) attemptFingerprint(password string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// throttled treats a counter read failure as not-throttled: this is a brake,
-// and it should not be able to lock everybody out on its own.
+// throttled fails closed when the counter cannot be read. A throttle store
+// outage must not silently turn a protected login endpoint into an unlimited
+// password-guessing oracle.
 func (s *Service) throttled(ctx context.Context, key string) bool {
 	until, err := s.repo.LoginLockedUntil(ctx, key)
 	if err != nil {
 		slog.Error("read login throttle", "error", err)
-		return false
+		return true
 	}
 	return !until.IsZero() && s.clock().Before(until)
 }
@@ -118,6 +119,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error)
 	fail := func() (*AuthResult, error) {
 		if err := s.recordFailure(ctx, key, attempt); err != nil {
 			slog.Error("record login failure", "error", err)
+			return nil, errTooManyAttempts()
 		}
 		return nil, errInvalidCredentials()
 	}

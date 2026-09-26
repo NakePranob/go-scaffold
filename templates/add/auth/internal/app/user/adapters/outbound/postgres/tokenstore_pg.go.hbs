@@ -324,8 +324,20 @@ func (s *PgTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash stri
 	return s.recovery.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
 }
 
+func (s *PgTokenStore) ReplacePasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.ReplacePasswordResetToken(ctx, tokenHash, userID, ttl)
+}
+
+func (s *PgTokenStore) RestorePasswordResetTokenIfAbsent(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) (bool, error) {
+	return s.recovery.RestorePasswordResetTokenIfAbsent(ctx, tokenHash, userID, ttl)
+}
+
 func (s *PgTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.recovery.consume(ctx, tokenHash, kindPasswordSet)
+}
+
+func (s *PgTokenStore) RevokePasswordResetTokens(ctx context.Context, userID uuid.UUID) error {
+	return s.recovery.RevokePasswordResetTokens(ctx, userID)
 }
 
 func (s *PgTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {

@@ -374,10 +374,22 @@ func (s *RedisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash s
 	return s.recovery.SetPasswordResetToken(ctx, tokenHash, userID, ttl)
 }
 
+func (s *RedisTokenStore) ReplacePasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.ReplacePasswordResetToken(ctx, tokenHash, userID, ttl)
+}
+
+func (s *RedisTokenStore) RestorePasswordResetTokenIfAbsent(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) (bool, error) {
+	return s.recovery.RestorePasswordResetTokenIfAbsent(ctx, tokenHash, userID, ttl)
+}
+
 // ConsumePasswordResetToken is one-time-use by construction: the SQL DELETE
 // runs inside the same transaction as the user update.
 func (s *RedisTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.recovery.ConsumePasswordResetToken(ctx, tokenHash)
+}
+
+func (s *RedisTokenStore) RevokePasswordResetTokens(ctx context.Context, userID uuid.UUID) error {
+	return s.recovery.RevokePasswordResetTokens(ctx, userID)
 }
 
 func (s *RedisTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
