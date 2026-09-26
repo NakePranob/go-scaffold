@@ -81,6 +81,39 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   fs.writeFileSync(mainGoPath, content);
 }
 
+// Worker processes need their own tracer provider: the global provider in
+// cmd/api does not cross a process boundary. Patch both installation orders.
+export function patchWorkerGoForObservability(workerGoPath: string, goModule: string, projectName: string): void {
+  let content = fs.readFileSync(workerGoPath, "utf8");
+  const telemetryImport = `"${goModule}/internal/platform/telemetry"`;
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, telemetryImport, telemetryImport);
+
+  if (!content.includes("shutdownTelemetry, err := telemetry.Init(")) {
+    const loggerAnchor = "slog.SetDefault(logger)";
+    if (!content.includes(loggerAnchor)) {
+      throw new Error("cmd/worker/main.go has no logger setup anchor — initialize telemetry.Init before opening the queue by hand");
+    }
+    const initBlock = [
+      `shutdownTelemetry, err := telemetry.Init(context.Background(), "${projectName}-worker", cfg.OTELExporterEndpoint)`,
+      "if err != nil {",
+      '\tlogger.Error("init telemetry", "error", err)',
+      "\tos.Exit(1)",
+      "}",
+      "defer func() { _ = shutdownTelemetry(context.Background()) }()",
+    ].join("\n");
+    content = content.replace(loggerAnchor, `${loggerAnchor}\n\n\t${initBlock}`);
+  }
+
+  const mailHandler = "mail.Handle(mail.Open(cfg))";
+  if (!content.includes("telemetry.TraceJob(mail.KindSendEmail,")) {
+    if (!content.includes(mailHandler)) {
+      throw new Error("cmd/worker/main.go has no generated mail handler — wrap its job handlers in telemetry.TraceJob by hand");
+    }
+    content = content.replace(mailHandler, `telemetry.TraceJob(mail.KindSendEmail, ${mailHandler})`);
+  }
+  fs.writeFileSync(workerGoPath, content);
+}
+
 // patchDatabaseGoForObservability wires the GORM OpenTelemetry plugin into
 // database.Open, so every query gets a span alongside the HTTP request it
 // came from.

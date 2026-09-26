@@ -10,6 +10,7 @@ import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
 import { upgradeMailerToQueue } from "../utils/auth-patcher";
 import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
+import { patchWorkerGoForObservability } from "../utils/observability-patcher";
 
 // addWorker scaffolds async job processing: the backend-neutral queue
 // contract (platform/queue), one adapter for the chosen backing store, SMTP
@@ -29,6 +30,9 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
 
   const riverQueue = backend === "river";
   await applyTemplateEntries(projectDir, workerFiles(backend), { goModule: config.goModule, riverQueue });
+  if (config.features.observability) {
+    patchWorkerGoForObservability(path.join(projectDir, "cmd", "worker", "main.go"), config.goModule, config.projectName);
+  }
 
   patchConfigForWorker(path.join(projectDir, "internal", "shared", "config", "config.go"), { redis: !riverQueue });
   if (!riverQueue) {
@@ -68,6 +72,9 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   writeConfig(projectDir, { ...config, features: { ...config.features, worker: true, queue: backend } });
 
   console.log(pc.green(`\nadded internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend})`));
+  if (config.features.observability) {
+    console.log("cmd/worker initializes its own tracer and traces generated mail jobs; it does not expose /metrics");
+  }
   if (riverQueue) {
     console.log("jobs are rows in your Postgres — no extra service, and an enqueue inside tx.Do commits with it");
     console.log(pc.dim("\nnext: make river-migrate (creates River's tables), then make worker"));

@@ -321,7 +321,8 @@ internal/app/order/
 └── composition.go       # feature-local object graph
 ~~~
 
-CRUD modules contain the starter list/get/create/update/delete methods. Lean
+CRUD modules contain starter list/get/create/update/delete routes; writes return
+501 until fields and business rules are implemented. Lean
 modules keep the endpoint surface small so it can be extended with
 generate method.
 
@@ -394,18 +395,20 @@ The generated route and code depend on the method type:
 
 | Input | Route shape | Result |
 |---|---|---|
-| get --get-mode all | GET /<plural>/<method> | Reuses the module's list query, so it inherits ListFilter, ?q= and the total |
+| get --get-mode all | GET /<plural>/<method> | Safe 501 stub until its own filter and query are implemented |
 | get --get-mode one --field <field> | GET /<plural>/<field>/:<field> | Adds a FindBy<Field> query and a column/index migration |
-| post | POST /<plural>/<method> | Adds a request body DTO and a TODO service method |
-| put / patch | <VERB> /<plural>/:id/<method> | Loads by ID and leaves the update behavior as a TODO |
-| delete | DELETE /<plural>/:id/<method> | Adds a delete endpoint stub |
+| post | POST /<plural>/<method> | Adds a request body DTO and safe 501 stub |
+| put / patch | <VERB> /<plural>/:id/<method> | Safe 501 stub without a repository write |
+| delete | DELETE /<plural>/:id/<method> | Safe 501 stub without a repository write |
 
-For CQRS modules, GET methods are added to application/queries.go; other
-methods are added to application/commands.go. Service modules use
-application/service.go. Existing method names are never overwritten.
+The interface and route registration stay in the module's existing files;
+each method's application, HTTP, and (for lookups) repository implementation
+lives in its own `method_<name>.go` file. CQRS routes target the existing
+query or command port, while service modules use the service port.
+Existing method names are never overwritten.
 
-The generated business logic is deliberately a compiling TODO and returns a
-clean not-implemented response until you implement it. If OpenAPI files were
+Except for GET-one lookups, generated business logic is a compiling TODO and
+returns a clean not-implemented response until you implement it. If OpenAPI files were
 enabled, a method document is also added under docs/<plural>/methods/ and
 linked from docs/openapi.yaml.
 

@@ -12,7 +12,7 @@ const forbiddenByLayer: Record<Exclude<Layer, "composition">, RegExp[]> = {
     /gorm\.io\//,
     /net\/http/,
     /internal\/(shared|platform)\//,
-    /redis/,
+    /^github\.com\/redis\/go-redis(?:\/|$)/,
   ],
   application: [
     /github\.com\/gin-gonic\/gin/,
@@ -20,7 +20,7 @@ const forbiddenByLayer: Record<Exclude<Layer, "composition">, RegExp[]> = {
     /database\/sql/,
     /internal\/platform\//,
     /internal\/shared\/(apperror|httpx|middleware|tx|dberr)\//,
-    /redis/,
+    /^github\.com\/redis\/go-redis(?:\/|$)/,
   ],
   ports: [
     /github\.com\/gin-gonic\/gin/,
@@ -28,7 +28,7 @@ const forbiddenByLayer: Record<Exclude<Layer, "composition">, RegExp[]> = {
     /database\/sql/,
     /internal\/platform\//,
     /internal\/shared\/(apperror|httpx|middleware|tx|dberr)\//,
-    /redis/,
+    /^github\.com\/redis\/go-redis(?:\/|$)/,
   ],
   inbound: [/gorm\.io\//, /internal\/platform\//],
   outbound: [/github\.com\/gin-gonic\/gin/, /internal\/shared\/httpx\//, /internal\/shared\/middleware\//],

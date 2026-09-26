@@ -6,7 +6,6 @@ import (
 
 	"{{goModule}}/internal/app/{{modulePath}}/domain"
 	"{{goModule}}/internal/app/{{modulePath}}/ports"
-	"{{goModule}}/internal/shared/id"
 
 	"github.com/google/uuid"
 )
@@ -29,13 +28,10 @@ func NewService(repo ports.Repository) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (*domain.{{pascalName}}, error) {
-	// TODO: map in to real domain fields and enforce invariants.
+	// TODO: map input, enforce invariants, then call s.repo.Create.
+	_ = ctx
 	_ = in
-	m := &domain.{{pascalName}}{ID: id.New(), Version: 1}
-	if err := s.repo.Create(ctx, m); err != nil {
-		return nil, err
-	}
-	return m, nil
+	return nil, domain.ErrNotImplemented
 }
 
 func (s *Service) List(ctx context.Context, filter ports.ListFilter) ([]domain.{{pascalName}}, int64, error) {
@@ -47,23 +43,18 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (*domain.{{pascalName}}
 }
 
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (*domain.{{pascalName}}, error) {
-	m, err := s.repo.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	// TODO: map in to real domain fields before saving.
-	m.Version = in.Version
-	if err := s.repo.Update(ctx, m); err != nil {
-		return nil, err
-	}
-	return m, nil
+	// TODO: load, validate the expected version, map fields, then persist.
+	_ = ctx
+	_ = id
+	_ = in
+	return nil, domain.ErrNotImplemented
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	if err := s.repo.Delete(ctx, id); err != nil {
-		return err
-	}
-	return nil
+	// TODO: enforce deletion rules before calling s.repo.Delete.
+	_ = ctx
+	_ = id
+	return domain.ErrNotImplemented
 }
 
 // IsNotFound is useful to non-HTTP callers without exposing persistence

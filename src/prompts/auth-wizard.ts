@@ -23,15 +23,15 @@ export async function promptAsvsLevel(): Promise<AsvsLevel> {
   });
 }
 
-// The one decision `add auth` cannot make for you: where refresh tokens and
-// rate-limit counters live. Recovery tokens always use the durable Postgres
+// The one decision `add auth` cannot make for you: the refresh-token store
+// and whether rate-limit counters are process-local or shared. Recovery tokens always use the durable Postgres
 // table so consumption can share a transaction with the user update.
 //
 // Mirrors promptQueueBackend: the choice exists as `--store` for scripting,
 // but nobody should have to know the flag name to discover the option.
 export async function promptAuthStore(): Promise<AuthStore> {
   return select<AuthStore>({
-    message: "Where should refresh tokens and rate-limit counters be stored?",
+    message: "Where should refresh tokens live, and should rate limits be shared across replicas?",
     default: "postgres",
     choices: [
       {

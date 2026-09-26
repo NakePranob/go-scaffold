@@ -93,6 +93,26 @@ test("a fresh project's migrate-up is a no-op, not an error", () => {
   }
 });
 
+test("migrate-up refuses a generated comment-only SQL pair", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-migrate-todo-"));
+  try {
+    runCLI(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    runCLI(project, "generate", "migration", "add_status");
+    assert.match(readFileSync(path.join(project, ".github", "workflows", "ci.yml"), "utf8"), /run: make migrations-ready/);
+    assert.throws(
+      () => execFileSync("make", ["migrate-up"], {
+        cwd: project,
+        encoding: "utf8",
+        env: { ...process.env, DB_DSN: "postgres://nobody@127.0.0.1:1/none?sslmode=disable" },
+      }),
+      /still contains generated TODO SQL/,
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 // The wiring a project generated before the AutoMigrate bootstrap was removed
 // still carries the schema and model markers, and its tables are still created
 // by GORM. A new module has to keep landing in that list, or upgrading the CLI

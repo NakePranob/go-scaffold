@@ -552,9 +552,9 @@ async function runAddObservability(opts: AddOpts): Promise<void> {
   await confirmAdd(
     [
       "add Prometheus /metrics + OpenTelemetry tracing",
-      "patch cmd/api/wiring.go and internal/platform/database to wire it in — cmd/api only",
+      "patch cmd/api/wiring.go and internal/platform/database; trace worker jobs when a worker is installed",
       ...(config.features.worker
-        ? [pc.yellow("cmd/worker is not instrumented: no tracer provider there, so its spans are dropped and it serves no /metrics")]
+        ? ["cmd/worker gets its own tracer provider; it does not expose /metrics"]
         : []),
     ],
     opts

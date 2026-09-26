@@ -314,17 +314,18 @@ test("generate method remains usable after auth splits its service and handler f
   execFileSync("go", ["test", "./..."], { cwd: project, stdio: "ignore" });
 
   const handler = read(project, "internal", "app", "user", "adapters", "inbound", "http", "handler.go");
-  const service = read(project, "internal", "app", "user", "application", "service.go");
-  const repository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "repository.go");
+  const listMethod = read(project, "internal", "app", "user", "application", "method_lookup_by_email.go");
+  const lookupMethod = read(project, "internal", "app", "user", "application", "method_find_by_name.go");
+  const repository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "method_find_by_name.go");
   const serviceTest = read(project, "internal", "app", "user", "application", "service_test.go");
 
   assert.match(listOutput, /route: GET \/users\/lookup-by-email/);
-  assert.match(listOutput, /next: fill in the TODO in application\/service\.go/);
+  assert.match(listOutput, /next: fill in the TODO in application\/method_lookup_by_email\.go/);
   assert.match(lookupOutput, /route: GET \/users\/name\/\{name\}/);
   assert.match(handler, /usersGroup\.GET\("\/lookup-by-email", h\.lookupByEmail\)/);
   assert.match(handler, /usersGroup\.GET\("\/name\/:name", h\.findByName\)/);
-  assert.match(service, /func \(s \*Service\) LookupByEmail\(/);
-  assert.match(service, /func \(s \*Service\) FindByName\(/);
+  assert.match(listMethod, /func \(s \*Service\) LookupByEmail\(/);
+  assert.match(lookupMethod, /func \(s \*Service\) FindByName\(/);
   assert.match(repository, /func \(r \*Repository\) FindByName\(/);
   assert.match(repository, /r\.toDomainUser\(ctx, &row\)/);
   assert.match(serviceTest, /func \(f \*fakeRepo\) FindByName\(/);

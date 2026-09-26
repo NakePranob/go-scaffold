@@ -30,8 +30,8 @@ export async function generateMigration(rawName: string | undefined, projectDir:
   console.log(pc.green(`\ngenerated migrations/${version}_${name}.{up,down}.sql`));
   console.log(
     pc.dim(
-      `\nnext: write the SQL, then apply it with \`make migrate-up\` before production ` +
-        `(APP_ENV=development only enables the convenience bootstrap)`
+      `\nnext: replace both TODOs with real SQL before \`make migrate-up\`; ` +
+        `there is no development schema bootstrap`
     )
   );
 }

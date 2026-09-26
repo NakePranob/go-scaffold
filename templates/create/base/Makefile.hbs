@@ -37,7 +37,7 @@ POSTGRES_CONTAINER ?=
 # make comment; in a recipe line it is passed to the shell untouched.)
 ENV_FILE ?= .env
 
-.PHONY: tools run build test fmt vet lint tidy db-create db-drop migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
+.PHONY: tools run build test fmt vet lint tidy db-create db-drop migrations-ready migrate-up migrate-up-test migrate-down migrate-verify{{#if openapiDocs}} openapi-bundle{{/if}}{{#if docker}} docker-up docker-down{{/if}}
 
 # A command started here acts on whatever database DB_DSN names. Pointed at a
 # deployed one — which .env is a single edit away from — a laptop stops being a
@@ -60,6 +60,19 @@ case "$$host" in \
        exit 1; }; \
      echo "warning: running against $$host — this machine is now part of that system." ;; \
 esac
+endef
+
+# A comment-only migration is still marked applied by migrate. Refuse the
+# explicit TODO files emitted by `generate migration` until both directions
+# are replaced, so an accidental migrate-up cannot silently consume them.
+define require_completed_migrations
+@for migration in migrations/*.up.sql migrations/*.down.sql; do \
+  [ -f "$$migration" ] || continue; \
+  if grep -Eq '^-- TODO: write the (up|down) migration' "$$migration"; then \
+    echo "$$migration still contains generated TODO SQL — complete it before migrating" >&2; \
+    exit 1; \
+  fi; \
+done
 endef
 
 # migrate-up first, because cmd/api refuses to boot against a database that is
@@ -148,7 +161,10 @@ db-drop:
 # and `migrate up` treats an empty directory as an error rather than as nothing
 # to do. `run` depends on this target, so without the guard the very first
 # `make run` of a fresh scaffold fails on a database that is already correct.
-migrate-up:
+migrations-ready:
+	$(require_completed_migrations)
+
+migrate-up: migrations-ready
 	$(refuse_remote_db)
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
 	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
@@ -157,7 +173,7 @@ migrate-up:
 # same migration files, applied to TEST_DB_DSN instead of DB_DSN — run this
 # once after `make db-create DB_NAME=..._test` so repository_test.go files
 # see real tables instead of skipping (or failing, if REQUIRE_TEST_DB=true).
-migrate-up-test:
+migrate-up-test: migrations-ready
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
 	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
 	migrate -path migrations -database "$$TEST_DB_DSN" up
@@ -174,7 +190,7 @@ migrate-down:
 # to follow, because the .env sourced on the line below overwrites whatever
 # DB_DSN the caller set on the way in. The test database is the one that is
 # meant to be destroyed, so it is the one named here.
-migrate-verify:
+migrate-verify: migrations-ready
 	@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
 	if ! ls migrations/*.up.sql >/dev/null 2>&1; then echo "no migrations yet — nothing to apply"; exit 0; fi; \
 	: "$${TEST_DB_DSN:?TEST_DB_DSN is required — migrate-verify drops every table and will not guess a database}"; \

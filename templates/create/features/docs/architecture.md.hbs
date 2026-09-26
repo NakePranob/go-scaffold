@@ -174,13 +174,14 @@ comment-generated (swaggo) if hand-updates start drifting.
 {{#if observability}}
 ## 10. Observability
 
-**Decision:** Prometheus metrics (`GET /metrics`, request count + latency
-per route) always-on when this feature is enabled; OpenTelemetry tracing
+**Decision:** Prometheus request metrics are collected when this feature is
+enabled, but `GET /metrics` is registered only outside production; OpenTelemetry tracing
 (Gin + GORM) exports via OTLP/HTTP only when `OTEL_EXPORTER_OTLP_ENDPOINT`
 is set — empty means no exporter is created and no network calls are made.
-**Rationale:** Metrics have no external dependency to turn on (Prometheus
-scrapes the app, the app never dials out) so there's no reason to gate them
-further. Tracing needs a collector to be useful, so it stays off until one's
+**Rationale:** Collecting request metrics has no external dependency, but an
+unauthenticated scrape route must not be exposed in production by default.
+Register a protected scrape target deliberately when production needs one.
+Tracing needs a collector to be useful, so it stays off until one's
 actually configured, instead of trying to dial a collector that isn't there.
 This is not a one-way `create`-time door: `go-scaffold add observability`
 layers the same files onto a project that started without it, the way `add
@@ -193,14 +194,14 @@ newer Gin (→ HTTP/3/quic-go) and every DB driver they support tracing for
 (MySQL, ClickHouse, MongoDB), respectively, for a Postgres-only project that
 only wants request/query spans.
 
-**Scope: `cmd/api` only.** `cmd/worker` is not instrumented. The GORM plugin
-lives in `database.Open`, which the worker also calls, so it does raise spans —
-but `telemetry.Init` is the only thing that calls `otel.SetTracerProvider` and
-it runs in `cmd/api` alone, so those spans reach a no-op provider and are
-discarded. The worker serves no `/metrics` either. To change that, call
-`telemetry.Init` from `cmd/worker/main.go` — split it into `main`/`run` first,
-the way `cmd/api` is, or the `defer` that flushes the exporter on shutdown is
-skipped by the `os.Exit` calls already in there.
+{{#if worker}}`cmd/worker` initializes its own tracer provider and wraps the generated
+mail job in a span without recording its payload. River's GORM queries also
+use the database tracing plugin. The worker has no HTTP `/metrics` endpoint;
+only the API process collects and serves Prometheus request metrics. New job
+handlers should be wrapped in `telemetry.TraceJob` when registered.
+{{else}}If a worker is added later, its process initializes its own tracer provider
+and traces the generated mail job. It has no HTTP `/metrics` endpoint.
+{{/if}}
 
 {{/if}}
 ## Evolution Notes

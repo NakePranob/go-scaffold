@@ -158,13 +158,16 @@ These remain deliberate engineering work:
 - bug fixes, refactors, and changes to an existing method;
 - any work in a repository that lacks `go-scaffold.config.json`.
 
-Generated methods are explicit stubs. `generate method` GET-all reuses
-`FindAll`, so it answers the same rows as the module's own list until
-`ports.ListFilter` grows the fields that endpoint narrows by; POST and DELETE return an internal
-error until implemented; PUT/PATCH intentionally return `501 Not Implemented`
-and must not read or write a record before their behavior is designed. Treat
+Generated custom methods are explicit stubs. `generate method` GET-all,
+POST, PUT, PATCH, and DELETE return `501 Not Implemented` until their business
+rules are implemented; GET-one adds a real lookup and a migration for its
+column. A CRUD module's create/update/delete operations also return 501 until
+their fields and invariants are designed. Treat
 the generated OpenAPI TODO contract as incomplete, not as a promise that the
 endpoint is production-ready.
+Method implementations live in `method_<name>.go` beside their layer's
+existing interface or handler; do not accumulate unrelated use cases in the
+service, route-registration, or repository core files.
 
 ## Runtime and schema safety
 

@@ -1,4 +1,5 @@
 import fs from "fs-extra";
+import path from "path";
 import { ensureImport, hasMarker, insertBeforeMarker } from "./marker-patch";
 import { toCamelCase, toDbName, toPascalCase } from "./naming";
 import { GetMethodMode, MethodNaming, MethodType, ModuleNaming } from "../types";
@@ -114,11 +115,11 @@ function applicationMethod(naming: ModuleNaming, method: MethodNaming, opts: { t
   const target = receiver.startsWith("s ") ? "s" : "h";
   if (opts.type === "get" && opts.getMode === "all") {
     return [
-      `// TODO: narrow this list. It reuses FindAll, so today it answers the`,
-      `// same rows as the module's own list — give ports.ListFilter the fields`,
-      `// this endpoint filters by and read them in the repository.`,
+      `// TODO: define this endpoint's own filter and repository query before enabling it.`,
       `func (${receiver}) ${method.pascalName}(ctx context.Context, filter ports.ListFilter) ([]domain.${naming.pascalName}, int64, error) {`,
-      `\treturn ${target}.repo.FindAll(ctx, filter)`,
+      `\t_ = ctx`,
+      `\t_ = filter`,
+      `\treturn nil, 0, domain.ErrNotImplemented`,
       `}`,
       "",
     ].join("\n");
@@ -335,7 +336,21 @@ export function hexagonalMarkersPresent(paths: HexagonalMethodPatchPaths): boole
 
 const COMMAND_REPOSITORY_INTERFACE_MARKER = "// go-scaffold:command-repository-interface";
 
+export function methodFileName(method: MethodNaming): string {
+  return `method_${method.pathSegment.replace(/-/g, "_")}.go`;
+}
+
 export function assertHexagonalMethodAbsent(paths: HexagonalMethodPatchPaths, method: MethodNaming): void {
+  const filename = methodFileName(method);
+  if (fs.existsSync(path.join(path.dirname(paths.handlerPath), filename))) {
+    throw new Error(`handler method "${method.handlerName}" already exists — pick a different method name`);
+  }
+  if (fs.existsSync(path.join(path.dirname(paths.servicePath ?? paths.commandPath!), filename))) {
+    throw new Error(`application method "${method.pascalName}" already exists — pick a different method name`);
+  }
+  if (fs.existsSync(path.join(path.dirname(paths.repositoryAdapterPath), filename))) {
+    throw new Error(`repository method "${method.pascalName}" already exists — pick a different method name`);
+  }
   assertNotDuplicate(fs.readFileSync(paths.handlerPath, "utf8"), `func (h *Handler) ${method.handlerName}(`, `handler method "${method.handlerName}"`);
   const appFiles = [paths.servicePath, paths.commandPath, paths.queryPath].filter((file): file is string => Boolean(file));
   for (const file of appFiles) assertNotDuplicate(fs.readFileSync(file, "utf8"), `) ${method.pascalName}(`, `application method "${method.pascalName}"`);
@@ -356,15 +371,20 @@ export function patchHexagonalMethod(
   const cqrs = isCqrs(paths);
   const interfaceTarget = applicationInterfaceMarker(paths, opts.type);
   let interfaceFile = read(files, interfaceTarget.path);
+  if (opts.type !== "get" && opts.type !== "post") interfaceFile = addImport(interfaceFile, "github.com/google/uuid");
   interfaceFile = insert(interfaceFile, interfaceTarget.marker, methodSignature(naming, method, opts));
   write(files, interfaceTarget.path, interfaceFile);
 
   const target = serviceApplicationTarget(paths, opts.type);
-  let applicationFile = read(files, target.path);
-  applicationFile = addImport(applicationFile, "context");
-  if (opts.type !== "get" && opts.type !== "post") applicationFile = addImport(applicationFile, "github.com/google/uuid");
-  applicationFile = insert(applicationFile, target.marker, applicationMethod(naming, method, opts, target.receiver));
-  write(files, target.path, applicationFile);
+  const filename = methodFileName(method);
+  const applicationImports = [
+    '"context"',
+    `"${goModule}/internal/app/${naming.pkg}/domain"`,
+    ...(opts.type === "get" && opts.getMode === "all" ? [`"${goModule}/internal/app/${naming.pkg}/ports"`] : []),
+    ...(opts.type !== "get" && opts.type !== "post" ? ['"github.com/google/uuid"'] : []),
+  ];
+  write(files, path.join(path.dirname(target.path), filename),
+    `package application\n\nimport (\n${applicationImports.map((item) => `\t${item}`).join("\n")}\n)\n\n${applicationMethod(naming, method, opts, target.receiver)}`);
 
   let handler = read(files, paths.handlerPath);
   const handlerResult = handlerMethod(
@@ -382,9 +402,15 @@ export function patchHexagonalMethod(
     },
   );
   handler = insert(handler, HANDLER_ROUTES_MARKER, handlerResult.route);
-  handler = insert(handler, HANDLER_FUNCS_MARKER, handlerResult.body);
-  for (const need of handlerResult.imports) handler = addImport(handler, handlerImportPath(need, goModule, naming));
   write(files, paths.handlerPath, handler);
+  const appPkg = applicationAlias(handler, goModule, naming);
+  const handlerImports = [
+    '"github.com/gin-gonic/gin"',
+    ...handlerResult.imports.map((need) => `"${handlerImportPath(need, goModule, naming)}"`),
+    ...(handlerResult.body.includes(`${appPkg}.`) ? [`${appPkg === "application" ? "" : `${appPkg} `}"${goModule}/internal/app/${naming.pkg}/application"`] : []),
+  ];
+  write(files, path.join(path.dirname(paths.handlerPath), filename),
+    `package httpadapter\n\nimport (\n${handlerImports.map((item) => `\t${item}`).join("\n")}\n)\n\n${handlerResult.body}`);
 
   if (opts.type === "post") {
     let dto = read(files, paths.dtoPath);
@@ -422,7 +448,6 @@ export function patchHexagonalMethod(
     ports = insert(ports, repoInterfaceMarker, `FindBy${fieldPascal}(context.Context, string) (*domain.${naming.pascalName}, error)`);
     write(files, paths.portsPath, ports);
 
-    let adapter = read(files, paths.repositoryAdapterPath);
     const column = toDbName(opts.field!);
     const modelType = paths.repositoryModelType ?? `${naming.pascalName}Model`;
     const toDomain = paths.repositoryToDomain ?? "toDomain";
@@ -438,7 +463,7 @@ export function patchHexagonalMethod(
           `\treturn m, nil`,
         ]
       : [`\treturn ${toDomainCall}, nil`];
-    adapter = insert(adapter, REPOSITORY_METHODS_MARKER, [
+    const repositoryMethod = [
       `func (r *Repository) FindBy${fieldPascal}(ctx context.Context, ${fieldParam} string) (*domain.${naming.pascalName}, error) {`,
       `\tvar row ${modelType}`,
       `\tif err := tx.From(ctx, r.db).WithContext(ctx).First(&row, "${column} = ?", ${fieldParam}).Error; err != nil {`,
@@ -447,8 +472,9 @@ export function patchHexagonalMethod(
       ...mapping,
       `}`,
       "",
-    ].join("\n"));
-    write(files, paths.repositoryAdapterPath, adapter);
+    ].join("\n");
+    write(files, path.join(path.dirname(paths.repositoryAdapterPath), filename),
+      `package postgres\n\nimport (\n\t"context"\n\t"${goModule}/internal/app/${naming.pkg}/domain"\n\t"${goModule}/internal/shared/tx"\n)\n\n${repositoryMethod}`);
 
     let test = read(files, paths.serviceTestPath);
     const stubField = `findBy${fieldPascal}Fn`;

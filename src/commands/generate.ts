@@ -192,6 +192,7 @@ export async function generateModule(
   console.log(`recorded module defaults: ${opts.full ? "crud" : "minimal"} + ${opts.cqrs ? "cqrs" : "service"}`);
   if (opts.full) {
     console.log(`registered route ${routePath} in cmd/api/wiring.go`);
+    console.log("create/update/delete return 501 until their application use cases are implemented");
   } else {
     console.log(
       `registered empty route group ${routePath} in cmd/api/wiring.go — ` +
@@ -219,7 +220,7 @@ export async function generateModule(
   console.log(
     pc.dim(
       `\nnext: add real fields to domain/entity.go, application/dto.go, adapters/inbound/http/dto.go, and the outbound persistence model, then run \`go build ./...\` and apply the migration ` +
-        `(use the development bootstrap locally, or \`migrate -path migrations -database "$DB_DSN" up\` before production)`
+        `(use \`make migrate-up\` in every environment; there is no development schema bootstrap)`
     )
   );
 }

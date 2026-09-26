@@ -174,13 +174,17 @@ method:
 
 | Type | Shape | Generated behavior |
 |---|---|---|
-| get --get-mode all | GET /<plural>/<name> | Reuses FindAll (page + total, `?q=` parsed); add fields to ports.ListFilter |
+| get --get-mode all | GET /<plural>/<name> | Safe 501 until the endpoint's own filter and repository query are implemented |
 | get --get-mode one --field <f> | GET /<plural>/<f>/:<f> | Adds a repository lookup and test seam |
-| post | POST /<plural>/<name> | Body DTO plus internal-error TODO |
+| post | POST /<plural>/<name> | Body DTO plus safe 501 stub |
 | put / patch | <VERB> /<plural>/:id/<name> | Safe 501 Not Implemented; no repository read/write |
-| delete | DELETE /<plural>/:id/<name> | Internal-error TODO until implemented |
+| delete | DELETE /<plural>/:id/<name> | Safe 501 stub until implemented |
 
-The 501 contract is intentional: a generated PUT/PATCH action must not
+Each generated use case has its own `method_<name>.go` in application and
+inbound HTTP; GET-one also gets a repository file. The existing service or
+command/query interfaces and route registration remain in their original files.
+
+The 501 contract is intentional: an unimplemented generated action must not
 pretend to update a record. Implement the use case, validation, authorization,
 repository operation, tests, and OpenAPI response together before changing
 that behavior. Replace all generated TODOs before treating an endpoint as
