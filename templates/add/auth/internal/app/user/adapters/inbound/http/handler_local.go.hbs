@@ -73,11 +73,11 @@ func (h *Handler) logout(c *gin.Context) {
 	if !h.requireBrowserOrigin(c) {
 		return
 	}
-	defer h.clearRefreshCookie(c)
 	raw, _ := h.refreshCookie(c)
 	if err := h.svc.Logout(c.Request.Context(), raw); err != nil {
 		c.Error(toHTTPError(err))
 		return
 	}
+	h.clearRefreshCookie(c)
 	c.Status(http.StatusNoContent)
 }

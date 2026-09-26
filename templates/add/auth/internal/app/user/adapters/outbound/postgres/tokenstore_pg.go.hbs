@@ -328,10 +328,6 @@ func (s *PgTokenStore) ReplacePasswordResetToken(ctx context.Context, tokenHash 
 	return s.recovery.ReplacePasswordResetToken(ctx, tokenHash, userID, ttl)
 }
 
-func (s *PgTokenStore) RestorePasswordResetTokenIfAbsent(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) (bool, error) {
-	return s.recovery.RestorePasswordResetTokenIfAbsent(ctx, tokenHash, userID, ttl)
-}
-
 func (s *PgTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.recovery.consume(ctx, tokenHash, kindPasswordSet)
 }

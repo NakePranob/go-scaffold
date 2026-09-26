@@ -118,7 +118,6 @@ type RecoveryTokenStore interface {
 	WithTransaction(context.Context, func(context.Context) error) error
 	ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error)
 	ReplacePasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error
-	RestorePasswordResetTokenIfAbsent(context.Context, string, uuid.UUID, time.Duration) (bool, error)
 	RevokePasswordResetTokens(context.Context, uuid.UUID) error
 	ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error)
 	SetPasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error

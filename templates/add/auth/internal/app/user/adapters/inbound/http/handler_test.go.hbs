@@ -354,8 +354,8 @@ func TestHandler_LogoutStoreFailureDoesNotReturnSuccess(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("logout store failure status = %d, want 500; body=%s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Header().Get("Set-Cookie"), "Max-Age=0") {
-		t.Fatalf("logout must clear the browser cookie even when revocation fails: %q", response.Header().Get("Set-Cookie"))
+	if strings.Contains(response.Header().Get("Set-Cookie"), "Max-Age=0") {
+		t.Fatalf("logout must keep the browser cookie so the caller can retry after revocation fails: %q", response.Header().Get("Set-Cookie"))
 	}
 }
 

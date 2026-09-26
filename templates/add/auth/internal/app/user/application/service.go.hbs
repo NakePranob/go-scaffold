@@ -78,7 +78,7 @@ func NewService(deps Dependencies, cfg AuthConfig) *Service {
 		mfa:               deps.MFA,
 		mailer:            deps.Mailer,
 		providers:         deps.Providers,
-		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, deps.Passwords, deps.PasswordPolicy),
+		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, deps.RefreshTokens, deps.Passwords, deps.PasswordPolicy),
 		config:            cfg,
 		roles:             deps.Roles,
 		now:               clock,

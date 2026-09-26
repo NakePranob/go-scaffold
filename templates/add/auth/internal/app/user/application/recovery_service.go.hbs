@@ -54,27 +54,18 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	return nil
 }
 
-// ResetPassword consumes a one-time token and updates the local identity in
-// one transaction, then revokes all sessions. If the cross-store revoke fails,
-// the token is restored only when no newer reset request has superseded it.
+// ResetPassword consumes a one-time token, updates the local identity, and
+// revokes all sessions before the durable transaction commits. A cross-store
+// revoke failure therefore rolls the password/token change back without
+// restoring a consumed bearer token.
 func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
 	tokenHash := hashToken(rawToken)
-	userID, err := s.recovery.ResetPassword(ctx, tokenHash, newPassword)
+	_, err := s.recovery.ResetPassword(ctx, tokenHash, newPassword)
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidToken) {
 			return errInvalidToken()
 		}
 		return fmt.Errorf("reset password: %w", err)
-	}
-	if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
-		restored, restoreErr := s.recoveryTokens.RestorePasswordResetTokenIfAbsent(ctx, tokenHash, userID, s.config.PasswordResetTTL)
-		if restoreErr != nil {
-			return fmt.Errorf("revoke sessions after password reset: %w; restore reset token for retry: %v", err, restoreErr)
-		}
-		if !restored {
-			return fmt.Errorf("revoke sessions after password reset: %w; reset token was superseded by a newer request", err)
-		}
-		return fmt.Errorf("revoke sessions after password reset (reset token restored for retry): %w", err)
 	}
 	return nil
 }

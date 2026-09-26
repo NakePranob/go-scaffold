@@ -12,14 +12,15 @@ import (
 )
 
 type Recovery struct {
-	repo   ports.UserRepository
-	tokens ports.RecoveryTokenStore
-	hasher PasswordHasher
-	policy ports.PasswordPolicy
+	repo          ports.UserRepository
+	tokens        ports.RecoveryTokenStore
+	refreshTokens ports.RefreshTokenStore
+	hasher        PasswordHasher
+	policy        ports.PasswordPolicy
 }
 
-func NewRecovery(repo ports.UserRepository, tokens ports.RecoveryTokenStore, hasher PasswordHasher, policy ports.PasswordPolicy) *Recovery {
-	return &Recovery{repo: repo, tokens: tokens, hasher: hasher, policy: policy}
+func NewRecovery(repo ports.UserRepository, tokens ports.RecoveryTokenStore, refreshTokens ports.RefreshTokenStore, hasher PasswordHasher, policy ports.PasswordPolicy) *Recovery {
+	return &Recovery{repo: repo, tokens: tokens, refreshTokens: refreshTokens, hasher: hasher, policy: policy}
 }
 
 // ResetPassword consumes the token and updates the local identity in one
@@ -57,7 +58,14 @@ func (r *Recovery) ResetPassword(ctx context.Context, tokenHash, newPassword str
 		if err := r.tokens.RevokePasswordResetTokens(txctx, id); err != nil {
 			return fmt.Errorf("revoke outstanding password reset tokens: %w", err)
 		}
-		userID = id
+		// Revoke sessions before the transaction commits. If the shared refresh
+		// store is unavailable, the password update and token consumption roll
+		// back together, so the reset link remains retryable without restoring a
+		// consumed bearer token.
+		if err := r.refreshTokens.RevokeAllRefreshTokens(txctx, id); err != nil {
+			return fmt.Errorf("revoke refresh sessions: %w", err)
+		}
+			userID = id
 		return nil
 	})
 	return userID, err

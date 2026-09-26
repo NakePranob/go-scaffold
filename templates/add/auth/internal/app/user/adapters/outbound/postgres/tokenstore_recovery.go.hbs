@@ -88,35 +88,6 @@ func (s *recoveryTokenStore) ReplacePasswordResetToken(ctx context.Context, toke
 	})
 }
 
-// RestorePasswordResetTokenIfAbsent compensates for a cross-store session
-// revoke failure without reviving an older link after a newer request won the
-// user-row lock. It returns false when a live replacement already exists.
-func (s *recoveryTokenStore) RestorePasswordResetTokenIfAbsent(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) (bool, error) {
-	restored := false
-	err := s.withTransaction(ctx, func(txctx context.Context) error {
-		db := tx.From(txctx, s.db).WithContext(txctx)
-		var user User
-		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).First(&user).Error; err != nil {
-			return err
-		}
-		var count int64
-		if err := db.Model(&AuthToken{}).
-			Where("user_id = ? AND kind = ? AND expires_at > now()", authTokenUserID(userID), kindPasswordSet).
-			Count(&count).Error; err != nil {
-			return err
-		}
-		if count > 0 {
-			return nil
-		}
-		if err := s.put(txctx, tokenHash, kindPasswordSet, userID, ttl); err != nil {
-			return err
-		}
-		restored = true
-		return nil
-	})
-	return restored, err
-}
-
 func (s *recoveryTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.consume(ctx, tokenHash, kindPasswordSet)
 }

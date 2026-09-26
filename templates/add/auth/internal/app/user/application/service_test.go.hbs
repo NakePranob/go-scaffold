@@ -38,7 +38,6 @@ type fakeTokenStore struct {
 	verify       map[string]uuid.UUID
 	revokeAllErr error
 	getRefreshErr error
-	revokeAllHook func(context.Context, uuid.UUID)
 }
 
 func newFakeTokenStore() *fakeTokenStore {
@@ -136,11 +135,7 @@ func (f *fakeTokenStore) RevokeAllRefreshTokens(_ context.Context, userID uuid.U
 	if f.revokeAllErr != nil {
 		err := f.revokeAllErr
 		f.revokeAllErr = nil
-		hook := f.revokeAllHook
 		f.mu.Unlock()
-		if hook != nil {
-			hook(context.Background(), userID)
-		}
 		return err
 	}
 	for h := range f.sessions[userID] {
@@ -289,17 +284,6 @@ func (f *fakeTokenStore) ReplacePasswordResetToken(_ context.Context, hash strin
 	}
 	f.reset[hash] = userID
 	return nil
-}
-func (f *fakeTokenStore) RestorePasswordResetTokenIfAbsent(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, existingUserID := range f.reset {
-		if existingUserID == userID {
-			return false, nil
-		}
-	}
-	f.reset[hash] = userID
-	return true, nil
 }
 func (f *fakeTokenStore) ConsumePasswordResetToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
 	f.mu.Lock()
@@ -1166,7 +1150,7 @@ func TestService_ForgotPassword_ReplacesOlderToken(t *testing.T) {
 	}
 }
 
-func TestService_ResetPassword_SessionRevokeFailureRestoresTokenForRetry(t *testing.T) {
+func TestService_ResetPassword_SessionRevokeFailureRollsBackForRetry(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 	passwordHash := "old-hash"
@@ -1186,49 +1170,13 @@ func TestService_ResetPassword_SessionRevokeFailureRestoresTokenForRetry(t *test
 		t.Fatalf("expected a 500 while the session store is unavailable, got %v", err)
 	}
 	if _, ok := tokens.reset[hashToken(raw)]; !ok {
-		t.Fatal("expected the reset token to be restored so the caller can retry")
+		t.Fatal("the reset transaction must leave the one-time token available for retry")
 	}
 	if err := svc.ResetPassword(ctx, raw, "new-password"); err != nil {
 		t.Fatalf("retry should complete the password reset and session revoke: %v", err)
 	}
 	if _, ok := tokens.reset[hashToken(raw)]; ok {
 		t.Fatal("expected the reset token to be consumed after the retry succeeds")
-	}
-}
-
-func TestService_ResetPassword_SessionRevokeFailureDoesNotRestoreSupersededToken(t *testing.T) {
-	ctx := context.Background()
-	userID := uuid.New()
-	passwordHash := "old-hash"
-	repo := &fakeRepo{
-		user:     &domain.User{ID: userID},
-		identity: &domain.Identity{ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &passwordHash},
-	}
-	tokens := newFakeTokenStore()
-	oldRaw, newerRaw := "reset-token-old", "reset-token-newer"
-	if err := tokens.SetPasswordResetToken(ctx, hashToken(oldRaw), userID, time.Hour); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	tokens.revokeAllErr = errors.New("redis unavailable")
-	tokens.revokeAllHook = func(hookCtx context.Context, hookUserID uuid.UUID) {
-		if err := tokens.SetPasswordResetToken(hookCtx, hashToken(newerRaw), hookUserID, time.Hour); err != nil {
-			t.Fatalf("seed newer token during revoke outage: %v", err)
-		}
-	}
-	svc := newTestService(repo, tokens)
-
-	if err := svc.ResetPassword(ctx, oldRaw, "new-password"); status(t, err) != http.StatusInternalServerError {
-		t.Fatalf("expected a 500 while the session store is unavailable, got %v", err)
-	}
-	if _, ok := tokens.reset[hashToken(oldRaw)]; ok {
-		t.Fatal("the consumed older token was restored over a newer reset request")
-	}
-	if _, ok := tokens.reset[hashToken(newerRaw)]; !ok {
-		t.Fatal("the newer reset token was lost while compensating for the session-store failure")
-	}
-
-	if err := svc.ResetPassword(ctx, newerRaw, "another-password"); err != nil {
-		t.Fatalf("newer reset token should remain usable: %v", err)
 	}
 }
 

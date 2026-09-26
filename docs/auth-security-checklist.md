@@ -114,7 +114,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] reset token และ email-verification token เก็บเฉพาะ hash, เป็น one-time และมี TTL
 - [x] reset password consume token กับ update credential ใน transaction เดียว
 - [x] reset password revoke refresh sessions ทั้งหมด และ access-token rejection ขึ้นกับ session validator ที่ composition root ต้อง wire ให้ครบ
-- [x] password-reset request ใหม่ invalidate token เก่าของ user แบบ transaction + user-row lock; compensation จะ restore token เดิมเฉพาะเมื่อยังไม่มี token ใหม่ (`ReplacePasswordResetToken` / `RestorePasswordResetTokenIfAbsent`)
+- [x] password-reset request ใหม่ invalidate token เก่าของ user แบบ transaction + user-row lock; reset transaction จะ revoke refresh sessions ก่อน commit และ rollback token/password เมื่อ shared session store ล้มเหลว (`ReplacePasswordResetToken`)
 - [x] forgot-password, reset-password, verify-email และ resend-verification มี rate-limit ตาม route
 - [~] registration ออก session ได้ก่อน email verification; product ต้องตัดสินใจว่าจะอนุญาต unverified session หรือบังคับ verify ก่อนใช้บาง capability
 - [~] email delivery เป็น best-effort ใน generated flow; ต้องมี retry/outbox/alert หาก email เป็น security-critical control
@@ -275,6 +275,8 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 - `[x]` deterministic verification ผ่าน: build, unit 32/32 และ integration 110/110
 - `[x]` generated L2 application test ยืนยันว่า registration ไม่ออก access/refresh token ก่อน MFA enrollment
+- `[x]` generated mail client test และ source review ยืนยันว่า synchronous auth mail มี context cancellation, 10-second SMTP deadline และ production bounded concurrency; delivery retry/outbox ยังเป็น operational gap
+- `[x]` generated logout handler test ยืนยันว่า revoke failure เก็บ refresh cookie ไว้ให้ retry และ success เท่านั้นจึง clear cookie
 - `[x]` generated Postgres auth project ผ่าน `gofmt` และ package tests สำหรับ application/Postgres adapters; generated Redis path compile/test ผ่านใน auth-store integration
 - `[~]` smoke รอบล่าสุดผ่าน 39 checks แต่ skip 18 checks เพราะ Docker/PostgreSQL/migrate ไม่พร้อม; จึงยังไม่ถือว่าเป็น full green
 - `[~]` live PostgreSQL concurrency/rollback และ live Redis adapter ยังไม่ได้ exercise ด้วย `TEST_DB_DSN` / `TEST_REDIS_URL`
@@ -300,7 +302,7 @@ go vet ./...
 - [~] กำหนด generated disable + session termination behavior; hard-delete/retention/anonymization policy ยังต้องกำหนดใน generated application
 - [x] กำหนด generated inactivity/absolute timeout policy พร้อม cap และ regression tests; deployment-specific values/evidence ยังเหลือ
 - [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง
-- [x] เพิ่ม single-active password-reset-token policy พร้อม atomic replacement และ race-safe compensation ใน generated auth
+- [x] เพิ่ม single-active password-reset-token policy พร้อม atomic replacement และ transaction-coupled session revocation ใน generated auth
 - [x] บังคับ recent-auth ก่อน session list/revoke และเพิ่ม admin session termination ภายใต้ RBAC
 - [~] baseline security headers และ key separation ทำแล้ว; ยังต้องเติม trusted-proxy test และ key rotation workflow
 - [~] มี generated handler tests และ Playwright browser harness สำหรับ CORS, CSRF origin, cookie flags และ no-store แล้ว; ยังต้องรันใน frontend/proxy topology จริง

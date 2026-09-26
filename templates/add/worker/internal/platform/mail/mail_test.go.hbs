@@ -2,6 +2,8 @@ package mail
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	stdmail "net/mail"
@@ -108,5 +110,14 @@ func TestSendRefusesEmptyBody(t *testing.T) {
 	client := &Client{host: "127.0.0.1", port: "1", from: "no-reply@example.com"}
 	if err := client.Send("recipient@example.com", emails.Message{Subject: "empty"}); err == nil {
 		t.Fatal("an email with no text and no html should not be sent")
+	}
+}
+
+func TestSendContextHonorsCancellationBeforeDial(t *testing.T) {
+	client := &Client{host: "127.0.0.1", port: "1", from: "no-reply@example.com"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := client.SendContext(ctx, "recipient@example.com", emails.Message{Subject: "canceled", Text: "body"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled SMTP send error = %v, want context.Canceled", err)
 	}
 }
