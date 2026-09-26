@@ -713,6 +713,32 @@ func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, u
 	})
 }
 
+func TestService_Register_UsesMFAEnrollmentGate(t *testing.T) {
+	svc := newTestService(&fakeRepo{}, newFakeTokenStore())
+	svc.config.MFA = MFASettings{
+		Enabled:           true,
+		RequireForLogin:   true,
+		EncryptionKey:     testMFAEncryptionKey,
+		ChallengeTTL:      5 * time.Minute,
+		TOTPWindow:        1,
+		RecoveryCodeCount: 10,
+	}
+
+	result, err := svc.Register(context.Background(), RegisterInput{
+		Email:    "new@example.com",
+		Password: "a sufficiently long unique password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if result == nil || result.MFAEnrollmentToken == "" {
+		t.Fatalf("registration must require MFA enrollment before issuing an application session: %+v", result)
+	}
+	if result.AuthResponse != nil {
+		t.Fatal("registration must not issue access/refresh tokens before MFA enrollment")
+	}
+}
+
 func seedRefreshSession(ctx context.Context, tokens *fakeTokenStore, raw string, userID, sessionID uuid.UUID, createdAt, lastUsedAt time.Time) error {
 	return tokens.SetRefreshToken(ctx, hashToken(raw), RefreshTokenRecord{
 		UserID:            userID,

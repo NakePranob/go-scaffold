@@ -143,7 +143,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] มี TOTP setup/confirm/disable และ recovery-code primitives
 - [x] sensitive action มี re-auth/MFA guard hook
 - [x] มี `AUTH_MFA_ENABLED` + `AUTH_MFA_REQUIRED_FOR_LOGIN` และ L2 security profile fail-closed ใน production เมื่อ MFA enforcement ไม่เปิด
-- [x] เมื่อ L2 production enforcement เปิด ผู้ใช้ที่ยังไม่ enroll จะได้ restricted enrollment token และต้อง setup/confirm MFA ก่อนรับ application session
+- [x] เมื่อ L2 production enforcement เปิด ผู้ใช้ที่ยังไม่ enroll จะได้ restricted enrollment token และต้อง setup/confirm MFA ก่อนรับ application session จาก register, local login และ OIDC login ทุกทางเข้า
 - [~] local login, OIDC login, recovery และ identity-link ต้องพิสูจน์ว่า auth strength สอดคล้องกันทุกทาง
 - [ ] lost-MFA-factor recovery ต้องทำ identity proofing ที่ไม่น้อยกว่าระดับตอน enroll และต้องไม่ใช้ session เดิมอย่างเดียว
 - [~] ควร notify ผู้ใช้เมื่อ MFA factor ถูกเพิ่ม/เปลี่ยน/ลบ แม้ข้อกำหนด notification บางข้อจะอยู่ L3 แต่เป็น operational security baseline ที่ควรทำ
@@ -274,6 +274,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 การตรวจล่าสุดของชุด auth หลัง hardening รอบนี้ (2026-09-27):
 
 - `[x]` deterministic verification ผ่าน: build, unit 32/32 และ integration 110/110
+- `[x]` generated L2 application test ยืนยันว่า registration ไม่ออก access/refresh token ก่อน MFA enrollment
 - `[x]` generated Postgres auth project ผ่าน `gofmt` และ package tests สำหรับ application/Postgres adapters; generated Redis path compile/test ผ่านใน auth-store integration
 - `[~]` smoke รอบล่าสุดผ่าน 39 checks แต่ skip 18 checks เพราะ Docker/PostgreSQL/migrate ไม่พร้อม; จึงยังไม่ถือว่าเป็น full green
 - `[~]` live PostgreSQL concurrency/rollback และ live Redis adapter ยังไม่ได้ exercise ด้วย `TEST_DB_DSN` / `TEST_REDIS_URL`

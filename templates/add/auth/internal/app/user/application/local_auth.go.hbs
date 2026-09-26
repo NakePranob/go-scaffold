@@ -100,11 +100,14 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*AuthResult, 
 	// Best-effort: a mail failure should not block registration. The user can
 	// request another link through ResendVerificationEmail.
 	s.sendVerificationEmail(ctx, u)
-	auth, err := s.issueTokens(ctx, u, in.Session)
+	// Registration is an authentication entry point too. Route it through the
+	// same MFA gate as password and OAuth login so an L2 profile cannot be
+	// bypassed by creating a fresh account.
+	auth, err := s.completeLogin(ctx, u, in.Session)
 	if err != nil {
 		return nil, err
 	}
-	return TokenResult(auth), nil
+	return auth, nil
 }
 
 func (s *Service) Login(ctx context.Context, in LoginInput) (*AuthResult, error) {
