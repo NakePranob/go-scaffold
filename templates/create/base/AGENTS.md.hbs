@@ -265,6 +265,10 @@ approval before changing their contract.
 - Password reset and email verification consume a one-time token in the same
   retry-safe transaction as the user/identity update. A failed post-commit
   session revocation must not make a successful reset impossible to retry.
+- `cmd/auth-cleanup` is the explicit maintenance boundary for expired auth
+  rows. Schedule `make auth-cleanup` (or the command directly) from cron or a
+  CronJob; do not add an API-process ticker. The command is idempotent and
+  request correctness already enforces token/challenge expiry.
 - The generated auth implementation is canonical: use cases live in
   `application/`, domain rules in `domain/`, contracts in `ports/`, and
   provider/HTTP/Postgres details in their adapters. Do not import Gin, provider

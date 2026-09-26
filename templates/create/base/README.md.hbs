@@ -210,6 +210,10 @@ access tokens immediately. If the session store is unavailable, protected
 requests fail closed. In production, secure mode reads only the `__Host-`
 cookie names; the legacy unprefixed names are development-only and are cleared
 during logout.
+The generated `cmd/auth-cleanup` command (also available as `make auth-cleanup`)
+removes expired Postgres auth rows, MFA challenges, and stale Redis session-index
+members. Schedule it as a CronJob/cron task; request correctness does not depend
+on the cleanup running.
 They can also list safe login-provider metadata with
 `GET /users/me/identities`, link a provider through the authenticated
 `/users/me/identities/:provider/link` start/exchange flow, and unlink a

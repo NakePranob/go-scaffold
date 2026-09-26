@@ -225,6 +225,7 @@ export async function addAuth(
   ]);
   patchEnvExample(path.join(projectDir, ".env.example"), browser);
   patchMakefile(path.join(projectDir, "Makefile"));
+  patchAuthCleanupMakefile(path.join(projectDir, "Makefile"));
 
   let docsMessage = "";
   const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
@@ -259,7 +260,7 @@ export async function addAuth(
     },
   });
 
-  console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
+  console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, cmd/seed, and cmd/auth-cleanup"));
   console.log(`OWASP ASVS 5.0.0 L${asvsLevel} generated security profile recorded; review docs/security/asvs-auth.md before making any compliance claim`);
   console.log(
     worker
@@ -319,6 +320,27 @@ function patchMakefile(makefilePath: string): void {
 
   // Function replacer — target contains a literal "$$", see worker.ts's
   // patchMakefile for why a string replacement would silently mangle it.
+  content = content.replace(/\nbuild:/, () => `${target}\nbuild:`);
+  fs.writeFileSync(makefilePath, content);
+}
+
+function patchAuthCleanupMakefile(makefilePath: string): void {
+  if (!fs.existsSync(makefilePath)) return;
+  let content = fs.readFileSync(makefilePath, "utf8");
+  if (content.includes("\nauth-cleanup:\n")) return;
+  if (!/\nbuild:/.test(content)) {
+    console.error(
+      pc.yellow(`skipped the Makefile \`auth-cleanup\` target — no \`build:\` target to anchor it to in ${makefilePath}.\nRun \`go run ./cmd/auth-cleanup\` from the project root when scheduling cleanup.`)
+    );
+    return;
+  }
+
+  content = content.replace(/^\.PHONY: /m, ".PHONY: auth-cleanup ");
+  const target =
+    "\n# remove expired auth tokens and MFA challenges; safe to run from cron or a CronJob.\n" +
+    "auth-cleanup:\n" +
+    "\t$(refuse_remote_db)\n" +
+    "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/auth-cleanup\n";
   content = content.replace(/\nbuild:/, () => `${target}\nbuild:`);
   fs.writeFileSync(makefilePath, content);
 }

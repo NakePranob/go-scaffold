@@ -28,7 +28,7 @@
 
 - session list/revoke และ admin session termination ต้องยังมี product policy, audit และ production evidence แม้ generated route จะบังคับ recent-auth และมี RBAC guard แล้ว
 - MFA L2 ถูกบังคับใน production profile ผ่าน enrollment-before-session flow แต่ยังขาด lost-factor recovery, notification และ live IdP assurance evidence
-- auth module ยังไม่มี user disable/delete lifecycle, notification framework หรือ cleanup worker สำหรับ auth state ครบชุด
+- auth module ยังไม่มี user disable/delete lifecycle, notification framework หรือ scheduled operational evidence สำหรับ auth cleanup ครบชุด
 - scaffold ยังไม่สร้าง WebAuthn/passkey, suspicious-login notification, factor-loss revocation หรือ high-value transaction step-up จึงยังไม่ควรเปิด L3
 - key rotation, object/tenant authorization และ production observability ต้องทำที่ generated application/deployment เพิ่มเติม; baseline security headers ถูกสร้างให้แล้วแต่ต้องตรวจที่ proxy/browser จริง
 
@@ -89,7 +89,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] new login evict session ที่เก่าที่สุดเมื่อเกิน `AUTH_MAX_SESSIONS`
 - [~] ต้องตรวจว่า inactivity timeout และ absolute session lifetime ถูกกำหนดเป็น policy ชัดเจนและทดสอบในทุก deployment
 - [~] ถ้ามี account disable/delete ต้อง invalidate active sessions ทั้งหมดเมื่อ lifecycle event เกิดขึ้น
-- [ ] ยังไม่มีหลักฐานจาก production ว่ามี scheduler/worker สำหรับล้าง expired token/session อย่างสม่ำเสมอ
+- [~] generated `cmd/auth-cleanup` / `make auth-cleanup` ล้าง expired token/MFA state และ stale Redis session indexes ได้แล้ว; ยังต้อง schedule และเก็บ production run/metric evidence
 
 อ้างอิงหลัก: ASVS V7.2.1–V7.2.4, V7.4.1–V7.4.2
 
@@ -248,7 +248,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] `auth_tokens.user_id` มี FK + `ON DELETE CASCADE`; nullable เฉพาะ anonymous OAuth state ที่ยังไม่มี user
 - [x] `AUTH_METADATA_KEY` แยกจาก `JWT_SECRET` สำหรับ device/throttle metadata และ production guard ตรวจ default/length/equality
 - [~] JWT signing key และ `MFA_ENCRYPTION_KEY` ยังไม่มี key-version/rotation migration workflow ใน scaffold
-- [ ] cleanup expired sessions/tokens ต้องมี worker/cron และ metric ว่าทำงานจริง
+- [~] มี cleanup command ที่ cron/CronJob เรียกได้ และทำงานแบบ idempotent; ยังต้องเพิ่ม scheduler/metric/alert evidence ใน deployment จริง
 - [ ] ต้องกำหนด incident procedure เมื่อพบ refresh-token reuse หรือ session hijacking
 - [~] ต้องทำ live Redis adapter test ด้วย `TEST_REDIS_URL`; หากไม่มี env test จะ skip จึงยังไม่ใช่หลักฐานของ Redis production path
 
@@ -306,7 +306,7 @@ go vet ./...
 - [ ] ทำ lost-factor recovery พร้อม identity proofing
 - [~] เพิ่ม admin session termination แล้ว; ยังขาด audit trail และ operational notification
 - [ ] ตรวจ IdP `acr`/`amr`/`auth_time` และ federated session lifetime
-- [ ] เพิ่ม cleanup worker, token-reuse incident handling และ operational metrics
+- [~] เพิ่ม cleanup command แล้ว; ยังขาด token-reuse incident handling และ operational metrics
 - [ ] เพิ่ม notification สำหรับ auth/MFA change เป็น security best practice
 - [ ] ตัดสินใจ email verification gate และ user disable/delete lifecycle
 - [ ] ถ้าเปิด RBAC ให้เติม object/tenant authorization และ audit trail ต่อ generated module

@@ -93,6 +93,13 @@ type RefreshTokenStore interface {
 	IsRefreshTokenUsed(context.Context, string) (uuid.UUID, bool, error)
 }
 
+// ExpiredAuthStateStore is the narrow maintenance contract used by the
+// scheduleable auth cleanup command. Cleanup is never part of request
+// correctness: every token/challenge read already enforces its expiry.
+type ExpiredAuthStateStore interface {
+	DeleteExpired(context.Context) (int64, error)
+}
+
 type LoginTransaction struct {
 	Provider      string    `json:"provider"`
 	UserID        uuid.UUID `json:"user_id"`

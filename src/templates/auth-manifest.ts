@@ -35,6 +35,8 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/application/recovery.go.hbs", output: "internal/app/user/application/recovery.go" },
   { template: "add/auth/internal/app/user/application/recovery_service.go.hbs", output: "internal/app/user/application/recovery_service.go" },
   { template: "add/auth/internal/app/user/application/service.go.hbs", output: "internal/app/user/application/service.go" },
+  { template: "add/auth/internal/app/user/application/cleanup.go.hbs", output: "internal/app/user/application/cleanup.go" },
+  { template: "add/auth/internal/app/user/application/cleanup_test.go.hbs", output: "internal/app/user/application/cleanup_test.go" },
   { template: "add/auth/internal/app/user/application/service_test.go.hbs", output: "internal/app/user/application/service_test.go" },
   { template: "add/auth/internal/app/user/application/sessions.go.hbs", output: "internal/app/user/application/sessions.go" },
   { template: "add/auth/internal/app/user/application/session_metadata.go.hbs", output: "internal/app/user/application/session_metadata.go" },
@@ -69,6 +71,7 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/platform/authprovider/google/google.go.hbs", output: "internal/platform/authprovider/google/google.go" },
   { template: "add/auth/internal/platform/authprovider/google/google_test.go.hbs", output: "internal/platform/authprovider/google/google_test.go" },
   { template: "add/auth/cmd/seed/main.go.hbs", output: "cmd/seed/main.go" },
+  { template: "add/auth/cmd/cleanup/main.go.hbs", output: "cmd/auth-cleanup/main.go" },
 ];
 
 const POSTGRES: Entry[] = [

@@ -23,8 +23,18 @@ type PostgresMFAStore struct {
 }
 
 var _ ports.MFAStore = (*PostgresMFAStore)(nil)
+var _ ports.ExpiredAuthStateStore = (*PostgresMFAStore)(nil)
 
 func NewPostgresMFAStore(db *gorm.DB) *PostgresMFAStore { return &PostgresMFAStore{db: db} }
+
+// DeleteExpired removes MFA challenges that can no longer be consumed. The
+// challenge read path already checks expires_at, so this is table hygiene for
+// the scheduleable auth cleanup command rather than a correctness boundary.
+func (s *PostgresMFAStore) DeleteExpired(ctx context.Context) (int64, error) {
+	result := tx.From(ctx, s.db).WithContext(ctx).
+		Where("expires_at <= now()").Delete(&MFAChallenge{})
+	return result.RowsAffected, result.Error
+}
 
 func (s *PostgresMFAStore) GetEnrollment(ctx context.Context, userID uuid.UUID) (ports.MFAEnrollment, bool, error) {
 	var row MFAEnrollment

@@ -292,6 +292,10 @@ the L2 profile additionally requires `AUTH_BREACHED_PASSWORDS_FILE`. The
 scaffold intentionally does not ship a copied breach corpus: document the
 source, refresh process, and protection for operator-owned lists.
 
+Schedule `make auth-cleanup` (or `go run ./cmd/auth-cleanup`) as a CronJob or
+cron task. It prunes expired Postgres auth/MFA rows and stale Redis session
+indexes; auth request correctness does not depend on the maintenance job.
+
 MFA has two independent switches: an operator capability and per-user
 enrollment. Preserve both:
 

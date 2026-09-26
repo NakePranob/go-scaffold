@@ -169,6 +169,19 @@ func NewSessionValidatorFromDB(
 {{/if}}
 }
 
+// NewAuthCleanupFromDB exposes the maintenance composition without leaking
+// the selected token adapter into cmd/auth-cleanup.
+func NewAuthCleanupFromDB(
+	db *gorm.DB,
+{{#if redis}}	rdb *redis.Client,
+{{/if}}
+) *application.AuthCleanup {
+{{#if redis}}	tokens := userredis.NewRedisTokenStore(rdb, db)
+{{else}}	tokens := userpostgres.NewPgTokenStore(db)
+{{/if}}
+	return application.NewAuthCleanup(tokens, userpostgres.NewPostgresMFAStore(db))
+}
+
 // Public aliases keep the composition surface small for cmd/seed and for
 // optional RBAC wiring. Consumers do not need to know adapter package names.
 type Dependencies = application.Dependencies

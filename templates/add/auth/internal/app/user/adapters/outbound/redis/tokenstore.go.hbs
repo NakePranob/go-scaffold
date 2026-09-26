@@ -38,6 +38,7 @@ func NewRedisTokenStore(rdb *redis.Client, db *gorm.DB) *RedisTokenStore {
 var _ ports.RefreshTokenStore = (*RedisTokenStore)(nil)
 var _ ports.OAuthTransactionStore = (*RedisTokenStore)(nil)
 var _ ports.RecoveryTokenStore = (*RedisTokenStore)(nil)
+var _ ports.ExpiredAuthStateStore = (*RedisTokenStore)(nil)
 
 var consumeRefreshScript = redis.NewScript(`
 local token = redis.call("GET", KEYS[1])
@@ -391,4 +392,50 @@ func (s *RedisTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash
 
 func (s *RedisTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
 	return s.recovery.WithTransaction(ctx, fn)
+}
+
+// DeleteExpired lets the scheduleable auth cleanup command remove recovery
+// rows from Postgres and stale members from Redis' per-user session indexes.
+// Active refresh/reuse/OAuth keys already have Redis TTLs; only the secondary
+// user sets need pruning after their primary keys expire.
+func (s *RedisTokenStore) DeleteExpired(ctx context.Context) (int64, error) {
+	var deleted int64
+	if cleaner, ok := s.recovery.(ports.ExpiredAuthStateStore); ok {
+		rows, err := cleaner.DeleteExpired(ctx)
+		if err != nil {
+			return 0, err
+		}
+		deleted += rows
+	}
+
+	var cursor uint64
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, refreshUserKeyPrefix+"*", 100).Result()
+		if err != nil {
+			return deleted, err
+		}
+		for _, key := range keys {
+			hashes, err := s.rdb.SMembers(ctx, key).Result()
+			if err != nil {
+				return deleted, err
+			}
+			for _, hash := range hashes {
+				exists, err := s.rdb.Exists(ctx, refreshKeyPrefix+hash).Result()
+				if err != nil {
+					return deleted, err
+				}
+				if exists == 0 {
+					removed, err := s.rdb.SRem(ctx, key, hash).Result()
+					if err != nil {
+						return deleted, err
+					}
+					deleted += removed
+				}
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return deleted, nil
+		}
+	}
 }

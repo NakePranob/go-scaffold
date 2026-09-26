@@ -41,6 +41,7 @@ func NewPgTokenStore(db *gorm.DB) *PgTokenStore {
 var _ ports.RefreshTokenStore = (*PgTokenStore)(nil)
 var _ ports.OAuthTransactionStore = (*PgTokenStore)(nil)
 var _ ports.RecoveryTokenStore = (*PgTokenStore)(nil)
+var _ ports.ExpiredAuthStateStore = (*PgTokenStore)(nil)
 
 // lookup finds a live token of the given kind. Expiry is enforced here rather
 // than by a sweep, so a row that outlived its TTL is already invisible.

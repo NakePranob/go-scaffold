@@ -27,6 +27,8 @@ for (const level of [1, 2]) {
     assert.deepEqual(config(app).asvs, { version: "5.0.0", level });
     const worksheet = readFileSync(path.join(app, "docs/security/asvs-auth.md"), "utf8");
     assert.match(worksheet, new RegExp(`OWASP ASVS 5\\.0\\.0 Level ${level}`));
+    assert.equal(existsSync(path.join(app, "cmd/auth-cleanup/main.go")), true);
+    assert.match(readFileSync(path.join(app, "Makefile"), "utf8"), /auth-cleanup:/);
     assert.match(worksheet, /6\.2\.4: common passwords/);
     assert.equal(worksheet.includes("6.2.12: breached passwords"), level >= 2);
     const profile = readFileSync(path.join(app, "internal/app/user/application/security_profile.go"), "utf8");
