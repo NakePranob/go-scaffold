@@ -235,6 +235,12 @@ try {
 }
 
 scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-smoke-"));
+const commonPasswordCorpusPath = path.join(scratch, "common-passwords.txt");
+writeFileSync(
+  commonPasswordCorpusPath,
+  Array.from({ length: 3000 }, (_, index) => `smoke-common-password-${String(index).padStart(4, "0")}`).join("\n") + "\n",
+  { mode: 0o600 },
+);
 let smoke = createSmokeRunConfig(`${process.pid}-${randomUUID().slice(0, 8)}`, findFreePort());
 let fullDb = smoke;
 let obsDb = createSmokeRunConfig(`${smoke.runID}-observability`, smoke.port, smoke.dbPort);
@@ -266,6 +272,7 @@ function runtimeEnv(db, overrides = {}) {
     // Go source. The smoke runtime supplies its same-site fixture values
     // explicitly, just as a deployment environment must.
     AUTH_BROWSER_TOPOLOGY: "same-site",
+    AUTH_COMMON_PASSWORDS_FILE: commonPasswordCorpusPath,
     JWT_ISSUER: "smoke-api",
     JWT_AUDIENCE: "smoke-users",
     // A dummy but complete provider config exercises the configured-provider
@@ -2102,6 +2109,7 @@ step(
       .replace(/^APP_ENV=.*/m, "APP_ENV=production")
       .replace(/^JWT_SECRET=.*/m, "JWT_SECRET=smoke-test-secret-01234567890123456789")
       .replace(/^AUTH_METADATA_KEY=.*/m, "AUTH_METADATA_KEY=smoke-metadata-key-01234567890123456789")
+      .replace(/^AUTH_COMMON_PASSWORDS_FILE=.*/m, `AUTH_COMMON_PASSWORDS_FILE=${commonPasswordCorpusPath}`)
       .replace(/^JWT_ISSUER=.*/m, "JWT_ISSUER=smoke-api")
       .replace(/^JWT_AUDIENCE=.*/m, "JWT_AUDIENCE=smoke-users")
       .replace(/^SMTP_HOST=.*/m, "SMTP_HOST=localhost")

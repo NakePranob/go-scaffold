@@ -72,10 +72,23 @@ func NewHandlerFromDB(
 		panic(fmt.Errorf("OAUTH_STATE_TTL_MIN must be positive"))
 	}
 	profile := application.GeneratedSecurityProfile()
-	if err := profile.ValidateRuntime(cfg.IsProd(), cfg.AuthMFAEnabled, strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "", cfg.AuthMFARequiredForLogin); err != nil {
+	if err := profile.ValidateRuntime(
+		cfg.IsProd(),
+		cfg.AuthMFAEnabled,
+		strings.TrimSpace(cfg.AuthCommonPasswordsFile) != "",
+		strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "",
+		cfg.AuthMFARequiredForLogin,
+	); err != nil {
 		panic(err)
 	}
 	passwordPolicy := application.NewCommonPasswordPolicy()
+	if strings.TrimSpace(cfg.AuthCommonPasswordsFile) != "" {
+		commonPolicy, err := userpassword.NewCommonPasswordFilePolicy(cfg.AuthCommonPasswordsFile)
+		if err != nil {
+			panic(fmt.Errorf("load AUTH_COMMON_PASSWORDS_FILE: %w", err))
+		}
+		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, commonPolicy)
+	}
 	if profile.BreachedPasswordScreening && strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "" {
 		breachedPolicy, err := userpassword.NewFilePasswordPolicy(cfg.AuthBreachedPasswordsFile)
 		if err != nil {

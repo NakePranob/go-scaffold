@@ -306,7 +306,9 @@ export function checkProject(projectDir: string = process.cwd()): void {
     }
     console.log(`ASVS ${config.asvs.version} L${config.asvs.level} generated security profile: present; runtime and deployment evidence still require review`);
     if (config.asvs.level === 2) {
-      console.log("  - L2 production guard: configure AUTH_BREACHED_PASSWORDS_FILE and AUTH_MFA_ENABLED=true");
+      console.log("  - L2 production guard: configure AUTH_COMMON_PASSWORDS_FILE, AUTH_BREACHED_PASSWORDS_FILE and AUTH_MFA_ENABLED=true");
+    } else {
+      console.log("  - L1 production guard: configure AUTH_COMMON_PASSWORDS_FILE with at least the top 3000 policy-matching passwords");
     }
     console.log("  - L3 is intentionally unavailable until a phishing-resistant WebAuthn/passkey adapter is generated");
   }

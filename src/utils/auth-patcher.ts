@@ -49,6 +49,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     "MFATOTPWindow int",
     "MFARecoveryCodeCount int",
     "AuthMaxSessions int",
+    "AuthCommonPasswordsFile string",
     "AuthBreachedPasswordsFile string",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
@@ -84,6 +85,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     'MFATOTPWindow: envInt("MFA_TOTP_WINDOW", 1),',
     'MFARecoveryCodeCount: envInt("MFA_RECOVERY_CODE_COUNT", 10),',
     'AuthMaxSessions: envInt("AUTH_MAX_SESSIONS", 10),',
+    'AuthCommonPasswordsFile: env("AUTH_COMMON_PASSWORDS_FILE", ""),',
     'AuthBreachedPasswordsFile: env("AUTH_BREACHED_PASSWORDS_FILE", ""),',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');

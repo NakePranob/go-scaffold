@@ -33,7 +33,10 @@ func GeneratedSecurityProfile() SecurityProfile {
 // production when its operator-owned controls were never configured. Local
 // development is intentionally allowed to start so a fresh scaffold remains
 // inspectable before deployment secrets and policy data exist.
-func (p SecurityProfile) ValidateRuntime(production, mfaEnabled, breachListConfigured, requireMFAForApplicationAccess bool) error {
+func (p SecurityProfile) ValidateRuntime(production, mfaEnabled, commonPasswordListConfigured, breachListConfigured, requireMFAForApplicationAccess bool) error {
+	if p.CommonPasswordScreening && production && !commonPasswordListConfigured {
+		return errors.New("ASVS requires AUTH_COMMON_PASSWORDS_FILE in production")
+	}
 	if p.Level >= 2 && production && p.BreachedPasswordScreening && !breachListConfigured {
 		return errors.New("ASVS L2 requires AUTH_BREACHED_PASSWORDS_FILE in production")
 	}

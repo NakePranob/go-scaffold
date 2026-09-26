@@ -189,7 +189,10 @@ make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql befo
 After `go-scaffold add auth`, `.env.example` also contains
 `GOOGLE_OAUTH_REDIRECT_URI` (the exact browser callback URI registered with
 Google), `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_TTL_MIN`, and
-`AUTH_BROWSER_TOPOLOGY`. Refresh rotation uses the configured inactivity TTL
+`AUTH_BROWSER_TOPOLOGY`. For production auth, set `AUTH_COMMON_PASSWORDS_FILE`
+to a newline-delimited corpus containing at least the top 3000 passwords that
+match this application's policy; L2 also requires `AUTH_BREACHED_PASSWORDS_FILE`.
+Refresh rotation uses the configured inactivity TTL
 but never moves a token past its absolute lifetime. The backend stores a
 one-time OAuth transaction binding provider, server-generated state, S256
 challenge, and OIDC nonce; the state is also bound to an HttpOnly browser

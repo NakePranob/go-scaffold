@@ -286,6 +286,12 @@ boundary. For browser OAuth, preserve this client-owned callback contract:
 
 ### MFA contract
 
+Production password configuration must include `AUTH_COMMON_PASSWORDS_FILE`
+with at least 3,000 unique entries that match the generated password policy;
+the L2 profile additionally requires `AUTH_BREACHED_PASSWORDS_FILE`. The
+scaffold intentionally does not ship a copied breach corpus: document the
+source, refresh process, and protection for operator-owned lists.
+
 MFA has two independent switches: an operator capability and per-user
 enrollment. Preserve both:
 

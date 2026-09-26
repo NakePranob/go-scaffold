@@ -284,6 +284,12 @@ approval before changing their contract.
 
 MFA has an operator capability switch and a separate per-user enrollment:
 
+- The generated password policy always includes a small readable development
+  baseline. Production must also set `AUTH_COMMON_PASSWORDS_FILE` to an
+  operator-owned newline-delimited corpus with at least 3,000 unique entries
+  that match the application's password policy; L2 additionally requires
+  `AUTH_BREACHED_PASSWORDS_FILE`.
+
 - `AUTH_MFA_ENABLED=false` is the default. When enabled, the composition root
   must validate `MFA_ENCRYPTION_KEY` as a base64-encoded 32-byte key before
   serving traffic. Keep the issuer, challenge TTL, TOTP window, and recovery

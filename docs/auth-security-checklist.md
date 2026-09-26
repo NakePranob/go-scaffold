@@ -63,7 +63,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 - [x] ใช้ adaptive one-way password hashing ตาม generated adapter และไม่เก็บ plaintext password
 - [x] มี password policy และ test สำหรับ password validation
-- [~] มี common-password screening แต่ยังต้องยืนยันว่า denylist ที่ deploy มีอย่างน้อย top 3,000 passwords และมีวิธี update ที่ตรวจสอบได้
+- [~] มี common-password screening และ production guard บังคับ `AUTH_COMMON_PASSWORDS_FILE` ที่สั้นกว่า 3,000 policy-matching entries ไม่ผ่าน แต่ยังต้องยืนยัน provenance, update procedure และ test ของรายการที่ deploy
 - [x] password change/reset มีการ rotate หรือ revoke session ตาม flow ที่ generated ไว้
 - [~] default operator/admin ไม่ได้ถูกสร้างด้วย credential เดียวแบบ hard-coded แต่ deployment ต้องพิสูจน์ว่า secret ถูกส่งผ่าน secret manager/env ที่ปลอดภัย
 - [ ] ต้องตรวจให้ครบว่าการสร้าง account, disable account และ delete account มี lifecycle policy และ audit ที่สอดคล้องกัน
@@ -292,7 +292,7 @@ go vet ./...
 ### P0 — ก่อนเรียก L1/L2 พร้อม
 
 - [x] กำหนด generated L2 production policy ให้ MFA ต้องผ่าน enrollment ก่อนออก application session; product ยังต้องเลือก UX/recovery ที่เหมาะสม
-- [ ] ทำให้ common-password list และ update provenance ตรวจสอบได้
+- [~] generated code ตรวจว่า common-password corpus มีอย่างน้อย 3,000 policy-matching entries; ยังต้องบันทึก source/provenance, refresh และ sign-off ของรายการที่ deploy
 - [ ] กำหนด account disable/delete และ session termination behavior
 - [ ] กำหนด inactivity/absolute timeout เป็น policy พร้อม tests
 - [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง

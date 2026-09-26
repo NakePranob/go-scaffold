@@ -3,6 +3,7 @@ package password
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -18,6 +19,18 @@ type filePasswordPolicy struct {
 // corpus, and production must choose a source and refresh procedure suitable
 // for its data-handling policy.
 func NewFilePasswordPolicy(path string) (ports.PasswordPolicy, error) {
+	return loadFilePasswordPolicy(path, 1)
+}
+
+// NewCommonPasswordFilePolicy loads the L1 common-password corpus. ASVS 5.0
+// V6.2.4 requires at least the top 3000 passwords matching the application's
+// policy; rejecting a shorter file prevents a production deployment from
+// silently claiming that a tiny denylist is the required corpus.
+func NewCommonPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
+	return loadFilePasswordPolicy(path, 3000)
+}
+
+func loadFilePasswordPolicy(path string, minimumEntries int) (ports.PasswordPolicy, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("password denylist path is empty")
 	}
@@ -34,13 +47,16 @@ func NewFilePasswordPolicy(path string) (ports.PasswordPolicy, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		if len([]byte(line)) < 8 || len([]byte(line)) > 256 {
+			continue
+		}
 		passwords[strings.ToLower(line)] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if len(passwords) == 0 {
-		return nil, errors.New("password denylist is empty")
+	if len(passwords) < minimumEntries {
+		return nil, fmt.Errorf("password denylist contains %d policy-matching entries; want at least %d", len(passwords), minimumEntries)
 	}
 	return filePasswordPolicy{passwords: passwords}, nil
 }

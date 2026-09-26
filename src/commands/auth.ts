@@ -371,7 +371,9 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "MFA_RECOVERY_CODE_COUNT=10\n" +
     "# Maximum active refresh-token sessions per user; the oldest session is evicted on a new login.\n" +
     "AUTH_MAX_SESSIONS=10\n" +
-    "\n# L2 only: newline-delimited breached-password denylist. Production L2 refuses to boot when unset.\n" +
+    "\n# Production: newline-delimited common-password list; use at least the top 3000 passwords matching your policy.\n" +
+    "AUTH_COMMON_PASSWORDS_FILE=\n" +
+    "# L2 only: newline-delimited breached-password denylist. Production L2 refuses to boot when unset.\n" +
     "AUTH_BREACHED_PASSWORDS_FILE=\n";
   fs.writeFileSync(envExamplePath, content);
 }

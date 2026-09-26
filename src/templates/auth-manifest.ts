@@ -57,6 +57,7 @@ const SHARED: Entry[] = [
   { template: "add/auth/internal/app/user/adapters/outbound/password/bcrypt.go.hbs", output: "internal/app/user/adapters/outbound/password/bcrypt.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/password/bcrypt_test.go.hbs", output: "internal/app/user/adapters/outbound/password/bcrypt_test.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/password/policy.go.hbs", output: "internal/app/user/adapters/outbound/password/policy.go" },
+  { template: "add/auth/internal/app/user/adapters/outbound/password/policy_test.go.hbs", output: "internal/app/user/adapters/outbound/password/policy_test.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/postgres/model.go.hbs", output: "internal/app/user/adapters/outbound/postgres/model.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/postgres/mfa_store.go.hbs", output: "internal/app/user/adapters/outbound/postgres/mfa_store.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/postgres/mfa_store_test.go.hbs", output: "internal/app/user/adapters/outbound/postgres/mfa_store_test.go" },

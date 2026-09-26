@@ -32,6 +32,7 @@ for (const level of [1, 2]) {
     const profile = readFileSync(path.join(app, "internal/app/user/application/security_profile.go"), "utf8");
     assert.match(profile, new RegExp(`Level:\\s+${level},`));
     assert.match(profile, /CommonPasswordScreening:\s+true/);
+    assert.match(readFileSync(path.join(app, ".env.example"), "utf8"), /AUTH_COMMON_PASSWORDS_FILE=/);
     assert.equal(/BreachedPasswordScreening:\s+true/.test(profile), level >= 2);
     const output = run(app, "check");
     assert.match(output, /architecture check passed/);

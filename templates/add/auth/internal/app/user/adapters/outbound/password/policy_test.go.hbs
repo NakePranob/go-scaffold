@@ -1,0 +1,44 @@
+package password
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestNewCommonPasswordFilePolicyRequiresTop3000(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "common-passwords.txt")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create common-password file: %v", err)
+	}
+	for i := 0; i < 3000; i++ {
+		if _, err := fmt.Fprintf(file, "common-password-%04d\n", i); err != nil {
+			t.Fatalf("write common-password file: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close common-password file: %v", err)
+	}
+
+	policy, err := NewCommonPasswordFilePolicy(path)
+	if err != nil {
+		t.Fatalf("load top-3000 common-password file: %v", err)
+	}
+	if err := policy.Validate("common-password-0001"); err == nil {
+		t.Fatal("expected a listed common password to be rejected")
+	}
+}
+
+func TestNewCommonPasswordFilePolicyRejectsShortCorpus(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "short.txt")
+	if err := os.WriteFile(path, []byte("password123\n"), 0o600); err != nil {
+		t.Fatalf("write short corpus: %v", err)
+	}
+	if _, err := NewCommonPasswordFilePolicy(path); err == nil {
+		t.Fatal("expected a short common-password corpus to be rejected")
+	}
+}
