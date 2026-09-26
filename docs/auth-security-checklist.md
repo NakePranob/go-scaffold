@@ -269,9 +269,9 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 ## 9. สถานะ verification ของ scaffold
 
-การตรวจล่าสุดของชุด auth ที่มีอยู่ก่อนสร้าง checklist นี้:
+การตรวจล่าสุดของชุด auth หลัง hardening รอบนี้:
 
-- `[x]` deterministic verification ผ่าน: build, unit 32/32, integration 107/107 และ smoke 57/57 ผ่านในการรันแยก
+- `[x]` deterministic verification ผ่าน: build, unit 32/32, integration 107/107 และ smoke 57/57 ผ่านในการรันแยก; หลัง hardening ล่าสุด targeted auth integration 25/25 และ smoke 57/57 ผ่านอีกครั้ง
 - `[~]` `pnpm run verify` รอบล่าสุดติด network timeout จาก `proxy.golang.org` ตอน generated smoke ดาวน์โหลด test-only modules; ไม่ใช่ test assertion หรือ generated compile failure
 - `[x]` `git diff --check` ผ่าน
 - `[~]` Redis adapter live integration ไม่ได้ถูก exercise เมื่อไม่มี `TEST_REDIS_URL`; generated test compile และ skip ตาม environment
@@ -298,7 +298,7 @@ go vet ./...
 - [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง
 - [x] บังคับ recent-auth ก่อน session list/revoke และเพิ่ม admin session termination ภายใต้ RBAC
 - [~] baseline security headers และ key separation ทำแล้ว; ยังต้องเติม trusted-proxy test และ key rotation workflow
-- [ ] เติม explicit browser/API tests สำหรับ CORS, CSRF origin, cookie flags และ no-store ทุก auth response
+- [~] มี generated handler tests และ Playwright browser harness สำหรับ CORS, CSRF origin, cookie flags และ no-store แล้ว; ยังต้องรันใน frontend/proxy topology จริง
 
 ### P1 — ปิด L2 ที่เป็น product/security workflow
 
