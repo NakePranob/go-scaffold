@@ -230,6 +230,10 @@ approval before changing their contract.
 
 - Never log passwords, raw access/refresh/reset/verification tokens, JWT
   secrets, OAuth client secrets, or authorization headers.
+- Auth rate-limit middleware fails closed with `503` and `Retry-After` when a
+  shared limiter store is unavailable. Do not turn a Redis/limiter error into
+  an allowed authentication request; the Postgres-store profile remains
+  process-local and needs an explicit distributed-abuse policy when scaled.
 - Refresh rotation is an atomic consume: Postgres uses one SQL unit and Redis
   uses one Lua operation, including active-session cleanup and the reuse
   tombstone. Its inactivity expiry may move on rotation, but its persisted

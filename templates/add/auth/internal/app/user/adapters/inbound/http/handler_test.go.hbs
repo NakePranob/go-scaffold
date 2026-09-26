@@ -22,7 +22,7 @@ import (
 
 type allowAllLimiter struct{}
 
-func (allowAllLimiter) Allow(_ context.Context, _ string, _ int, _ time.Duration) bool { return true }
+func (allowAllLimiter) Allow(_ context.Context, _ string, _ int, _ time.Duration) (bool, error) { return true, nil }
 
 type allowAllAuthorizer struct{}
 

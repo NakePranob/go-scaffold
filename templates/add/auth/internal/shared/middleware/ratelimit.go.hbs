@@ -16,9 +16,10 @@ import (
 // They are paired on purpose — "exact across pods" is one decision, not two.
 type Limiter interface {
 	// Allow records one hit for key and reports whether it stayed within
-	// limit. An implementation that cannot reach its backing store should
-	// return true: a limiter outage must not take login down with it.
-	Allow(ctx context.Context, key string, limit int, window time.Duration) bool
+	// limit. A backing-store error is returned separately so the HTTP boundary
+	// can fail closed with 503 instead of treating an outage as permission to
+	// remove brute-force protection.
+	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 
 // RateLimit throttles requests per client IP to `limit` within `window`,
@@ -36,7 +37,14 @@ type Limiter interface {
 // stuffing is the per-account lockout in the user service, not this.
 func RateLimit(l Limiter, name string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !l.Allow(c.Request.Context(), name+":"+c.ClientIP(), limit, window) {
+		allowed, err := l.Allow(c.Request.Context(), name+":"+c.ClientIP(), limit, window)
+		if err != nil {
+			c.Header("Retry-After", "5")
+			c.Error(apperror.New(http.StatusServiceUnavailable, "RATE_LIMITER_UNAVAILABLE", "authentication protection is temporarily unavailable"))
+			c.Abort()
+			return
+		}
+		if !allowed {
 			c.Error(apperror.New(http.StatusTooManyRequests, "RATE_LIMITED", "too many requests, try again later"))
 			c.Abort()
 			return

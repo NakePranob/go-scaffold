@@ -262,7 +262,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [ ] authentication events ต้องมี structured audit log, alert และ correlation id โดยไม่เก็บ credential/secret
 - [ ] ต้องมี monitoring สำหรับ brute force, lockout spike, refresh-token reuse, MFA recovery และ admin session termination
 - [ ] ต้องมี backup/restore/rotation evidence สำหรับ auth database และ key material
-- [~] limiter ปัจจุบัน fail-open เมื่อ backing store ใช้งานไม่ได้; ต้องยอมรับ risk นี้ใน policy หรือเพิ่ม fail-closed/secondary control สำหรับ endpoint สำคัญ
+- [x] Redis limiter fail-closed เมื่อ backing store ใช้งานไม่ได้และตอบ 503 พร้อม `Retry-After`; Postgres mode ยังเป็น per-process limiter จึงต้องใช้ distributed deployment policy หากต้องการ exact cross-replica limits
 - [~] PostgreSQL integration path มี test evidence จาก verification ล่าสุด
 - `[?]` Redis live auth-token adapter ยังยืนยันไม่ได้ถ้าไม่มี `TEST_REDIS_URL`
 - `[?]` OAuth/OIDC live provider behavior ยังยืนยันไม่ได้หากไม่มี provider credentials และ callback environment
