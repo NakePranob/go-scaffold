@@ -112,6 +112,27 @@ func (h *Handler) confirmMFA(c *gin.Context) {
 	c.JSON(http.StatusOK, mfaConfirmResponse{RecoveryCodes: codes})
 }
 
+func (h *Handler) recoverMFA(c *gin.Context) {
+	setNoStoreHeaders(c)
+	if !h.requireBrowserOrigin(c) {
+		return
+	}
+	var in mfaCodeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	token, err := h.svc.RecoverMFA(c.Request.Context(), currentUserID(c), in.Code)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, mfaRecoveryResponse{
+		MFARecoveryStarted: true,
+		EnrollmentToken:    token,
+	})
+}
+
 func (h *Handler) disableMFA(c *gin.Context) {
 	setNoStoreHeaders(c)
 	if !h.requireBrowserOrigin(c) {

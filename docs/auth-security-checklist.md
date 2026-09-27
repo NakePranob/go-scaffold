@@ -27,7 +27,7 @@
 ### High-risk source gaps ที่ checklist นี้ต้องไม่กลบ
 
 - session list/revoke และ admin session termination ต้องยังมี product policy, audit และ production evidence แม้ generated route จะบังคับ recent-auth และมี RBAC guard แล้ว
-- MFA L2 ถูกบังคับใน production profile ผ่าน enrollment-before-session flow แต่ยังขาด lost-factor recovery, notification และ live IdP assurance evidence
+- MFA L2 ถูกบังคับใน production profile ผ่าน enrollment-before-session flow และมี lost-factor recovery แบบ recovery-code + authenticated-session แล้ว แต่ยังขาด notification และ live IdP assurance evidence
 - auth module มี soft-disable และ session termination แล้ว แต่ยังไม่มี hard-delete/anonymization policy, notification framework หรือ scheduled operational evidence สำหรับ auth cleanup ครบชุด
 - scaffold ยังไม่สร้าง WebAuthn/passkey, suspicious-login notification, factor-loss revocation หรือ high-value transaction step-up จึงยังไม่ควรเปิด L3
 - key rotation, object/tenant authorization และ production observability ต้องทำที่ generated application/deployment เพิ่มเติม; baseline security headers ถูกสร้างให้แล้วแต่ต้องตรวจที่ proxy/browser จริง
@@ -145,7 +145,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] มี `AUTH_MFA_ENABLED` + `AUTH_MFA_REQUIRED_FOR_LOGIN` และ L2 security profile fail-closed ใน production เมื่อ MFA enforcement ไม่เปิด
 - [x] เมื่อ L2 production enforcement เปิด ผู้ใช้ที่ยังไม่ enroll จะได้ restricted enrollment token และต้อง setup/confirm MFA ก่อนรับ application session จาก register, local login และ OIDC login ทุกทางเข้า
 - [~] local login, OIDC login, recovery และ identity-link ต้องพิสูจน์ว่า auth strength สอดคล้องกันทุกทาง
-- [ ] lost-MFA-factor recovery ต้องทำ identity proofing ที่ไม่น้อยกว่าระดับตอน enroll และต้องไม่ใช้ session เดิมอย่างเดียว
+- [x] lost-MFA-factor recovery ใช้ authenticated session ร่วมกับ one-time recovery code, revoke refresh sessions, ล้าง factor/challenge เดิมแบบ atomic และบังคับ fresh enrollment; ไม่ใช้ session เดิมอย่างเดียว
 - [~] ควร notify ผู้ใช้เมื่อ MFA factor ถูกเพิ่ม/เปลี่ยน/ลบ แม้ข้อกำหนด notification บางข้อจะอยู่ L3 แต่เป็น operational security baseline ที่ควรทำ
 
 อ้างอิงหลัก: ASVS V6.3.3–V6.3.4, V6.4.3–V6.4.4 และ OWASP MFA Cheat Sheet
@@ -157,7 +157,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] secret/token generation ใช้ CSPRNG path ที่มี test รองรับ
 - [~] ต้องยืนยันเวลาของ server ที่ใช้ตรวจ TOTP และกำหนด clock-drift policy ใน production
 - [~] ต้องยืนยันว่า MFA secret และ recovery codes encrypted/protected ตาม deployment secret policy
-- [ ] ยังไม่มี factor replacement/recovery flow ที่ครบสำหรับ lost device, compromised factor และ helpdesk escalation
+- [~] มี factor replacement/recovery สำหรับ lost device ผ่าน recovery code แล้ว; ยังต้องกำหนด helpdesk escalation และ incident policy สำหรับกรณีไม่มี recovery code หรือสงสัยว่า factor ถูกขโมย
 
 อ้างอิงหลัก: ASVS V6.5.1–V6.5.5, NIST SP 800-63B
 
@@ -279,8 +279,8 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - `[x]` generated mail client test และ source review ยืนยันว่า synchronous auth mail มี context cancellation, 10-second SMTP deadline และ production bounded concurrency; delivery retry/outbox ยังเป็น operational gap
 - `[x]` generated logout handler test ยืนยันว่า revoke failure เก็บ refresh cookie ไว้ให้ retry และ success เท่านั้นจึง clear cookie
 - `[x]` generated Postgres auth project ผ่าน `gofmt` และ package tests สำหรับ application/Postgres adapters; generated Redis path compile/test ผ่านใน auth-store integration
-- `[~]` smoke รอบล่าสุดผ่าน 39 checks แต่ skip 18 checks เพราะ Docker/PostgreSQL/migrate ไม่พร้อม; จึงยังไม่ถือว่าเป็น full green
-- `[~]` live PostgreSQL concurrency/rollback และ live Redis adapter ยังไม่ได้ exercise ด้วย `TEST_DB_DSN` / `TEST_REDIS_URL`
+- `[x]` smoke รอบล่าสุดผ่าน 57 checks เมื่อ Docker/PostgreSQL/migrate พร้อม
+- `[~]` live PostgreSQL concurrency/rollback และ live Redis adapter มี generated CI hooks แล้ว; ต้องรันใน environment ที่มี `TEST_DB_DSN` / `TEST_REDIS_URL` และเก็บผลเป็น deployment evidence
 - `[x]` `git diff --check` ผ่าน
 - `[?]` ไม่ได้แปลว่า production deployment ผ่าน เพราะ verify ไม่ได้ตรวจ TLS, proxy, secret manager, SMTP, provider และ monitoring จริง
 
@@ -302,7 +302,7 @@ go vet ./...
 - [~] generated code ตรวจว่า common-password corpus มีอย่างน้อย 3,000 policy-matching entries; ยังต้องบันทึก source/provenance, refresh และ sign-off ของรายการที่ deploy
 - [~] กำหนด generated disable + session termination behavior; hard-delete/retention/anonymization policy ยังต้องกำหนดใน generated application
 - [x] กำหนด generated inactivity/absolute timeout policy พร้อม cap และ regression tests; deployment-specific values/evidence ยังเหลือ
-- [ ] ทดสอบ distributed rate-limit/lockout กับ Redis จริง
+- [~] generated workflow บังคับ Redis integration เมื่อเลือก Redis store; ยังต้องเก็บผล distributed rate-limit/lockout จาก environment จริง
 - [x] เพิ่ม single-active password-reset-token policy พร้อม atomic replacement และ transaction-coupled session revocation ใน generated auth
 - [x] บังคับ recent-auth ก่อน session list/revoke และเพิ่ม admin session termination ภายใต้ RBAC
 - [~] baseline security headers และ key separation ทำแล้ว; ยังต้องเติม trusted-proxy test และ key rotation workflow
@@ -311,7 +311,7 @@ go vet ./...
 ### P1 — ปิด L2 ที่เป็น product/security workflow
 
 - [x] generated L2 บังคับ MFA enrollment ก่อน application access เมื่อ deploy ด้วย required flags; ยังต้องทดสอบทุก login/provider path ใน product จริง
-- [ ] ทำ lost-factor recovery พร้อม identity proofing
+- [x] ทำ lost-factor recovery ด้วย authenticated session + one-time recovery code, revoke sessions และ fresh enrollment
 - [~] เพิ่ม admin session termination แล้ว; ยังขาด audit trail และ operational notification
 - [x] เพิ่ม generated IdP `acr`/`amr`/`auth_time` + `max_age` policy hook; ยังต้องตั้งค่าจริงและทดสอบกับ provider ที่ deploy
 - [~] เพิ่ม cleanup command แล้ว; ยังขาด token-reuse incident handling และ operational metrics

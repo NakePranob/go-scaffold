@@ -282,9 +282,64 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string)
 	return codes, nil
 }
 
+// RecoverMFA consumes one recovery code together with the authenticated
+// session that presented it, revokes refresh sessions, removes the old factor
+// atomically, and returns a setup-only enrollment token. The caller must then
+// complete the normal setup/confirm flow before receiving a new application
+// session. A recovery code alone is never enough to call this endpoint, and a
+// session alone is never enough to bypass the factor proof.
+func (s *Service) RecoverMFA(ctx context.Context, userID uuid.UUID, code string) (string, error) {
+	if _, err := s.requireMFA(); err != nil {
+		return "", err
+	}
+	if s.mfa == nil {
+		return "", errors.New("MFA store is not configured")
+	}
+	key := mfaThrottleKey(userID)
+	if s.throttled(ctx, key) {
+		return "", errTooManyAttempts()
+	}
+	recoveryHash, ok := normalizedRecoveryCodeHash(code)
+	if !ok {
+		return "", s.recordMFAFailure(ctx, key)
+	}
+	found, err := s.mfa.HasRecoveryCode(ctx, userID, recoveryHash)
+	if err != nil {
+		return "", fmt.Errorf("check MFA recovery code: %w", err)
+	}
+	if !found {
+		return "", s.recordMFAFailure(ctx, key)
+	}
+
+	// Mint the setup-only capability before mutating state. JWT signing is local
+	// and deterministic; if it fails, no session or MFA state is changed.
+	enrollmentToken, err := s.issueMFAEnrollmentToken(userID)
+	if err != nil {
+		return "", fmt.Errorf("create MFA recovery enrollment token: %w", err)
+	}
+	// Revoke first so a failed Postgres recovery transaction leaves the old
+	// factor and recovery code available for a safe retry, while no refresh
+	// session remains trusted during factor replacement.
+	if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
+		return "", fmt.Errorf("revoke sessions before MFA recovery: %w", err)
+	}
+	recovered, err := s.mfa.RecoverEnrollment(ctx, userID, recoveryHash)
+	if err != nil {
+		return "", fmt.Errorf("replace MFA enrollment: %w", err)
+	}
+	if !recovered {
+		return "", s.recordMFAFailure(ctx, key)
+	}
+	if err := s.clearMFAFailures(ctx, key); err != nil {
+		return "", err
+	}
+	return enrollmentToken, nil
+}
+
 // DisableMFA requires a current TOTP code. Recovery codes are intentionally
-// accepted for login only: consuming one and then failing the disable write
-// would otherwise destroy a recovery factor without completing the change.
+// rejected here; factor replacement has its own atomic recovery flow so an
+// authenticated caller cannot accidentally destroy a recovery factor without
+// receiving a fresh enrollment capability.
 func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string) error {
 	settings, err := s.requireMFA()
 	if err != nil {

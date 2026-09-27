@@ -241,6 +241,11 @@ and protected requests fail closed after the state change. Hard deletion,
 retention, anonymization, and any helpdesk/admin re-enable policy remain
 application-specific; when RBAC is enabled, `PATCH /users/:id/status` is
 available to a recent-authenticated caller with `user:manage-status`.
+If a user loses the authenticator, `POST /users/me/mfa/recover` requires the
+current authenticated session and one unused recovery code, revokes refresh
+sessions, removes the old factor atomically, and returns a setup-only token for
+fresh MFA enrollment. Treat recovery codes as one-time credentials and define
+the helpdesk escalation policy separately.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
 guard independently of CORS.

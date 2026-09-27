@@ -182,6 +182,47 @@ func TestMFAEnrollmentUsesTheDurableThrottle(t *testing.T) {
 	}
 }
 
+func TestMFARecoveryRequiresARecoveryCodeAndStartsFreshEnrollment(t *testing.T) {
+	svc, store, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	code, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+	recoveryCodes, err := svc.ConfirmMFA(ctx, userID, code)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	enrollmentToken, err := svc.RecoverMFA(ctx, userID, recoveryCodes[0])
+	if err != nil || enrollmentToken == "" {
+		t.Fatalf("recover MFA: token=%q err=%v", enrollmentToken, err)
+	}
+	if _, found, err := store.GetEnrollment(ctx, userID); err != nil || found {
+		t.Fatalf("old MFA enrollment must be removed before replacement: found=%t err=%v", found, err)
+	}
+	if _, err := svc.RecoverMFA(ctx, userID, recoveryCodes[0]); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("recovery code must be one-use, got %v", err)
+	}
+
+	replacement, err := svc.SetupMFAEnrollment(ctx, enrollmentToken)
+	if err != nil {
+		t.Fatalf("replacement setup: %v", err)
+	}
+	replacementCode, err := totpCode(replacement.Secret, now)
+	if err != nil {
+		t.Fatalf("replacement totp: %v", err)
+	}
+	_, auth, err := svc.ConfirmMFAEnrollment(ctx, enrollmentToken, replacementCode, SessionContext{})
+	if err != nil || auth == nil || auth.AccessToken == "" {
+		t.Fatalf("replacement confirmation must issue a fresh session: auth=%+v err=%v", auth, err)
+	}
+}
+
 func TestMFARecoveryCodeIsOneUse(t *testing.T) {
 	svc, _, userID, now := configuredMFATestService(t)
 	ctx := context.Background()

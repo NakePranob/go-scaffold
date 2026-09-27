@@ -225,6 +225,7 @@ type ServicePort interface {
 	MFAStatus(context.Context, uuid.UUID) (MFAStatus, error)
 	SetupMFA(context.Context, uuid.UUID) (*MFASetup, error)
 	ConfirmMFA(context.Context, uuid.UUID, string) ([]string, error)
+	RecoverMFA(context.Context, uuid.UUID, string) (string, error)
 	DisableMFA(context.Context, uuid.UUID, string) error
 	SetupMFAEnrollment(context.Context, string) (*MFASetup, error)
 	ConfirmMFAEnrollment(context.Context, string, string, SessionContext) ([]string, *AuthResponse, error)

@@ -141,6 +141,8 @@ type MFAStore interface {
 	PutPendingEnrollment(context.Context, uuid.UUID, string) error
 	ConfirmEnrollment(context.Context, uuid.UUID, string, []string) error
 	Disable(context.Context, uuid.UUID) error
+	HasRecoveryCode(context.Context, uuid.UUID, string) (bool, error)
+	RecoverEnrollment(context.Context, uuid.UUID, string) (bool, error)
 	CreateChallenge(context.Context, string, MFAChallenge) error
 	GetChallenge(context.Context, string) (MFAChallenge, bool, error)
 	ConsumeChallenge(context.Context, string) (MFAChallenge, bool, error)

@@ -130,6 +130,13 @@ MFAConfirmResponse:
       type: array
       items: { type: string }
 
+MFARecoveryResponse:
+  type: object
+  required: [mfa_recovery_started, enrollment_token]
+  properties:
+    mfa_recovery_started: { type: boolean, example: true }
+    enrollment_token: { type: string, description: short-lived setup-only capability; complete MFA enrollment before receiving a new session }
+
 OAuthExchangeInput:
   type: object
   required: [code, state, code_verifier]

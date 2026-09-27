@@ -131,6 +131,11 @@ type mfaConfirmResponse struct {
 	RecoveryCodes []string `json:"recovery_codes"`
 }
 
+type mfaRecoveryResponse struct {
+	MFARecoveryStarted bool   `json:"mfa_recovery_started"`
+	EnrollmentToken    string `json:"enrollment_token"`
+}
+
 type mfaEnrollmentConfirmResponse struct {
 	AccessToken   string   `json:"access_token"`
 	TokenType     string   `json:"token_type"`

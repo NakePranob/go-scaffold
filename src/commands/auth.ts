@@ -52,6 +52,7 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users/me/mfa/setup", file: "./auth/users-me-mfa-setup.yaml" },
   { urlPath: "/users/me/mfa/confirm", file: "./auth/users-me-mfa-confirm.yaml" },
   { urlPath: "/users/me/mfa/disable", file: "./auth/users-me-mfa-disable.yaml" },
+  { urlPath: "/users/me/mfa/recover", file: "./auth/users-me-mfa-recover.yaml" },
   { urlPath: "/auth/mfa/verify", file: "./auth/mfa-verify.yaml" },
   { urlPath: "/auth/mfa/enroll/setup", file: "./auth/mfa-enroll-setup.yaml" },
   { urlPath: "/auth/mfa/enroll/confirm", file: "./auth/mfa-enroll-confirm.yaml" },
@@ -281,7 +282,7 @@ export async function addAuth(
   console.log(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
-      "POST /users/me/{resend-verification,reauth,password,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
+      "POST /users/me/{resend-verification,reauth,password,logout-all,mfa/setup,mfa/confirm,mfa/disable,mfa/recover}, " +
       "GET /users/me/{identities,sessions,mfa}, POST /users/me/identities/local, POST /users/me/identities/{provider}/{link,link/exchange}, " +
       "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, DELETE /users/{id}/sessions/{session_id}, " +
       "POST /auth/mfa/verify in cmd/api/wiring.go" +

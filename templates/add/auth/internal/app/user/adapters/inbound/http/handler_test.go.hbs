@@ -172,6 +172,7 @@ func TestHandler_SessionRoutesAreProtected(t *testing.T) {
 		{http.MethodDelete, "/users/me/identities/fake"},
 		{http.MethodGet, "/users/me/sessions"},
 		{http.MethodDelete, "/users/me/sessions/00000000-0000-0000-0000-000000000001"},
+		{http.MethodPost, "/users/me/mfa/recover"},
 		{http.MethodDelete, "/users/me"},
 	} {
 		response := httptest.NewRecorder()

@@ -98,6 +98,62 @@ func (s *PostgresMFAStore) Disable(ctx context.Context, userID uuid.UUID) error 
 	})
 }
 
+// HasRecoveryCode checks a normalized recovery-code hash without consuming it.
+// The application uses this read to validate a recovery request before it
+// revokes refresh sessions; RecoverEnrollment performs the actual one-time
+// consume and factor replacement atomically below.
+func (s *PostgresMFAStore) HasRecoveryCode(ctx context.Context, userID uuid.UUID, hash string) (bool, error) {
+	if userID == uuid.Nil || hash == "" {
+		return false, nil
+	}
+	var found int
+	err := tx.From(ctx, s.db).WithContext(ctx).Raw(
+		`SELECT 1 FROM user_svc.mfa_recovery_codes WHERE user_id = ? AND code_hash = ? LIMIT 1`,
+		userID, hash,
+	).Row().Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return found == 1, err
+}
+
+// RecoverEnrollment atomically consumes one recovery code and removes the old
+// factor, all remaining recovery codes, and pending login challenges. A
+// concurrent caller can therefore win only once and cannot keep using an old
+// challenge or recovery code while the user enrolls a replacement factor.
+func (s *PostgresMFAStore) RecoverEnrollment(ctx context.Context, userID uuid.UUID, hash string) (bool, error) {
+	if userID == uuid.Nil || hash == "" {
+		return false, nil
+	}
+	var recovered bool
+	err := tx.From(ctx, s.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var consumed string
+		err := db.Raw(
+			`DELETE FROM user_svc.mfa_recovery_codes
+			 WHERE user_id = ? AND code_hash = ?
+			 RETURNING code_hash`, userID, hash,
+		).Row().Scan(&consumed)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := db.Where("user_id = ?", userID).Delete(&MFAEnrollment{}).Error; err != nil {
+			return err
+		}
+		if err := db.Where("user_id = ?", userID).Delete(&MFARecoveryCode{}).Error; err != nil {
+			return err
+		}
+		if err := db.Where("user_id = ?", userID).Delete(&MFAChallenge{}).Error; err != nil {
+			return err
+		}
+		recovered = consumed != ""
+		return nil
+	})
+	return recovered, err
+}
+
 func (s *PostgresMFAStore) CreateChallenge(ctx context.Context, hash string, challenge ports.MFAChallenge) error {
 	if hash == "" || challenge.UserID == uuid.Nil || !challenge.ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("MFA challenge is invalid")

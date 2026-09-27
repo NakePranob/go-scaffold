@@ -67,6 +67,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(handler, /POST\("\/:provider\/exchange", oauthExchangeLimit, h\.providerExchange\)/);
   assert.match(handler, /GET\("\/me\/sessions", recentAuth, h\.sessions\)/);
   assert.match(handler, /DELETE\("\/me", reauthLimit, recentAuth, h\.disableMe\)/);
+  assert.match(handler, /POST\("\/me\/mfa\/recover", mfaRecoveryLimit, h\.recoverMFA\)/);
   assert.match(handler, /PATCH\("\/:id\/status", h\.authz\.Require\(PermUserManageStatus\), recentAuth, h\.setAccountStatus\)/);
   assert.match(handler, /DELETE\("\/me\/sessions\/:id",[^\n]*h\.revokeSession\)/);
   assert.match(handler, /DELETE\("\/:id\/sessions\/:session_id", h\.authz\.Require\(PermUserManageSession\), h\.adminRevokeSession\)/);
@@ -112,7 +113,9 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(contracts, /type MFASettings/);
   assert.match(read(project, "internal", "app", "user", "application", "oauth.go"), /type ProviderRegistry struct/);
   assert.match(mfaService, /totpCode/);
+  assert.match(mfaService, /RecoverMFA/);
   assert.match(mfaStore, /ConsumeChallenge/);
+  assert.match(mfaStore, /RecoverEnrollment/);
   assert.match(externalLogin, /validPKCEChallenge\(in\.CodeChallenge\)/);
   assert.match(externalLogin, /in\.CodeChallengeMethod != "S256"/);
   assert.doesNotMatch(externalLogin, /TrimSpace\(in\.(State|Code|CodeVerifier|CodeChallenge)/);
@@ -165,6 +168,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(read(project, "docs", "auth", "provider-exchange.yaml"), /providerExchange/);
   assert.match(read(project, "docs", "auth", "mfa-enroll-setup.yaml"), /setupRequiredMFA/);
   assert.match(read(project, "docs", "auth", "mfa-enroll-confirm.yaml"), /confirmRequiredMFA/);
+  assert.match(read(project, "docs", "auth", "users-me-mfa-recover.yaml"), /recoverMyMFA/);
   assert.match(read(project, "docs", "auth", "provider-login.yaml"), /minLength: 43/);
   assert.match(read(project, "docs", "auth", "users-me-sessions.yaml"), /listMySessions/);
   assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
@@ -181,6 +185,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.doesNotMatch(schemas, /user_agent:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /IdentityResponse:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /MFAEnrollmentRequiredResponse:/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /MFARecoveryResponse:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));

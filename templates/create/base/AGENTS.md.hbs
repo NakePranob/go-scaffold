@@ -309,14 +309,19 @@ MFA has an operator capability switch and a separate per-user enrollment:
 - Authenticated users manage enrollment through `GET /users/me/mfa`,
   `POST /users/me/mfa/setup`, `POST /users/me/mfa/confirm`, and
   `POST /users/me/mfa/disable` (the last requires the current TOTP code).
-  Setup material is pending-only; recovery codes are returned once.
+  Setup material is pending-only; recovery codes are returned once. A lost
+  factor can be replaced through `POST /users/me/mfa/recover`, which requires
+  an authenticated session plus one unused recovery code, revokes refresh
+  sessions, and returns a setup-only enrollment token. The caller must finish
+  the normal setup/confirm flow before receiving a new application session.
 - Password login and provider exchange may return a pre-session
   `{ "mfa_required": true, "challenge": "..." }`. Do not issue an access
   token or refresh cookie until `POST /auth/mfa/verify` succeeds. Challenges
   are hashed, short-lived, and one-use; failed verification consumes the
   challenge and counts against a durable per-user throttle before another
   challenge can be created. Recovery codes are hashed, atomic one-use login
-  factors and are not accepted to disable MFA.
+  factors. Recovery codes are accepted for the explicit factor-replacement
+  flow only, never for ordinary MFA disable.
 - MFA data is durable in Postgres for both refresh-token store choices. The
   `create_mfa` migration must be applied before production and covered by
   real-store/concurrency tests.

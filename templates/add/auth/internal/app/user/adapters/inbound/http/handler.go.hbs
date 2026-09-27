@@ -168,6 +168,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	mfaSetupLimit := middleware.RateLimit(h.limiter, "mfa-setup", 5, time.Minute)
 	mfaConfirmLimit := middleware.RateLimit(h.limiter, "mfa-confirm", 5, time.Minute)
 	mfaDisableLimit := middleware.RateLimit(h.limiter, "mfa-disable", 5, time.Minute)
+	mfaRecoveryLimit := middleware.RateLimit(h.limiter, "mfa-recovery", 5, time.Minute)
 	identityLinkLimit := middleware.RateLimit(h.limiter, "identity-link", 10, time.Minute)
 	reauthLimit := middleware.RateLimit(h.limiter, "reauth", 5, time.Minute)
 	recentAuth := middleware.RequireRecentAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience)
@@ -199,6 +200,7 @@ func (h *Handler) Register(rg gin.IRouter) {
 	usersGroup.POST("/me/mfa/setup", mfaSetupLimit, recentAuth, h.setupMFA)
 	usersGroup.POST("/me/mfa/confirm", mfaConfirmLimit, recentAuth, h.confirmMFA)
 	usersGroup.POST("/me/mfa/disable", mfaDisableLimit, recentAuth, h.disableMFA)
+	usersGroup.POST("/me/mfa/recover", mfaRecoveryLimit, h.recoverMFA)
 	h.registerIdentityRoutes(usersGroup, identityLinkLimit, recentAuth)
 	// Admin user routes are enabled only when the optional RBAC authorizer is
 	// supplied by the composition root. Auth-only projects keep the endpoint

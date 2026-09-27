@@ -374,6 +374,30 @@ func (f *fakeMFAStore) Disable(_ context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+func (f *fakeMFAStore) HasRecoveryCode(_ context.Context, userID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.recovery[userID][hash]
+	return ok, nil
+}
+
+func (f *fakeMFAStore) RecoverEnrollment(_ context.Context, userID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	codes := f.recovery[userID]
+	if _, ok := codes[hash]; !ok {
+		return false, nil
+	}
+	delete(f.enrollments, userID)
+	delete(f.recovery, userID)
+	for challengeHash, challenge := range f.challenges {
+		if challenge.UserID == userID {
+			delete(f.challenges, challengeHash)
+		}
+	}
+	return true, nil
+}
+
 func (f *fakeMFAStore) CreateChallenge(_ context.Context, hash string, challenge MFAChallenge) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
