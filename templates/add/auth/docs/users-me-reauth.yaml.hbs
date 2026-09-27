@@ -1,0 +1,20 @@
+post:
+  summary: Re-authenticate the current user for sensitive actions
+  description: Verifies the current local password and, when enrolled, the current MFA code. Returns a five-minute proof bound to the authenticated user.
+  operationId: reauthenticateMe
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/ReauthInput' }
+  responses:
+    "200":
+      description: short-lived reauthentication proof
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/ReauthResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { description: valid session but the required authentication factor was not accepted }

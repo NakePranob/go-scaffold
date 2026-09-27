@@ -3,7 +3,7 @@ RegisterInput:
   required: [email, password, name]
   properties:
     email: { type: string, format: email }
-    password: { type: string, format: password, minLength: 8, maxLength: 72 }
+    password: { type: string, format: password, minLength: 8, maxLength: 256 }
     name: { type: string }
 
 LoginInput:
@@ -11,7 +11,28 @@ LoginInput:
   required: [email, password]
   properties:
     email: { type: string, format: email }
-    password: { type: string, format: password, maxLength: 72 }
+    password: { type: string, format: password, maxLength: 256 }
+
+ReauthInput:
+  type: object
+  additionalProperties: false
+  properties:
+    password: { type: string, format: password, maxLength: 256 }
+    code: { type: string, minLength: 6, maxLength: 16 }
+
+ReauthResponse:
+  type: object
+  required: [reauth_token, expires_in]
+  properties:
+    reauth_token: { type: string, description: short-lived proof for sensitive account actions }
+    expires_in: { type: integer, example: 300 }
+
+ChangePasswordInput:
+  type: object
+  required: [new_password]
+  additionalProperties: false
+  properties:
+    new_password: { type: string, format: password, minLength: 8, maxLength: 256 }
 
 ForgotPasswordInput:
   type: object
@@ -24,7 +45,7 @@ ResetPasswordInput:
   required: [token, new_password]
   properties:
     token: { type: string }
-    new_password: { type: string, format: password, minLength: 8, maxLength: 72 }
+    new_password: { type: string, format: password, minLength: 8, maxLength: 256 }
 
 VerifyEmailInput:
   type: object
@@ -54,6 +75,39 @@ MFAChallengeResponse:
     mfa_required: { type: boolean, example: true }
     challenge: { type: string }
 
+MFAEnrollmentRequiredResponse:
+  type: object
+  required: [mfa_enrollment_required, enrollment_token]
+  properties:
+    mfa_enrollment_required: { type: boolean, example: true }
+    enrollment_token: { type: string, description: short-lived setup-only capability; never grants application access }
+
+MFAEnrollmentSetupInput:
+  type: object
+  required: [enrollment_token]
+  additionalProperties: false
+  properties:
+    enrollment_token: { type: string }
+
+MFAEnrollmentConfirmInput:
+  type: object
+  required: [enrollment_token, code]
+  additionalProperties: false
+  properties:
+    enrollment_token: { type: string }
+    code: { type: string, minLength: 6, maxLength: 16 }
+
+MFAEnrollmentConfirmResponse:
+  type: object
+  required: [access_token, token_type, expires_in, recovery_codes]
+  properties:
+    access_token: { type: string }
+    token_type: { type: string, example: Bearer }
+    expires_in: { type: integer }
+    recovery_codes:
+      type: array
+      items: { type: string }
+
 MFAStatus:
   type: object
   required: [available, enabled]
@@ -75,6 +129,13 @@ MFAConfirmResponse:
     recovery_codes:
       type: array
       items: { type: string }
+
+MFARecoveryResponse:
+  type: object
+  required: [mfa_recovery_started, enrollment_token]
+  properties:
+    mfa_recovery_started: { type: boolean, example: true }
+    enrollment_token: { type: string, description: short-lived setup-only capability; complete MFA enrollment before receiving a new session }
 
 OAuthExchangeInput:
   type: object
@@ -112,15 +173,23 @@ MeResponse:
     name: { type: string }
     avatar_url: { type: string }
     email_verified: { type: boolean }
+    disabled_at: { type: string, format: date-time, nullable: true, description: set when the account is soft-disabled }
     # go-scaffold:me-response-fields
     created_at: { type: string, format: date-time }
 
 SessionResponse:
   type: object
-  required: [id, user_agent, created_at, last_used_at, expires_at, current]
+  required: [id, device_key, device_type, device_name, browser_name, os_name, created_at, last_used_at, expires_at, current]
   properties:
     id: { type: string, format: uuid }
-    user_agent: { type: string, description: browser or client User-Agent captured at sign-in }
+    device_key: { type: string, description: opaque key derived from non-public session metadata for client grouping }
+    device_type: { type: string, enum: [mobile, tablet, desktop] }
+    device_name: { type: string, description: safe display name derived from the client metadata }
+    device_model: { type: string, description: optional device model }
+    browser_name: { type: string }
+    browser_version: { type: string }
+    os_name: { type: string }
+    os_version: { type: string }
     created_at: { type: string, format: date-time }
     last_used_at: { type: string, format: date-time }
     expires_at: { type: string, format: date-time }
@@ -152,10 +221,9 @@ IdentitiesResponse:
 
 IdentityLinkStartInput:
   type: object
-  required: [state, code_challenge, code_challenge_method]
+  required: [code_challenge, code_challenge_method]
   additionalProperties: false
   properties:
-    state: { type: string, minLength: 1 }
     code_challenge:
       type: string
       minLength: 43
@@ -174,4 +242,4 @@ LocalIdentityLinkInput:
   required: [password]
   additionalProperties: false
   properties:
-    password: { type: string, format: password, minLength: 8, maxLength: 72 }
+    password: { type: string, format: password, minLength: 8, maxLength: 256 }

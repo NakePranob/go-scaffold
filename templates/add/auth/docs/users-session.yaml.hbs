@@ -1,0 +1,20 @@
+delete:
+  summary: Revoke one session for another user
+  description: Terminates one active refresh-token session for another user. This route is available only when RBAC is enabled and the caller has user:manage-session.
+  operationId: revokeUserSession
+  tags: [users]
+  security: [{ bearerAuth: [] }]
+  parameters:
+    - name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    - name: session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    "204": { description: session revoked }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }

@@ -4,6 +4,10 @@ delete:
   tags: [users]
   security: [{ bearerAuth: [] }]
   parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
     - name: provider
       in: path
       required: true
@@ -11,5 +15,6 @@ delete:
   responses:
     "204": { description: login identity unlinked }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "404": { description: login identity not found }
     "409": { description: cannot remove the last login identity }

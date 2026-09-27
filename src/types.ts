@@ -28,7 +28,7 @@ export type AuthStore = "postgres" | "redis";
  */
 export type BrowserTopology = "same-origin" | "same-site" | "cross-site";
 
-/** An assessment target, not a claim that the generated application passes ASVS. */
+/** A generated security profile, not a claim that the application passes ASVS. */
 export type AsvsLevel = 1 | 2 | 3;
 export interface AsvsTarget {
   version: "5.0.0";
@@ -92,6 +92,10 @@ export interface ProjectFeatures {
   auth?: boolean;
   /** which backing store `add auth` chose for tokens + rate limiting */
   authStore?: AuthStore;
+  /** browser/API cookie and CORS topology selected by `add auth` */
+  authBrowserTopology?: BrowserTopology;
+  /** failed-login lockout shape selected by `add auth` */
+  authLockout?: LockoutPolicy;
   /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */
   rbac?: boolean;
   /** chosen at `create` time — Prometheus /metrics + OpenTelemetry tracing (Gin + GORM) */
@@ -106,7 +110,7 @@ export interface ProjectConfig {
   /** URL prefix every route is grouped under, e.g. "v1" -> /v1/orders. "" means no prefix. */
   apiPrefix: string;
   features: ProjectFeatures;
-  /** Optional security verification target selected when auth was installed. */
+  /** Optional generated auth security profile selected when auth was installed. */
   asvs?: AsvsTarget;
   architecture: ArchitectureConfig;
   /** Resolved choices recorded for each generated module, keyed by Go package name. */

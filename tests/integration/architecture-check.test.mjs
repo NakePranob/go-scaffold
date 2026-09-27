@@ -32,6 +32,22 @@ test("check accepts service and CQRS modules in the same modular monolith", () =
   }
 });
 
+test("check does not mistake a project name containing redis for a Redis import", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-redis-name-"));
+  try {
+    run(scratch, "create", "auditredis", "--defaults", "--no-docker");
+    const project = path.join(scratch, "auditredis");
+    run(project, "generate", "module", "orders", "--profile", "crud", "--defaults");
+    assert.match(run(project, "check"), /architecture check passed: 1 split module/);
+
+    const illegal = path.join(project, "internal", "app", "order", "application", "illegal.go");
+    writeFileSync(illegal, 'package application\n\nimport _ "github.com/redis/go-redis/v9"\n');
+    assert.throws(() => run(project, "check"), /application layer imports forbidden dependency github\.com\/redis\/go-redis\/v9/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("check accepts the RBAC role module with an HTTP DTO boundary", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-rbac-"));
   try {

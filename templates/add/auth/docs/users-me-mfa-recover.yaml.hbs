@@ -1,0 +1,22 @@
+post:
+  summary: Recover a lost MFA factor
+  description: Requires an authenticated session and one unused MFA recovery code. Revokes refresh sessions, removes the old factor and remaining recovery codes atomically, then returns a setup-only enrollment token. Complete mfa-enroll/setup and mfa-enroll/confirm before receiving a new application session.
+  operationId: recoverMyMFA
+  tags: [users]
+  security:
+    - bearerAuth: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/MFACodeInput' }
+  responses:
+    "200":
+      description: Old factor removed; the caller must complete a fresh MFA enrollment
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MFARecoveryResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "429": { $ref: '../common/responses.yaml#/TooManyRequestsError' }
+    "503": { description: MFA is disabled or unavailable }

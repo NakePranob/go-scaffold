@@ -1,12 +1,11 @@
 import fs from "fs-extra";
-import { ensureImport, hasMarker, insertBeforeMarkerOnce } from "./marker-patch";
-import { AuthStore, QueueBackend } from "../types";
+import { hasMarker, insertBeforeMarkerOnce } from "./marker-patch";
+import { AuthStore } from "../types";
 
 const IMPORT_MARKER = "// go-scaffold:imports";
 const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 const CONFIG_CHECKS_MARKER = "// go-scaffold:config-checks";
-const PLATFORM_INIT_MARKER = "// go-scaffold:platform-init";
 const SCHEMA_MARKER = "// go-scaffold:schemas";
 const MODEL_MARKER = "// go-scaffold:models";
 const ROUTE_MARKER = "// go-scaffold:routes";
@@ -20,6 +19,9 @@ export function patchConfigForAuth(configGoPath: string): void {
 
   const fieldsBlock = [
     "JWTSecret string",
+    "AuthMetadataKey string",
+    "JWTIssuer string",
+    "JWTAudience string",
     "JWTAccessTTL time.Duration",
     "JWTRefreshTTL time.Duration",
     "JWTRefreshMaxTTL time.Duration",
@@ -37,18 +39,29 @@ export function patchConfigForAuth(configGoPath: string): void {
     "GoogleClientID string",
     "GoogleClientSecret string",
     "GoogleOAuthRedirectURI string",
+    "GoogleOIDCMaxAuthAgeSec int",
+    "GoogleOIDCRequiredACR string",
+    "GoogleOIDCRequiredAMR string",
     "",
     "AuthMFAEnabled bool",
+    "AuthMFARequiredForLogin bool",
     "MFAIssuer string",
     "MFAEncryptionKey string",
     "MFAChallengeTTL time.Duration",
     "MFATOTPWindow int",
     "MFARecoveryCodeCount int",
+    "AuthMaxSessions int",
+    "AuthCommonPasswordsFile string",
+    "AuthContextPasswordsFile string",
+    "AuthBreachedPasswordsFile string",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
 
   const loadBlock = [
     'JWTSecret:     env("JWT_SECRET", "dev-secret-change-me"),',
+    'AuthMetadataKey: env("AUTH_METADATA_KEY", "dev-metadata-key-change-me"),',
+    'JWTIssuer:     env("JWT_ISSUER", "go-scaffold"),',
+    'JWTAudience:   env("JWT_AUDIENCE", "api"),',
     'JWTAccessTTL:  time.Duration(envInt("JWT_ACCESS_TTL_MIN", 15)) * time.Minute,',
     'JWTRefreshTTL: time.Duration(envInt("JWT_REFRESH_TTL_MIN", 43200)) * time.Minute,',
     'JWTRefreshMaxTTL: time.Duration(envInt("JWT_REFRESH_MAX_TTL_MIN", 43200)) * time.Minute,',
@@ -66,95 +79,112 @@ export function patchConfigForAuth(configGoPath: string): void {
     'GoogleClientID:     env("GOOGLE_CLIENT_ID", ""),',
     'GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),',
     'GoogleOAuthRedirectURI: env("GOOGLE_OAUTH_REDIRECT_URI", ""),',
+    'GoogleOIDCMaxAuthAgeSec: envInt("GOOGLE_OIDC_MAX_AGE_SEC", 0),',
+    'GoogleOIDCRequiredACR: env("GOOGLE_OIDC_REQUIRED_ACR", ""),',
+    'GoogleOIDCRequiredAMR: env("GOOGLE_OIDC_REQUIRED_AMR", ""),',
     "",
     'AuthMFAEnabled: env("AUTH_MFA_ENABLED", "false") == "true",',
+    'AuthMFARequiredForLogin: env("AUTH_MFA_REQUIRED_FOR_LOGIN", "false") == "true",',
     'MFAIssuer: env("MFA_ISSUER", "go-scaffold"),',
     'MFAEncryptionKey: env("MFA_ENCRYPTION_KEY", ""),',
     'MFAChallengeTTL: time.Duration(envInt("MFA_CHALLENGE_TTL_MIN", 5)) * time.Minute,',
     'MFATOTPWindow: envInt("MFA_TOTP_WINDOW", 1),',
     'MFARecoveryCodeCount: envInt("MFA_RECOVERY_CODE_COUNT", 10),',
+    'AuthMaxSessions: envInt("AUTH_MAX_SESSIONS", 10),',
+    'AuthCommonPasswordsFile: env("AUTH_COMMON_PASSWORDS_FILE", ""),',
+    'AuthContextPasswordsFile: env("AUTH_CONTEXT_PASSWORDS_FILE", ""),',
+    'AuthBreachedPasswordsFile: env("AUTH_BREACHED_PASSWORDS_FILE", ""),',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');
 
   fs.writeFileSync(configGoPath, content);
 }
 
-// patchMainGoForAuth wires the user domain into cmd/api: its import, a
-// queue.Client (needed for the forgot-password email — cmd/api itself never
-// enqueued anything before this), its models in a legacy development bootstrap, a
+// patchMainGoForAuth wires the user domain into cmd/api: its import, optional
+// models in a legacy development bootstrap, a
 // prod guard against the still-default JWT secret, and its route
 // registration (the domain's own Handler.Register splits /auth public vs
 // /users protected — main.go doesn't need to know that split, same
 // convention as every other module).
 export interface AuthWiring {
   goModule: string;
-  /** which adapter `add worker` chose — decides how the enqueuer is built */
-  queueBackend: QueueBackend;
   /** which store `add auth` chose — decides the token store and the limiter */
   store: AuthStore;
-  /** whether the project has a queue to hand mail to */
-  worker: boolean;
-}
-
-// authWiringLines is the single source of truth for the two lines that differ
-// between stores, so patchMainGoForAuth and `add rbac`'s rewrite of the same
-// lines can never drift apart.
-export function authWiringLines(w: AuthWiring) {
-  const postgres = w.store === "postgres";
-  return {
-    tokenStore: postgres ? "user.NewPgTokenStore(db)" : "user.NewRedisTokenStore(rdb, db)",
-    limiter: postgres ? "middleware.NewMemoryLimiter()" : "middleware.NewRedisLimiter(rdb)",
-    // with a queue the mail is enqueued and the request returns immediately;
-    // without one it goes out inline, which is the cost of not running a worker
-    mailer: w.worker ? "mail.NewAsyncClient(q)" : "mail.NewSyncClient(mail.Open(cfg))",
-  };
 }
 
 // authHandlerLineFor is the one root-level auth route shape. The feature owns
 // construction; wiring.go only hands it shared infrastructure and, when RBAC
 // is present, the role feature's public capabilities.
+export function authSessionValidatorLine(w: AuthWiring): string {
+  const args = ["db", "cfg"];
+  if (w.store === "redis") args.push("rdb");
+  return `sessionValidator := user.NewSessionValidatorFromDB(${args.join(", ")})`;
+}
+
 export function authHandlerLineFor(w: AuthWiring, roleDependencies: [string, string] = ["nil", "nil"]): string {
   const args = ["db", "cfg"];
   if (w.store === "redis") args.push("rdb");
-  if (w.worker) args.push("q");
   args.push(...roleDependencies);
   return `user.NewHandlerFromDB(${args.join(", ")}).Register(api)`;
 }
 
 export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
-  const { goModule, queueBackend, store } = w;
+  const { goModule, store } = w;
   let content = fs.readFileSync(mainGoPath, "utf8");
 
   const importLine = `"${goModule}/internal/app/user"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, `"net/url"`, `"net/url"`);
   const modelImportLine = `usermodel "${goModule}/internal/app/user/adapters/outbound/postgres"`;
   // Only the development AutoMigrate list ever used this alias, so it is only
   // an import where that list still exists — see the guard further down.
   if (hasMarker(content, MODEL_MARKER)) {
     content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
   }
-  if (w.worker) {
-    const queueImportLine = `"${goModule}/internal/platform/queue"`;
-    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
-  }
   const checkBlock = [
+    'if os.Getenv("APP_ENV") == "" {',
+    '\treturn errors.New("APP_ENV must be set explicitly for auth-enabled projects (use development locally or production when deployed)")',
+    "}",
     'if cfg.IsProd() && cfg.JWTSecret == "dev-secret-change-me" {',
     '\treturn errors.New("JWT_SECRET is still the dev default — set a real secret before deploying with APP_ENV=production")',
     "}",
     'if cfg.IsProd() && len([]byte(cfg.JWTSecret)) < 32 {',
     '\treturn errors.New("JWT_SECRET must be at least 32 bytes before deploying with APP_ENV=production")',
     "}",
+    'if cfg.JWTIssuer == "" || cfg.JWTAudience == "" {',
+    '\treturn errors.New("JWT_ISSUER and JWT_AUDIENCE must be configured")',
+    "}",
+    'if cfg.IsProd() && (cfg.JWTIssuer == "go-scaffold" || cfg.JWTAudience == "api") {',
+    '\treturn errors.New("JWT_ISSUER and JWT_AUDIENCE must be changed from their development defaults before deploying with APP_ENV=production")',
+    "}",
+    'if cfg.IsProd() && cfg.AuthMetadataKey == "dev-metadata-key-change-me" {',
+    '\treturn errors.New("AUTH_METADATA_KEY is still the dev default — set a separate key before deploying with APP_ENV=production")',
+    "}",
+    'if cfg.IsProd() && len([]byte(cfg.AuthMetadataKey)) < 32 {',
+    '\treturn errors.New("AUTH_METADATA_KEY must be at least 32 bytes before deploying with APP_ENV=production")',
+    "}",
+    'if cfg.IsProd() && cfg.AuthMetadataKey == cfg.JWTSecret {',
+    '\treturn errors.New("AUTH_METADATA_KEY must be different from JWT_SECRET before deploying with APP_ENV=production")',
+    "}",
+    'for _, endpoint := range []struct { name, value string }{{"PASSWORD_RESET_URL", cfg.PasswordResetURL}, {"EMAIL_VERIFY_URL", cfg.EmailVerifyURL}} {',
+    '\tu, err := url.Parse(endpoint.value)',
+    '\tif err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {',
+    '\t\treturn fmt.Errorf("%s must be an absolute http(s) URL; set it in the deployment environment", endpoint.name)',
+    '\t}',
+    '\tif cfg.IsProd() && u.Scheme != "https" {',
+    '\t\treturn fmt.Errorf("%s must use https:// when APP_ENV=production", endpoint.name)',
+    '\t}',
+    '}',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
 
-  // Without SMTP the mail client logs the message instead of sending it — a
-  // deliberate dev convenience that in production means password-reset and
-  // email-verification links land in the log aggregator while
-  // /auth/forgot-password still answers 200, so nobody finds out the mail
-  // never went anywhere.
+  // Without SMTP the mail client logs only metadata instead of sending — a
+  // deliberate dev convenience that in production would silently drop
+  // password-reset and email-verification mail while /auth/forgot-password
+  // still answers 200. Refuse that configuration at boot.
   const smtpCheckBlock = [
     'if cfg.IsProd() && cfg.SMTPHost == "" {',
-    '\treturn errors.New("SMTP_HOST is unset — password reset and email verification links would be written to the log instead of sent")',
+    '\treturn errors.New("SMTP_HOST is unset — password reset and email verification mail would not be sent")',
     "}",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, smtpCheckBlock, "SMTP_HOST is unset");
@@ -175,14 +205,21 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, mfaCheckBlock, "invalid MFA configuration");
 
-  // The enqueuer is built from whatever backend `add worker` chose — the
-  // constructor differs, everything downstream of it (mail.NewAsyncClient)
-  // only sees the queue.Enqueuer interface and doesn't change.
-  if (w.worker) {
-    const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
-    const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\treturn fmt.Errorf("open queue: %w", err)', "}"].join("\n");
-    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
-  }
+  const sessionCheckBlock = [
+    "if cfg.JWTAccessTTL <= 0 {",
+    '\treturn fmt.Errorf("JWT_ACCESS_TTL_MIN must be positive")',
+    "}",
+    "if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 {",
+    '\treturn fmt.Errorf("JWT refresh token lifetimes must be positive")',
+    "}",
+    "if cfg.JWTRefreshMaxTTL < cfg.JWTRefreshTTL {",
+    '\treturn fmt.Errorf("JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN")',
+    "}",
+    "if cfg.AuthMaxSessions < 1 || cfg.AuthMaxSessions > 100 {",
+    '\treturn fmt.Errorf("AUTH_MAX_SESSIONS must be between 1 and 100")',
+    "}",
+  ].join("\n");
+  content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, sessionCheckBlock, "JWT_ACCESS_TTL_MIN must be positive");
 
   const schemaBlock = [
     'if err := db.Exec("CREATE SCHEMA IF NOT EXISTS user_svc").Error; err != nil {',
@@ -220,100 +257,5 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = content.replace(/\n\t_ = api \/\/ dropped once `generate module` registers the first route\n/, "\n");
 
-  if (w.worker) {
-    const cleanupBlock = [
-      "defer func() {",
-      '\tif err := q.Close(); err != nil {',
-      '\t\tlogger.Error("close queue", "error", err)',
-      "\t}",
-      "}()",
-    ].join("\n");
-    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, cleanupBlock, "defer func() {\n\tif err := q.Close()");
-  }
-
   fs.writeFileSync(mainGoPath, content);
-}
-
-// upgradeMailerToQueue is `add worker` arriving after `add auth`. Auth wired a
-// synchronous mailer because there was no queue at the time; now there is one,
-// so the enqueuer gets built and the mailer swapped for the async client.
-//
-// Without this the printed "run `add worker` later to move it onto the queue"
-// would be a lie, and the project would keep blocking on SMTP with a perfectly
-// good queue sitting next to it.
-//
-// No-op on a project whose auth already had a worker, and on one with no auth
-// at all — both simply don't contain the line it looks for. Returns whether
-// it actually upgraded something, so the caller's printed summary can say
-// which happened instead of always assuming "no auth yet".
-export function upgradeMailerToQueue(
-  mainGoPath: string,
-  goModule: string,
-  queueBackend: QueueBackend,
-  compositionGoPath?: string
-): boolean {
-  let content = fs.readFileSync(mainGoPath, "utf8");
-  const syncMailer = "mail.NewSyncClient(mail.Open(cfg))";
-  let upgradedComposition = false;
-
-  // Auth now keeps mailer construction in internal/app/user. A worker added
-  // later must upgrade that feature-local composition and thread q into the
-  // existing root registration, rather than moving construction back to the
-  // composition root.
-  if (compositionGoPath && fs.existsSync(compositionGoPath)) {
-    let composition = fs.readFileSync(compositionGoPath, "utf8");
-    if (composition.includes(syncMailer)) {
-      composition = ensureImport(composition, `${goModule}/internal/platform/queue`);
-      if (!composition.includes("q queue.Enqueuer")) {
-        const configParam = "\tcfg config.Config,\n";
-        const redisParam = "\trdb *redis.Client,\n";
-        const queueAnchor = composition.includes(redisParam) ? redisParam : configParam;
-        if (!composition.includes(queueAnchor)) {
-          throw new Error(`${compositionGoPath} is missing the cfg parameter needed to upgrade auth mail to a queue`);
-        }
-        composition = composition.replace(queueAnchor, `${queueAnchor}\tq queue.Enqueuer,\n`);
-      }
-      composition = composition.replace(syncMailer, "mail.NewAsyncClient(q)");
-      fs.writeFileSync(compositionGoPath, composition);
-      upgradedComposition = true;
-
-      const routeMatch = content.match(/user\.NewHandlerFromDB\(db, cfg, ([^)]*)\)\.Register\(api\)/);
-      if (!routeMatch) {
-        throw new Error("cmd/api/wiring.go is missing auth's feature-local NewHandlerFromDB route while adding the worker");
-      }
-      const args = routeMatch[1].split(",").map((arg) => arg.trim());
-      if (!args.includes("q")) {
-        if (args.length < 2) throw new Error("auth's NewHandlerFromDB route has no role/authz dependency slots");
-        args.splice(args.length - 2, 0, "q");
-        content = content.replace(routeMatch[0], `user.NewHandlerFromDB(db, cfg, ${args.join(", ")}).Register(api)`);
-      }
-    }
-  }
-
-  if (upgradedComposition) {
-    const queueImportLine = `"${goModule}/internal/platform/queue"`;
-    content = insertBeforeMarkerOnce(content, IMPORT_MARKER, queueImportLine, queueImportLine);
-
-    const queueCtor = queueBackend === "river" ? "queue.NewRiverEnqueuer(db)" : "queue.NewAsynqEnqueuer(cfg.RedisURL)";
-    const queueInitBlock = [`q, err := ${queueCtor}`, "if err != nil {", '\treturn fmt.Errorf("open queue: %w", err)', "}"].join("\n");
-    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, queueInitBlock, "q, err := queue.New");
-
-    const cleanupBlock = [
-      "defer func() {",
-      '\tif err := q.Close(); err != nil {',
-      '\t\tlogger.Error("close queue", "error", err)',
-      "\t}",
-      "}()",
-    ].join("\n");
-    content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, cleanupBlock, "defer func() {\n\tif err := q.Close()");
-    fs.writeFileSync(mainGoPath, content);
-    return true;
-  }
-
-  if (content.includes(syncMailer)) {
-    throw new Error(
-      "auth mailer is not owned by internal/app/user/composition.go; regenerate auth with the canonical split layout before adding a worker"
-    );
-  }
-  return false;
 }

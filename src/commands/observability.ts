@@ -9,6 +9,7 @@ import {
   patchDatabaseGoForObservability,
   patchEnvExampleForObservability,
   patchMainGoForObservability,
+  patchWorkerGoForObservability,
   patchOpenapiIndexForObservability,
 } from "../utils/observability-patcher";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
@@ -35,6 +36,9 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
   await applyTemplateEntries(projectDir, OBSERVABILITY_FILES, { openapiDocs: config.features.openapiDocs });
 
   patchMainGoForObservability(path.join(projectDir, "cmd", "api", "wiring.go"), config.goModule, config.projectName);
+  if (config.features.worker) {
+    patchWorkerGoForObservability(path.join(projectDir, "cmd", "worker", "main.go"), config.goModule, config.projectName);
+  }
   patchDatabaseGoForObservability(path.join(projectDir, "internal", "platform", "database", "database.go"), config.goModule);
   patchConfigForObservability(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchGoModRequires(path.join(projectDir, "go.mod"), [
@@ -67,15 +71,8 @@ export async function addObservability(projectDir: string = process.cwd(), opts:
   if (opts.silent) return;
   console.log(pc.green("\nadded internal/platform/telemetry/, internal/shared/middleware/{metrics,tracing}.go, and GET /metrics"));
   console.log("wired into cmd/api/wiring.go and internal/platform/database — every request and GORM query cmd/api makes now gets a trace span");
-  // database.Open is shared, so a River-backed cmd/worker does raise GORM
-  // spans — but telemetry.Init, the only caller of otel.SetTracerProvider,
-  // runs in cmd/api alone. Those spans reach a no-op provider and vanish, and
-  // the worker serves no /metrics. Say so rather than leave someone hunting
-  // for background jobs that were never going to appear.
   if (config.features.worker) {
-    console.log(
-      pc.yellow("cmd/worker is not instrumented — it initialises no tracer provider, so its spans are dropped and it exposes no /metrics")
-    );
+    console.log("cmd/worker initializes its own tracer and traces generated mail jobs; it does not expose /metrics");
   }
   if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add observability")));
   console.log(

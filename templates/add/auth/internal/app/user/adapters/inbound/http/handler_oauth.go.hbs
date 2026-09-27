@@ -1,6 +1,8 @@
 package httpadapter
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -11,9 +13,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func newOAuthState() (string, error) {
+	state := make([]byte, 32)
+	if _, err := rand.Read(state); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(state), nil
+}
+
 func (h *Handler) providerLogin(c *gin.Context) {
+	state, err := newOAuthState()
+	if err != nil {
+		c.Error(h.oauthAppError(c.Param("provider"), err))
+		return
+	}
 	start, err := h.svc.BeginLogin(c.Request.Context(), c.Param("provider"), toLoginStartInput(loginStartInput{
-		State:               c.Query("state"),
+		State:               state,
 		CodeChallenge:       c.Query("code_challenge"),
 		CodeChallengeMethod: c.Query("code_challenge_method"),
 	}))
@@ -21,6 +36,7 @@ func (h *Handler) providerLogin(c *gin.Context) {
 		c.Error(h.oauthAppError(c.Param("provider"), err))
 		return
 	}
+	h.setOAuthStateCookie(c, state)
 	c.Redirect(http.StatusFound, start.URL)
 }
 
@@ -34,8 +50,12 @@ func (h *Handler) providerExchange(c *gin.Context) {
 		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthFailed, err)))
 		return
 	}
+	if !h.oauthStateMatches(c, in.State) {
+		c.Error(h.oauthAppError(c.Param("provider"), userapp.NewOAuthError(userapp.OAuthStateInvalid, nil)))
+		return
+	}
 	input := toLoginExchangeInput(in)
-	input.Session = sessionContext(c.GetHeader("User-Agent"))
+	input.Session = sessionContext(c.GetHeader("User-Agent"), c.ClientIP())
 	auth, err := h.svc.ExchangeLogin(c.Request.Context(), c.Param("provider"), input)
 	if err != nil {
 		c.Error(h.oauthAppError(c.Param("provider"), err))

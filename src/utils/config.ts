@@ -57,6 +57,8 @@ export function writeConfig(projectDir: string, config: ProjectConfig): void {
 // CLI reported success over a project that no longer builds), while
 // `undo module user` read a missing `auth` key as "not auth's" and deleted the
 // whole auth domain. The tree always knew the answer; this stops the guessing.
+// Auth mail wiring is deliberately independent of the queue backend, so a
+// missing queue key cannot cause auth to construct an enqueuer either.
 //
 // The file still wins wherever it has a value — an explicit `false` is an
 // answer, not a hole.
@@ -119,14 +121,14 @@ function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string)
     goModule,
     apiPrefix,
     features: features as ProjectFeatures,
-    ...(raw.asvs !== undefined ? { asvs: normalizeAsvsTarget(raw.asvs, features.auth) } : {}),
+    ...(raw.asvs !== undefined ? { asvs: normalizeAsvsProfile(raw.asvs, features.auth) } : {}),
     architecture,
     modules,
     ...(raw.scaffoldVersion ? { scaffoldVersion: raw.scaffoldVersion } : {}),
   };
 }
 
-function normalizeAsvsTarget(raw: unknown, auth: boolean | undefined): ProjectConfig["asvs"] {
+function normalizeAsvsProfile(raw: unknown, auth: boolean | undefined): ProjectConfig["asvs"] {
   if (!isRecord(raw) || raw.version !== "5.0.0" || ![1, 2, 3].includes(raw.level)) {
     throw new Error(`${CONFIG_FILE}.asvs must contain version "5.0.0" and level 1, 2, or 3`);
   }
@@ -198,6 +200,10 @@ function validateFeatures(features: Partial<ProjectFeatures>): void {
     throw new Error(`${CONFIG_FILE}.features.auth must be true or false`);
   }
   if (features.authStore !== undefined) assertOneOf(features.authStore, "features.authStore", ["postgres", "redis"]);
+  if (features.authBrowserTopology !== undefined) {
+    assertOneOf(features.authBrowserTopology, "features.authBrowserTopology", ["same-origin", "same-site", "cross-site"]);
+  }
+  if (features.authLockout !== undefined) assertOneOf(features.authLockout, "features.authLockout", ["progressive", "fixed"]);
   if (features.rbac !== undefined && typeof features.rbac !== "boolean") {
     throw new Error(`${CONFIG_FILE}.features.rbac must be true or false`);
   }

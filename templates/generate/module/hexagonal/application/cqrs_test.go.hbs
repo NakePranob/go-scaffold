@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+{{#if full}}	"errors"
+{{/if}}
 	"testing"
 
 	"{{goModule}}/internal/app/{{modulePath}}/domain"
@@ -62,5 +64,20 @@ func TestCQRSHandlersCompose(t *testing.T) {
 		t.Fatal("expected command and query handlers")
 	}
 }
+
+{{#if full}}
+func TestCommandHandler_UnimplementedWritesDoNotTouchRepository(t *testing.T) {
+	h := NewCommandHandler(&repositoryStub{})
+	if _, err := h.Create(context.Background(), CreateInput{}); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Create error = %v, want ErrNotImplemented", err)
+	}
+	if _, err := h.Update(context.Background(), uuid.New(), UpdateInput{Version: 1}); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Update error = %v, want ErrNotImplemented", err)
+	}
+	if err := h.Delete(context.Background(), uuid.New()); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Delete error = %v, want ErrNotImplemented", err)
+	}
+}
+{{/if}}
 
 // go-scaffold:repository-stub-methods

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -26,6 +27,7 @@ type recoveryTokenStore struct {
 }
 
 var _ ports.RecoveryTokenStore = (*recoveryTokenStore)(nil)
+var _ ports.ExpiredAuthStateStore = (*recoveryTokenStore)(nil)
 
 func NewRecoveryTokenStore(db *gorm.DB) ports.RecoveryTokenStore {
 	return newRecoveryTokenStore(db)
@@ -41,10 +43,10 @@ func (s *recoveryTokenStore) withTransaction(ctx context.Context, fn func(contex
 
 func (s *recoveryTokenStore) put(ctx context.Context, hash, kind string, userID uuid.UUID, ttl time.Duration) error {
 	expiresAt := time.Now().Add(ttl)
-	row := AuthToken{TokenHash: hash, UserID: userID, Kind: kind, ExpiresAt: expiresAt}
+	row := AuthToken{TokenHash: hash, UserID: authTokenUserID(userID), Kind: kind, ExpiresAt: expiresAt}
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("token_hash = ?", hash).
-		Assign(map[string]any{"user_id": userID, "kind": kind, "expires_at": expiresAt}).
+		Assign(map[string]any{"user_id": authTokenUserID(userID), "kind": kind, "expires_at": expiresAt}).
 		FirstOrCreate(&row).Error
 }
 
@@ -67,8 +69,36 @@ func (s *recoveryTokenStore) SetPasswordResetToken(ctx context.Context, tokenHas
 	return s.put(ctx, tokenHash, kindPasswordSet, userID, ttl)
 }
 
+// ReplacePasswordResetToken makes the newest recovery request the only
+// outstanding password-reset link for the account. The user-row lock
+// serializes concurrent requests for the same account; the delete and insert
+// then commit together so a failed insert cannot leave the account without
+// its previous working link.
+func (s *recoveryTokenStore) ReplacePasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.withTransaction(ctx, func(txctx context.Context) error {
+		db := tx.From(txctx, s.db).WithContext(txctx)
+		var user User
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		if err := s.RevokePasswordResetTokens(txctx, userID); err != nil {
+			return err
+		}
+		return s.put(txctx, tokenHash, kindPasswordSet, userID, ttl)
+	})
+}
+
 func (s *recoveryTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.consume(ctx, tokenHash, kindPasswordSet)
+}
+
+// RevokePasswordResetTokens invalidates every other outstanding reset link
+// after a successful password change. It runs on the caller's transaction so
+// a failed password update leaves all reset tokens retryable.
+func (s *recoveryTokenStore) RevokePasswordResetTokens(ctx context.Context, userID uuid.UUID) error {
+	return tx.From(ctx, s.db).WithContext(ctx).
+		Where("user_id = ? AND kind = ?", authTokenUserID(userID), kindPasswordSet).
+		Delete(&AuthToken{}).Error
 }
 
 func (s *recoveryTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
@@ -81,4 +111,11 @@ func (s *recoveryTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenH
 
 func (s *recoveryTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
 	return s.withTransaction(ctx, fn)
+}
+
+func (s *recoveryTokenStore) DeleteExpired(ctx context.Context) (int64, error) {
+	result := tx.From(ctx, s.db).WithContext(ctx).
+		Where("kind IN ? AND expires_at <= now()", []string{kindPasswordSet, kindEmailVerify}).
+		Delete(&AuthToken{})
+	return result.RowsAffected, result.Error
 }

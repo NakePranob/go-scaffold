@@ -114,7 +114,7 @@ function setCors(response, request, allowedOrigins) {
   if (!exactOrigin(origin, allowedOrigins)) return false;
   response.setHeader("Access-Control-Allow-Origin", origin);
   response.setHeader("Access-Control-Allow-Credentials", "true");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Reauth-Token");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   response.setHeader("Access-Control-Expose-Headers", "Location, Cache-Control, Pragma, Access-Control-Allow-Origin");
   response.setHeader("Vary", "Origin");

@@ -72,6 +72,10 @@ test("generated modules have scalable service and handler unit-test seams", () =
     const itemDocs = read(project, "docs/orders/item.yaml");
     const deleteContract = itemDocs.slice(itemDocs.indexOf("delete:"));
     assert.doesNotMatch(deleteContract, /"404"/);
+    assert.match(deleteContract, /"501"/);
+    assert.doesNotMatch(deleteContract, /"204"/);
+    assert.match(read(project, "docs/orders/collection.yaml"), /post:[\s\S]*"501"/);
+    assert.match(serviceTest, /TestService_UnimplementedWritesDoNotTouchRepository/);
 
     run("node", [CLI, "generate", "method", "orders", "approve", "--type", "patch"], project);
     const openapi = read(project, "docs/openapi.yaml");
@@ -84,8 +88,10 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.match(approveDocs, /"501":/);
     assert.doesNotMatch(approveDocs, /"200":/);
 
-    const approveHandler = read(project, "internal/app/order/adapters/inbound/http/handler.go");
-    const approveService = read(project, "internal/app/order/application/service.go");
+    const approveHandler = read(project, "internal/app/order/adapters/inbound/http/method_approve.go");
+    const approveService = read(project, "internal/app/order/application/method_approve.go");
+    assert.doesNotMatch(read(project, "internal/app/order/adapters/inbound/http/handler.go"), /func \(h \*Handler\) approve\(/);
+    assert.doesNotMatch(read(project, "internal/app/order/application/service.go"), /func \(s \*Service\) Approve\(/);
     assert.match(approveHandler, /if err := h\.svc\.Approve\(c\.Request\.Context\(\), id\); err != nil/);
     assert.match(approveHandler, /c\.Error\(appError\(err\)\)/);
     assert.match(approveService, /func \(s \*Service\) Approve\(ctx context\.Context, id uuid\.UUID\) error \{/);
@@ -98,11 +104,13 @@ test("generated modules have scalable service and handler unit-test seams", () =
     assert.doesNotMatch(submitDocs, /in: path/);
     assert.match(submitDocs, /^post:/m);
     assert.match(submitDocs, /requestBody:/);
+    assert.match(submitDocs, /"501":/);
+    assert.doesNotMatch(submitDocs, /"201":/);
 
     const submitDTO = read(project, "internal/app/order/adapters/inbound/http/dto.go");
     assert.match(submitDTO, /type SubmitInput struct/);
     assert.match(submitDTO, /func toSubmitInput\(in SubmitInput\) application\.SubmitInput/);
-    assert.match(read(project, "internal/app/order/adapters/inbound/http/handler.go"), /toSubmitInput\(in\)/);
+    assert.match(read(project, "internal/app/order/adapters/inbound/http/method_submit.go"), /toSubmitInput\(in\)/);
 
     run("go", ["mod", "tidy"], project);
     run("go", ["test", "./..."], project);

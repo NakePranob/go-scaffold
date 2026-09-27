@@ -4,10 +4,14 @@
 -- means and why the rotation tombstone is a separate row.
 CREATE TABLE user_svc.auth_tokens (
     token_hash TEXT PRIMARY KEY,
-    user_id    UUID NOT NULL,
+    -- Public OAuth state exists before an account is known, so this column is
+    -- nullable for kind = 'oauth_state'. User-bound refresh/recovery tokens
+    -- still carry the foreign key and are removed with their account.
+    user_id    UUID REFERENCES user_svc.users(id) ON DELETE CASCADE,
     kind       VARCHAR(20) NOT NULL,
     session_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
     user_agent TEXT NOT NULL DEFAULT '',
+    ip_address INET,
     expires_at TIMESTAMPTZ NOT NULL,
     absolute_expires_at TIMESTAMPTZ,
     provider   VARCHAR(20) NOT NULL DEFAULT '',

@@ -51,6 +51,22 @@ func Init(ctx context.Context, serviceName, endpoint string) (shutdown func(cont
 	}, nil
 }
 
+// TraceJob wraps a worker handler without recording its payload, which may
+// contain recovery tokens or other secrets. Each worker process calls Init.
+func TraceJob(kind string, next func(context.Context, []byte) error) func(context.Context, []byte) error {
+	return func(ctx context.Context, raw []byte) error {
+		ctx, span := otel.Tracer("queue").Start(ctx, "job."+kind)
+		defer span.End()
+		span.SetAttributes(attribute.String("job.kind", kind))
+		err := next(ctx, raw)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		return err
+	}
+}
+
 const tracerName = "gorm"
 
 // gormPlugin wraps every GORM operation (query, create, update, delete, row,

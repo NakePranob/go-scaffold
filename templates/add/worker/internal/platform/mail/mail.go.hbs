@@ -3,27 +3,36 @@ package mail
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
+	"strings"
 	"time"
 
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/internal/shared/emails"
 )
 
-// Client sends plain-text email over SMTP (net/smtp already handles STARTTLS
-// when the server offers it, which covers Gmail/SendGrid/Mailgun/SES/Resend
-// SMTP relays on port 587) — talks to a real external system, so it lives in
-// platform/, not shared/.
+// Client sends plain-text email over SMTP. Production requires STARTTLS before
+// authentication or envelope commands; development may use a local catcher
+// that does not advertise TLS.
 type Client struct {
 	host, port, username, password, from string
+	requireStartTLS bool
+	slots chan struct{}
 }
+
+const (
+	smtpSendTimeout      = 10 * time.Second
+	maxConcurrentSMTP    = 16
+)
 
 func Open(cfg config.Config) *Client {
 	return &Client{
@@ -32,17 +41,24 @@ func Open(cfg config.Config) *Client {
 		username: cfg.SMTPUsername,
 		password: cfg.SMTPPassword,
 		from:     cfg.SMTPFrom,
+		requireStartTLS: cfg.IsProd(),
+		slots:    make(chan struct{}, maxConcurrentSMTP),
 	}
 }
 
-// Send delivers a plain-text email. If SMTP isn't configured (dev default —
-// SMTP_HOST unset), it logs the message instead of failing, so flows that
-// send email stay testable without a real mail server.
 // Send delivers a rendered message. If SMTP isn't configured (dev default —
-// SMTP_HOST unset), it logs the plain-text part instead of failing, so flows
-// that send email stay testable without a mail server and the link stays
-// readable in the log.
+// SMTP_HOST unset), it logs only non-sensitive metadata instead of the body.
+// Recovery and verification bodies contain bearer links and must never enter
+// application logs.
 func (c *Client) Send(to string, m emails.Message) error {
+	return c.SendContext(context.Background(), to, m)
+}
+
+// SendContext bounds SMTP connection and protocol I/O and interrupts a
+// blocked connection when the request is canceled. The production client also
+// limits concurrent SMTP calls so unauthenticated mail endpoints cannot pin an
+// unbounded number of handler goroutines behind a stalled relay.
+func (c *Client) SendContext(ctx context.Context, to string, m emails.Message) error {
 	// build() skips a part whose body is empty, so a Message with neither half
 	// would go out as a multipart/alternative containing no parts at all —
 	// which every client renders as a blank mail. Refusing here leaves the job
@@ -51,8 +67,22 @@ func (c *Client) Send(to string, m emails.Message) error {
 		return fmt.Errorf("refusing to send an email with no body (subject %q)", m.Subject)
 	}
 	if c.host == "" {
-		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", m.Subject, "body", m.Text)
+		slog.Info("email not sent (SMTP not configured)", "to", to, "subject", m.Subject)
 		return nil
+	}
+	if strings.ContainsAny(to, "\r\n") {
+		return fmt.Errorf("refusing to send an email with an invalid recipient")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.slots != nil {
+		select {
+		case c.slots <- struct{}{}:
+			defer func() { <-c.slots }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	// ParseAddress so SMTP_FROM can carry a display name. The envelope needs
 	// the bare address — a relay handed `Name <a@b.com>` in MAIL FROM rejects
@@ -72,7 +102,70 @@ func (c *Client) Send(to string, m emails.Message) error {
 	if c.username != "" {
 		auth = smtp.PlainAuth("", c.username, c.password, c.host)
 	}
-	return smtp.SendMail(c.host+":"+c.port, auth, from.Address, []string{to}, msg)
+	return c.sendSMTP(ctx, from.Address, to, auth, msg)
+}
+
+func (c *Client) sendSMTP(ctx context.Context, from, to string, auth smtp.Auth, msg []byte) error {
+	deadlineCtx, cancel := context.WithTimeout(ctx, smtpSendTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{Timeout: smtpSendTimeout}).DialContext(deadlineCtx, "tcp", net.JoinHostPort(c.host, c.port))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if deadline, ok := deadlineCtx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	interrupt := make(chan struct{})
+	defer close(interrupt)
+	go func() {
+		select {
+		case <-deadlineCtx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-interrupt:
+		}
+	}()
+
+	client, err := smtp.NewClient(conn, c.host)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.Hello("localhost"); err != nil {
+		return err
+	}
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: c.host, MinVersion: tls.VersionTLS12}); err != nil {
+			return err
+		}
+	} else if c.requireStartTLS {
+		return fmt.Errorf("smtp: relay does not support STARTTLS; refusing plaintext delivery in production")
+	}
+	if auth != nil {
+		if ok, _ := client.Extension("AUTH"); !ok {
+			return fmt.Errorf("smtp: server does not support AUTH")
+		}
+		if err := client.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err := client.Mail(from); err != nil {
+		return err
+	}
+	if err := client.Rcpt(to); err != nil {
+		return err
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write(msg); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	return client.Quit()
 }
 
 // build assembles a multipart/alternative message: plain text first, HTML
@@ -117,21 +210,16 @@ func build(from, to string, m emails.Message) ([]byte, error) {
 }
 
 // SyncClient sends in the caller's goroutine, satisfying the same mailer
-// interface AsyncClient does. It exists so `add auth` can stand on its own:
-// a project that hasn't asked for a queue shouldn't be made to run a second
-// binary just to send a verification email.
+// interface AsyncClient does. Auth always uses it because recovery and
+// verification messages contain bearer links that must not be persisted in a
+// generic queue payload. The worker remains available for other job kinds.
 //
-// The trade is real — /auth/register and /auth/forgot-password block until
-// SMTP answers, where the async client returns as soon as the job is written.
-// Add a worker later and the wiring in cmd/api/wiring.go switches to
-// AsyncClient; nothing in the user service changes.
+// The request remains synchronous so bearer links never enter generic queue
+// payloads, but the mail client applies a deadline and bounded concurrency.
 type SyncClient struct{ c *Client }
 
 func NewSyncClient(c *Client) *SyncClient { return &SyncClient{c: c} }
 
-// Send ignores ctx: there is no queue here to join a transaction, so the mail
-// goes out whether or not the caller's transaction ends up committing. That is
-// the guarantee the Postgres-backed queue exists to give you.
-func (c *SyncClient) Send(_ context.Context, to string, m emails.Message) error {
-	return c.c.Send(to, m)
+func (c *SyncClient) Send(ctx context.Context, to string, m emails.Message) error {
+	return c.c.SendContext(ctx, to, m)
 }

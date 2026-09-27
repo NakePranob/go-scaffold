@@ -124,9 +124,11 @@ for a named per-module preset, or add `--full`, `--cqrs`, `--auth`, and
 `--permission <code>` deliberately.
 `--get-mode`
 is required for `--type get`, and `undo module` needs `-y`. For `add auth`,
-choose the backing store, browser topology, and ASVS verification target with
+choose the backing store, browser topology, and generated ASVS security profile with
 `--defaults` or explicit flags (`--store`, `--browser-topology`,
-`--asvs-level`) as well as the confirmation flag. `--defaults` selects L2.
+`--asvs-level`) as well as the confirmation flag. `--defaults` selects the L2
+generated security profile. L3 is fail-closed until a WebAuthn/passkey adapter
+is generated.
 For `add worker`, choose the backing queue with `--defaults` or an explicit
 flag.
 
@@ -156,13 +158,16 @@ These remain deliberate engineering work:
 - bug fixes, refactors, and changes to an existing method;
 - any work in a repository that lacks `go-scaffold.config.json`.
 
-Generated methods are explicit stubs. `generate method` GET-all reuses
-`FindAll`, so it answers the same rows as the module's own list until
-`ports.ListFilter` grows the fields that endpoint narrows by; POST and DELETE return an internal
-error until implemented; PUT/PATCH intentionally return `501 Not Implemented`
-and must not read or write a record before their behavior is designed. Treat
+Generated custom methods are explicit stubs. `generate method` GET-all,
+POST, PUT, PATCH, and DELETE return `501 Not Implemented` until their business
+rules are implemented; GET-one adds a real lookup and a migration for its
+column. A CRUD module's create/update/delete operations also return 501 until
+their fields and invariants are designed. Treat
 the generated OpenAPI TODO contract as incomplete, not as a promise that the
 endpoint is production-ready.
+Method implementations live in `method_<name>.go` beside their layer's
+existing interface or handler; do not accumulate unrelated use cases in the
+service, route-registration, or repository core files.
 
 ## Runtime and schema safety
 
@@ -218,15 +223,20 @@ endpoint is production-ready.
 
 ## Auth and error boundaries
 
-The optional `asvs` config records an OWASP ASVS 5.0.0 verification target,
-not a compliance result. `docs/security/asvs-auth.md` lists known generated
-auth gaps. Review the complete deployed application before claiming a level.
+The optional `asvs` config records the generated OWASP ASVS 5.0.0 security
+profile, not a compliance result. `docs/security/asvs-auth.md` lists generated
+controls and remaining deployment evidence. Review the complete deployed
+application before claiming a level.
 
 Treat auth and security changes as high-risk and get the required owner
 approval before changing their contract.
 
 - Never log passwords, raw access/refresh/reset/verification tokens, JWT
   secrets, OAuth client secrets, or authorization headers.
+- Auth rate-limit middleware fails closed with `503` and `Retry-After` when a
+  shared limiter store is unavailable. Do not turn a Redis/limiter error into
+  an allowed authentication request; the Postgres-store profile remains
+  process-local and needs an explicit distributed-abuse policy when scaled.
 - Refresh rotation is an atomic consume: Postgres uses one SQL unit and Redis
   uses one Lua operation, including active-session cleanup and the reuse
   tombstone. Its inactivity expiry may move on rotation, but its persisted
@@ -235,15 +245,22 @@ approval before changing their contract.
 - Authenticated users can inspect active refresh sessions through
   `GET /users/me/sessions` and revoke one with
   `DELETE /users/me/sessions/:id`. Session IDs remain stable through refresh
-  rotation; responses expose only User-Agent and lifecycle timestamps, never
-  refresh tokens or token hashes. The current access token carries the session
-  ID as `sid` so the adapter can mark the current device.
+  rotation; responses expose only safe parsed device metadata and lifecycle
+  timestamps, never raw User-Agent/IP values, refresh tokens, or token hashes.
+  The current access token carries the session ID as `sid`; every protected
+  route validates that the refresh session is still active. Logout, session
+  revoke, password change, and password reset therefore invalidate existing
+  access tokens immediately. If the token store cannot be checked, fail closed.
+  Secure cookie mode reads only the `__Host-` names; legacy unprefixed names
+  are development-only compatibility names and must never be accepted in
+  production.
 - Authenticated users can manage login identities through
   `GET /users/me/identities`, `POST /users/me/identities/local`, and
   `POST /users/me/identities/:provider/link`,
   `POST /users/me/identities/:provider/link/exchange`, and
   `DELETE /users/me/identities/:provider`. The link transaction is bound to
-  the current user as well as provider/state/PKCE/nonce; it can never create a
+  the current user as well as provider/server-bound-state/PKCE/nonce; the state
+  is bound to an HttpOnly browser cookie and it can never create a
   session or silently move a provider account between users. Return only safe
   provider metadata, allow at most one identity per provider per user, and
   refuse to unlink the last remaining login method.
@@ -255,19 +272,35 @@ approval before changing their contract.
 - Password reset and email verification consume a one-time token in the same
   retry-safe transaction as the user/identity update. A failed post-commit
   session revocation must not make a successful reset impossible to retry.
+- `cmd/auth-cleanup` is the explicit maintenance boundary for expired auth
+  rows. Schedule `make auth-cleanup` (or the command directly) from cron or a
+  CronJob; do not add an API-process ticker. The command is idempotent and
+  request correctness already enforces token/challenge expiry.
 - The generated auth implementation is canonical: use cases live in
   `application/`, domain rules in `domain/`, contracts in `ports/`, and
   provider/HTTP/Postgres details in their adapters. Do not import Gin, provider
   SDKs, or persistence models into new application use cases; keep the
   token/OAuth/MFA tests as the security gate.
 - Browser provider exchange consumes a one-time server-side transaction bound
-  to provider, state, S256 PKCE challenge, and OIDC nonce. Google ID tokens
+  to provider, server-generated state, an HttpOnly browser cookie, S256 PKCE
+  challenge, and OIDC nonce. Google ID tokens
   must be signature, issuer, audience/azp, time-claim, nonce, and subject
   validated before identity resolution. Token responses use
   `Cache-Control: no-store` and `Pragma: no-cache`; SameSite=None also needs an
   exact allowed Origin guard in addition to CORS.
+- Sensitive account operations use a short-lived reauthentication proof bound
+  to the bearer user; password changes revoke all refresh sessions before the
+  password write, and session,
+  MFA, and identity mutations require that proof.
 
 MFA has an operator capability switch and a separate per-user enrollment:
+
+- The generated password policy always includes a small readable development
+  baseline. Production must also set `AUTH_COMMON_PASSWORDS_FILE` to an
+  operator-owned newline-delimited corpus with at least 3,000 unique entries
+  that match the application's password policy; L2 additionally requires
+  `AUTH_CONTEXT_PASSWORDS_FILE` for context-derived password entries and
+  `AUTH_BREACHED_PASSWORDS_FILE`.
 
 - `AUTH_MFA_ENABLED=false` is the default. When enabled, the composition root
   must validate `MFA_ENCRYPTION_KEY` as a base64-encoded 32-byte key before
@@ -276,13 +309,19 @@ MFA has an operator capability switch and a separate per-user enrollment:
 - Authenticated users manage enrollment through `GET /users/me/mfa`,
   `POST /users/me/mfa/setup`, `POST /users/me/mfa/confirm`, and
   `POST /users/me/mfa/disable` (the last requires the current TOTP code).
-  Setup material is pending-only; recovery codes are returned once.
+  Setup material is pending-only; recovery codes are returned once. A lost
+  factor can be replaced through `POST /users/me/mfa/recover`, which requires
+  an authenticated session plus one unused recovery code, revokes refresh
+  sessions, and returns a setup-only enrollment token. The caller must finish
+  the normal setup/confirm flow before receiving a new application session.
 - Password login and provider exchange may return a pre-session
   `{ "mfa_required": true, "challenge": "..." }`. Do not issue an access
   token or refresh cookie until `POST /auth/mfa/verify` succeeds. Challenges
   are hashed, short-lived, and one-use; failed verification consumes the
-  challenge. Recovery codes are hashed, atomic one-use login factors and are
-  not accepted to disable MFA.
+  challenge and counts against a durable per-user throttle before another
+  challenge can be created. Recovery codes are hashed, atomic one-use login
+  factors. Recovery codes are accepted for the explicit factor-replacement
+  flow only, never for ordinary MFA disable.
 - MFA data is durable in Postgres for both refresh-token store choices. The
   `create_mfa` migration must be applied before production and covered by
   real-store/concurrency tests.

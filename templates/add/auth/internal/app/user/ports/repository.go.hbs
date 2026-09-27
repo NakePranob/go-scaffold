@@ -35,6 +35,7 @@ type UserRepository interface {
 	FindByEmail(context.Context, string) (*domain.User, error)
 	FindByID(context.Context, uuid.UUID) (*domain.User, error)
 	UpdateUser(context.Context, *domain.User) error
+	SetDisabled(context.Context, uuid.UUID, *time.Time) error
 	// FindAll answers one page and the total the filter matched, which is what
 	// a client needs to draw "page 3 of 12".
 	FindAll(context.Context, ListFilter) ([]domain.User, int64, error)
@@ -64,6 +65,7 @@ type RefreshTokenRecord struct {
 	UserID            uuid.UUID `json:"user_id"`
 	SessionID         uuid.UUID `json:"session_id"`
 	UserAgent         string    `json:"user_agent"`
+	IPAddress         string    `json:"ip_address"`
 	CreatedAt         time.Time `json:"created_at"`
 	LastUsedAt        time.Time `json:"last_used_at"`
 	ExpiresAt         time.Time `json:"expires_at"`
@@ -73,6 +75,7 @@ type RefreshTokenRecord struct {
 type RefreshSession struct {
 	ID         uuid.UUID
 	UserAgent  string
+	IPAddress  string
 	CreatedAt  time.Time
 	LastUsedAt time.Time
 	ExpiresAt  time.Time
@@ -80,13 +83,22 @@ type RefreshSession struct {
 
 type RefreshTokenStore interface {
 	SetRefreshToken(context.Context, string, RefreshTokenRecord) error
+	SetRefreshTokenWithLimit(context.Context, string, RefreshTokenRecord, int) error
 	GetRefreshToken(context.Context, string) (uuid.UUID, bool, error)
 	ConsumeRefreshToken(context.Context, string) (RefreshTokenRecord, bool, error)
 	DeleteRefreshToken(context.Context, string, uuid.UUID) error
 	RevokeAllRefreshTokens(context.Context, uuid.UUID) error
 	ListRefreshSessions(context.Context, uuid.UUID) ([]RefreshSession, error)
 	RevokeRefreshSession(context.Context, uuid.UUID, uuid.UUID) error
+	IsSessionActive(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	IsRefreshTokenUsed(context.Context, string) (uuid.UUID, bool, error)
+}
+
+// ExpiredAuthStateStore is the narrow maintenance contract used by the
+// scheduleable auth cleanup command. Cleanup is never part of request
+// correctness: every token/challenge read already enforces its expiry.
+type ExpiredAuthStateStore interface {
+	DeleteExpired(context.Context) (int64, error)
 }
 
 type LoginTransaction struct {
@@ -105,6 +117,8 @@ type OAuthTransactionStore interface {
 type RecoveryTokenStore interface {
 	WithTransaction(context.Context, func(context.Context) error) error
 	ConsumePasswordResetToken(context.Context, string) (uuid.UUID, bool, error)
+	ReplacePasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error
+	RevokePasswordResetTokens(context.Context, uuid.UUID) error
 	ConsumeEmailVerifyToken(context.Context, string) (uuid.UUID, bool, error)
 	SetPasswordResetToken(context.Context, string, uuid.UUID, time.Duration) error
 	SetEmailVerifyToken(context.Context, string, uuid.UUID, time.Duration) error
@@ -127,7 +141,10 @@ type MFAStore interface {
 	PutPendingEnrollment(context.Context, uuid.UUID, string) error
 	ConfirmEnrollment(context.Context, uuid.UUID, string, []string) error
 	Disable(context.Context, uuid.UUID) error
+	HasRecoveryCode(context.Context, uuid.UUID, string) (bool, error)
+	RecoverEnrollment(context.Context, uuid.UUID, string) (bool, error)
 	CreateChallenge(context.Context, string, MFAChallenge) error
+	GetChallenge(context.Context, string) (MFAChallenge, bool, error)
 	ConsumeChallenge(context.Context, string) (MFAChallenge, bool, error)
 	ConsumeRecoveryCode(context.Context, uuid.UUID, string) (bool, error)
 }

@@ -1,0 +1,80 @@
+package password
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	"{{goModule}}/internal/app/user/ports"
+)
+
+type filePasswordPolicy struct {
+	passwords map[string]struct{}
+}
+
+// NewFilePasswordPolicy loads a newline-delimited password denylist. The file
+// is intentionally operator-owned: the scaffold does not ship a copied breach
+// corpus, and production must choose a source and refresh procedure suitable
+// for its data-handling policy.
+func NewFilePasswordPolicy(path string) (ports.PasswordPolicy, error) {
+	return loadFilePasswordPolicy(path, 1, 8)
+}
+
+// NewCommonPasswordFilePolicy loads the L1 common-password corpus. ASVS 5.0
+// V6.2.4 requires at least the top 3000 passwords matching the application's
+// policy; rejecting a shorter file prevents a production deployment from
+// silently claiming that a tiny denylist is the required corpus.
+func NewCommonPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
+	return loadFilePasswordPolicy(path, 3000, 8)
+}
+
+// NewContextPasswordFilePolicy loads application-specific password entries and
+// derivatives such as product-name/year, host-name/year, username variants,
+// and email-derived choices. Entries are compared as complete passwords, not
+// substrings: a long passphrase must not be rejected merely because it
+// contains a harmless context word. L2 requires at least one entry that could
+// pass the generated eight-byte minimum; the service applies this policy on
+// register, password change, reset, and identity-link flows.
+func NewContextPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
+	return loadFilePasswordPolicy(path, 1, 8)
+}
+
+func loadFilePasswordPolicy(path string, minimumEntries, minimumTermBytes int) (ports.PasswordPolicy, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("password denylist path is empty")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	passwords := make(map[string]struct{})
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len([]byte(line)) < minimumTermBytes || len([]byte(line)) > 256 {
+			continue
+		}
+		passwords[strings.ToLower(line)] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(passwords) < minimumEntries {
+		return nil, fmt.Errorf("password denylist contains %d policy-matching entries; want at least %d", len(passwords), minimumEntries)
+	}
+	return filePasswordPolicy{passwords: passwords}, nil
+}
+
+func (p filePasswordPolicy) Validate(password string) error {
+	if _, found := p.passwords[strings.ToLower(strings.TrimSpace(password))]; found {
+		return errors.New("password is present in the configured denylist")
+	}
+	return nil
+}

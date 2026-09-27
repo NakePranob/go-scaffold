@@ -17,6 +17,7 @@ import (
 // role domain directly.
 type Authz struct {
 	resolve func(ctx context.Context, roleCode string) (map[string]struct{}, error)
+	version func(ctx context.Context, roleCode string) (time.Time, error)
 	ttl     time.Duration
 
 	mu    sync.RWMutex
@@ -25,6 +26,7 @@ type Authz struct {
 
 type cachedPerms struct {
 	perms   map[string]struct{}
+	version time.Time
 	expires time.Time
 }
 
@@ -33,6 +35,14 @@ type cachedPerms struct {
 // a handful of DB round trips per TTL window, independent of traffic.
 func NewAuthz(resolve func(context.Context, string) (map[string]struct{}, error), ttl time.Duration) *Authz {
 	return &Authz{resolve: resolve, ttl: ttl, cache: map[string]cachedPerms{}}
+}
+
+// NewVersionedAuthz keeps the permission-map cache cheap while asking the
+// source of authorization truth for a role version on every request. A
+// version read error is returned to Require, which fails closed instead of
+// authorizing with an unknown revocation state.
+func NewVersionedAuthz(resolve func(context.Context, string) (map[string]struct{}, error), version func(context.Context, string) (time.Time, error), ttl time.Duration) *Authz {
+	return &Authz{resolve: resolve, version: version, ttl: ttl, cache: map[string]cachedPerms{}}
 }
 
 // Require 403s unless the caller's role (set by RequireAuth) grants perm.
@@ -62,9 +72,6 @@ func (a *Authz) Require(perm string) gin.HandlerFunc {
 // keyed on the role, not the token — so the only way out was restarting the
 // app.
 //
-// ponytail: same-process only. Other pods keep their copy until the TTL
-// expires; that's the documented ceiling, and Redis pub/sub is the upgrade if
-// instant cluster-wide invalidation ever matters.
 func (a *Authz) Invalidate(roleCodes ...string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -73,9 +80,9 @@ func (a *Authz) Invalidate(roleCodes ...string) {
 	}
 }
 
-// ponytail: process-local cache, a handful of roles x AUTHZ_CACHE_TTL_MIN —
-// a role's permission grants take effect within the TTL, no pub/sub needed.
-// Move to Redis only if instant cross-pod invalidation turns out to matter.
+// The map remains process-local, but its version is read from the shared
+// Postgres role row. This removes stale authorization across replicas without
+// coupling authz correctness to a worker queue or adding another service.
 //
 // Double-checked locking: the common case (cache hit) only needs RLock, so
 // concurrent requests for different roles never block each other. Only a
@@ -84,10 +91,18 @@ func (a *Authz) Invalidate(roleCodes ...string) {
 // for the duration of one resolve() call; move to a per-role singleflight
 // if that contention ever actually shows up under load.
 func (a *Authz) permsOf(ctx context.Context, role string) (map[string]struct{}, error) {
+	version := time.Time{}
+	if a.version != nil {
+		var err error
+		version, err = a.version(ctx, role)
+		if err != nil {
+			return nil, err
+		}
+	}
 	a.mu.RLock()
 	e, ok := a.cache[role]
 	a.mu.RUnlock()
-	if ok && time.Now().Before(e.expires) {
+	if ok && time.Now().Before(e.expires) && (a.version == nil || e.version.Equal(version)) {
 		return e.perms, nil
 	}
 
@@ -95,13 +110,13 @@ func (a *Authz) permsOf(ctx context.Context, role string) (map[string]struct{}, 
 	defer a.mu.Unlock()
 	// re-check: another goroutine may have refreshed this role while we
 	// were waiting for the write lock.
-	if e, ok := a.cache[role]; ok && time.Now().Before(e.expires) {
+	if e, ok := a.cache[role]; ok && time.Now().Before(e.expires) && (a.version == nil || e.version.Equal(version)) {
 		return e.perms, nil
 	}
 	perms, err := a.resolve(ctx, role)
 	if err != nil {
 		return nil, err
 	}
-	a.cache[role] = cachedPerms{perms: perms, expires: time.Now().Add(a.ttl)}
+	a.cache[role] = cachedPerms{perms: perms, version: version, expires: time.Now().Add(a.ttl)}
 	return perms, nil
 }

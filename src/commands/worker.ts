@@ -8,8 +8,8 @@ import { patchCiForRedis, patchCiForRiver, patchComposeForRedis, patchConfigForW
 import { QueueBackend } from "../types";
 import { assertStillParses, parseChecks } from "../utils/gocheck";
 import { patchGoModRequires } from "../utils/gomod-patcher";
-import { upgradeMailerToQueue } from "../utils/auth-patcher";
 import { docsRefreshWarning, refreshProjectDocs } from "../utils/docs-patcher";
+import { patchWorkerGoForObservability } from "../utils/observability-patcher";
 
 // addWorker scaffolds async job processing: the backend-neutral queue
 // contract (platform/queue), one adapter for the chosen backing store, SMTP
@@ -29,6 +29,9 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
 
   const riverQueue = backend === "river";
   await applyTemplateEntries(projectDir, workerFiles(backend), { goModule: config.goModule, riverQueue });
+  if (config.features.observability) {
+    patchWorkerGoForObservability(path.join(projectDir, "cmd", "worker", "main.go"), config.goModule, config.projectName);
+  }
 
   patchConfigForWorker(path.join(projectDir, "internal", "shared", "config", "config.go"), { redis: !riverQueue });
   if (!riverQueue) {
@@ -46,15 +49,6 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
       ? ["github.com/riverqueue/river v0.43.0", "github.com/riverqueue/river/riverdriver/riverdatabasesql v0.43.0"]
       : ["github.com/hibiken/asynq v0.26.0", "github.com/redis/go-redis/v9 v9.22.0"]
   );
-  // auth added before the worker wired a synchronous mailer — now that there
-  // is a queue, move it onto it
-  const mailerUpgraded = upgradeMailerToQueue(
-    path.join(projectDir, "cmd", "api", "wiring.go"),
-    config.goModule,
-    backend,
-    path.join(projectDir, "internal", "app", "user", "composition.go")
-  );
-
   patchEnvExample(path.join(projectDir, ".env.example"), { redis: !riverQueue });
   patchMakefile(path.join(projectDir, "Makefile"), { river: riverQueue });
 
@@ -68,18 +62,18 @@ export async function addWorker(backend: QueueBackend, projectDir: string = proc
   writeConfig(projectDir, { ...config, features: { ...config.features, worker: true, queue: backend } });
 
   console.log(pc.green(`\nadded internal/platform/{queue,mail}/ and cmd/worker/ (queue backend: ${backend})`));
+  if (config.features.observability) {
+    console.log("cmd/worker initializes its own tracer and traces generated mail jobs; it does not expose /metrics");
+  }
   if (riverQueue) {
     console.log("jobs are rows in your Postgres — no extra service, and an enqueue inside tx.Do commits with it");
     console.log(pc.dim("\nnext: make river-migrate (creates River's tables), then make worker"));
   } else {
-    console.log(
-      mailerUpgraded
-        ? "wired Redis into cmd/api (readyz check) — auth's mailer now enqueues onto it instead of blocking on SMTP"
-        : "wired Redis into cmd/api (readyz check) — cmd/api does not enqueue anything yet"
-    );
+    console.log("wired Redis into cmd/api (readyz check) — auth recovery mail stays inline so bearer tokens never enter queue payloads");
     console.log(pc.yellow("note: a Redis enqueue cannot join a database transaction — see the warning on queue.Asynq"));
     console.log(pc.dim("\nnext: make worker (separate terminal, or `make dev` runs both), then go build ./... to confirm"));
   }
+  console.log("auth verification/reset mail stays inline — recovery bearer tokens are not persisted in queue payloads");
   if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add worker")));
 }
 
@@ -104,7 +98,7 @@ function patchEnvExample(envExamplePath: string, opts: { redis: boolean }): void
   }
   if (needsSmtp) {
     content +=
-      "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
+      "\n# leave SMTP_HOST unset to log email metadata instead of sending it (dev default)\n" +
       "SMTP_HOST=\n" +
       "SMTP_PORT=587\n" +
       "SMTP_USERNAME=\n" +

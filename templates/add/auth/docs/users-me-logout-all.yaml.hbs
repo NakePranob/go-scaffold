@@ -1,9 +1,10 @@
 post:
   summary: Log out every session for the current user
-  description: Revokes every refresh token for the caller, not just the current one, and clears this request's cookie too.
+  description: Requires the X-Reauth-Token proof from POST /users/me/reauth. Revokes every refresh token for the caller, not just the current one, and clears this request's cookie too.
   operationId: logoutAllSessions
   tags: [users]
   security: [{ bearerAuth: [] }]
   responses:
     "204": { description: all sessions logged out }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }

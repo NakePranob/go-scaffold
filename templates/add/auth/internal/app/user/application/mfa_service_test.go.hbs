@@ -160,6 +160,69 @@ func TestMFAChallengeIsRequiredAndOneUse(t *testing.T) {
 	}
 }
 
+func TestMFAEnrollmentUsesTheDurableThrottle(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	validCode, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+
+	for i := 0; i < lockoutAfter; i++ {
+		if _, err := svc.ConfirmMFA(ctx, userID, "999999"); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+			t.Fatalf("wrong enrollment code %d = %v, want AUTH_MFA_INVALID", i, err)
+		}
+	}
+	if _, err := svc.ConfirmMFA(ctx, userID, validCode); codeOfMFAError(err) != "AUTH_TOO_MANY_ATTEMPTS" {
+		t.Fatalf("enrollment must be locked by the durable per-user MFA throttle, got %v", err)
+	}
+}
+
+func TestMFARecoveryRequiresARecoveryCodeAndStartsFreshEnrollment(t *testing.T) {
+	svc, store, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	code, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+	recoveryCodes, err := svc.ConfirmMFA(ctx, userID, code)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	enrollmentToken, err := svc.RecoverMFA(ctx, userID, recoveryCodes[0])
+	if err != nil || enrollmentToken == "" {
+		t.Fatalf("recover MFA: token=%q err=%v", enrollmentToken, err)
+	}
+	if _, found, err := store.GetEnrollment(ctx, userID); err != nil || found {
+		t.Fatalf("old MFA enrollment must be removed before replacement: found=%t err=%v", found, err)
+	}
+	if _, err := svc.RecoverMFA(ctx, userID, recoveryCodes[0]); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("recovery code must be one-use, got %v", err)
+	}
+
+	replacement, err := svc.SetupMFAEnrollment(ctx, enrollmentToken)
+	if err != nil {
+		t.Fatalf("replacement setup: %v", err)
+	}
+	replacementCode, err := totpCode(replacement.Secret, now)
+	if err != nil {
+		t.Fatalf("replacement totp: %v", err)
+	}
+	_, auth, err := svc.ConfirmMFAEnrollment(ctx, enrollmentToken, replacementCode, SessionContext{})
+	if err != nil || auth == nil || auth.AccessToken == "" {
+		t.Fatalf("replacement confirmation must issue a fresh session: auth=%+v err=%v", auth, err)
+	}
+}
+
 func TestMFARecoveryCodeIsOneUse(t *testing.T) {
 	svc, _, userID, now := configuredMFATestService(t)
 	ctx := context.Background()
@@ -185,6 +248,61 @@ func TestMFARecoveryCodeIsOneUse(t *testing.T) {
 	}
 	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, recoveryCodes[0]); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
 		t.Fatalf("expected consumed recovery code rejection, got %v", err)
+	}
+}
+
+func TestMFALockoutBlocksNewChallengesAndSuccessClearsCounter(t *testing.T) {
+	userID := uuid.New()
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "mfa-lock@example.com"}}
+	svc := newTestService(repo, newFakeTokenStore())
+	svc.mfa = newFakeMFAStore()
+	now := time.Now()
+	svc.now = func() time.Time { return now }
+	svc.config.MFA = MFASettings{
+		Enabled:           true,
+		EncryptionKey:     testMFAEncryptionKey,
+		ChallengeTTL:      5 * time.Minute,
+		TOTPWindow:        1,
+		RecoveryCodeCount: 10,
+	}
+	setup, err := svc.SetupMFA(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	validCode, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+	if _, err := svc.ConfirmMFA(context.Background(), userID, validCode); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	for i := 0; i < lockoutAfter; i++ {
+		result, err := svc.completeLogin(context.Background(), &domain.User{ID: userID, Email: "mfa-lock@example.com"})
+		if err != nil || result.MFAChallenge == "" {
+			t.Fatalf("challenge %d: %+v, %v", i, result, err)
+		}
+		if _, err := svc.VerifyMFA(context.Background(), result.MFAChallenge, "999999"); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+			t.Fatalf("wrong code %d = %v, want AUTH_MFA_INVALID", i, err)
+		}
+	}
+	if _, err := svc.completeLogin(context.Background(), &domain.User{ID: userID, Email: "mfa-lock@example.com"}); codeOfMFAError(err) != "AUTH_TOO_MANY_ATTEMPTS" {
+		t.Fatalf("new challenge must be blocked after MFA lockout, got %v", err)
+	}
+
+	// A fresh service simulates the lock window having elapsed; a successful
+	// verification must remove the durable MFA counter so the next challenge
+	// is not held hostage by old guesses.
+	repo.lockedUntil = map[string]time.Time{}
+	result, err := svc.completeLogin(context.Background(), &domain.User{ID: userID, Email: "mfa-lock@example.com"})
+	if err != nil {
+		t.Fatalf("challenge after lock window: %v", err)
+	}
+	if _, err := svc.VerifyMFA(context.Background(), result.MFAChallenge, validCode); err != nil {
+		t.Fatalf("valid MFA after lock window: %v", err)
+	}
+	if _, exists := repo.failures[mfaThrottleKey(userID)]; exists {
+		t.Fatal("successful MFA must clear the per-user throttle counter")
 	}
 }
 

@@ -100,7 +100,7 @@ test("a multi-word module answers to its own package name", () => {
     // exactly what `generate module` tells you to run next
     runCLI(project, "generate", "method", "orderitem", "approve", "--type", "patch");
 
-    const handler = read(project, "internal/app/orderitem/adapters/inbound/http/handler.go");
+    const handler = read(project, "internal/app/orderitem/adapters/inbound/http/method_approve.go");
     assert.match(handler, /h\.svc\.Approve\(c\.Request\.Context\(\), id\)/);
     assert.doesNotMatch(handler, /model\.Orderitem\b/);
     assert.match(read(project, "internal/app/orderitem/application/service.go"), /domain\.OrderItem/);
@@ -204,7 +204,7 @@ test("a generated field lookup joins the caller's transaction like every other q
     runCLI(project, "generate", "module", "orders", "--full", "--defaults");
     runCLI(project, "generate", "method", "order", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
 
-    const repo = readFileSync(path.join(project, "internal", "app", "order", "adapters", "outbound", "postgres", "repository.go"), "utf8");
+    const repo = readFileSync(path.join(project, "internal", "app", "order", "adapters", "outbound", "postgres", "method_find_by_status.go"), "utf8");
     assert.match(repo, /func \(r \*Repository\) FindByStatus\(/);
     assert.doesNotMatch(repo, /r\.db\.WithContext/, "a repository method must not bypass tx.From");
   } finally {

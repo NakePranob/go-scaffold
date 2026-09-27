@@ -80,7 +80,7 @@ make docker-up                     # local Postgres (postgres:5432)
 {{/if}}
 make db-create                     # create the {{dbName}} database itself (once — safe to re-run)
 go mod tidy
-{{#if worker}}{{#if (eq queue "river")}}make river-migrate                 # create River's job tables before queued mail
+{{#if worker}}{{#if (eq queue "river")}}make river-migrate                 # create River's job tables before other queued jobs
 {{else}}# start Redis and set REDIS_URL before running the worker
 {{/if}}{{/if}}
 make run                           # needs `make migrate-up` first — the schema is the migrations'
@@ -176,7 +176,7 @@ make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql befo
 
 | var | default | notes |
 |---|---|---|
-| `APP_ENV` | `development` | `development` or `production` — **the prod gate**: hides error `details` from responses. App refuses to boot on any other value |
+| `APP_ENV` | `development` in `.env.example` | auth-enabled projects must set it explicitly; use `production` for deployment. It is the prod gate and rejects unknown values |
 | `PORT` | `8080` | |
 | `DB_DSN` | `postgres://postgres:postgres@localhost:5432/{{dbName}}?sslmode=disable` | used by both GORM and the `migrate` CLI |
 | `LOG_LEVEL` | `info` | debug/info/warn/error |
@@ -184,21 +184,47 @@ make migrate-verify   # up -> down-to-zero -> up, catches a broken down.sql befo
 | `DB_MAX_IDLE_CONNS` | `10` | |
 | `DB_CONN_MAX_LIFETIME_MIN` | `5` | minutes |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | comma-separated frontend origins allowed to call this API with credentials (cookies) |
+| `JWT_ISSUER`, `JWT_AUDIENCE` | `go-scaffold`, `api` | claims that bind access and reauthentication JWTs to this application/resource server |
 
 After `go-scaffold add auth`, `.env.example` also contains
 `GOOGLE_OAUTH_REDIRECT_URI` (the exact browser callback URI registered with
-Google), `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_TTL_MIN`, and
-`AUTH_BROWSER_TOPOLOGY`. Refresh rotation uses the configured inactivity TTL
+Google), `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_TTL_MIN`, and
+`AUTH_BROWSER_TOPOLOGY`. For production auth, set `PASSWORD_RESET_URL` and
+`EMAIL_VERIFY_URL` to absolute `https://` URLs, and set `AUTH_COMMON_PASSWORDS_FILE`
+to a newline-delimited corpus containing at least the top 3000 passwords that
+match this application's policy; L2 also requires
+`AUTH_CONTEXT_PASSWORDS_FILE` (context-derived password entries such as
+product-name/year or username variants; compare complete entries, not arbitrary
+substrings) and
+`AUTH_BREACHED_PASSWORDS_FILE`.
+Refresh rotation uses the configured inactivity TTL
 but never moves a token past its absolute lifetime. The backend stores a
-one-time OAuth transaction binding provider, state, S256 challenge, and OIDC
-nonce; the frontend still owns the callback route and sends the code to the
-exchange endpoint. The provider redirect URI is separate from
+one-time OAuth transaction binding provider, server-generated state, S256
+challenge, and OIDC nonce; the state is also bound to an HttpOnly browser
+cookie. The frontend still owns the callback route and sends the code and
+returned state to the exchange endpoint. The provider redirect URI is separate from
 `CORS_ALLOWED_ORIGINS`; the latter remains an exact-origin credentialed API
 policy. Token responses use `Cache-Control: no-store` and `Pragma: no-cache`.
+When Google/OIDC authentication strength or recentness matters, configure
+`GOOGLE_OIDC_MAX_AGE_SEC`, `GOOGLE_OIDC_REQUIRED_ACR`, and
+`GOOGLE_OIDC_REQUIRED_AMR` (comma-separated). The generated adapter sends the
+corresponding OIDC request claims and rejects a verified ID token that does not
+satisfy the configured policy; claim meanings remain provider-specific and
+must be documented by the deploying application.
 Authenticated users can list active device sessions with
 `GET /users/me/sessions` and revoke an individual session with
-`DELETE /users/me/sessions/:id`; only User-Agent and session lifecycle
-timestamps are returned.
+`DELETE /users/me/sessions/:id`; safe parsed device metadata and session
+lifecycle timestamps are returned, never the raw User-Agent or IP address. Protected
+bearer routes also validate that the access token's session is still active, so
+logout, session revoke, password change, and password reset invalidate existing
+access tokens immediately. If the session store is unavailable, protected
+requests fail closed. In production, secure mode reads only the `__Host-`
+cookie names; the legacy unprefixed names are development-only and are cleared
+during logout.
+The generated `cmd/auth-cleanup` command (also available as `make auth-cleanup`)
+removes expired Postgres auth rows, MFA challenges, and stale Redis session-index
+members. Schedule it as a CronJob/cron task; request correctness does not depend
+on the cleanup running.
 They can also list safe login-provider metadata with
 `GET /users/me/identities`, link a provider through the authenticated
 `/users/me/identities/:provider/link` start/exchange flow, and unlink a
@@ -206,6 +232,20 @@ provider with `DELETE /users/me/identities/:provider`. For a Google/OIDC-only
 account, `POST /users/me/identities/local` adds an email/password credential to
 the same account; it does not create a second user. The last login method
 cannot be removed.
+Sensitive account operations require a short-lived `X-Reauth-Token` from
+`POST /users/me/reauth`; password changes, session revocation, MFA changes, and
+identity changes revoke or protect the affected session state as documented in
+the generated OpenAPI files. `DELETE /users/me` is a recent-authenticated
+soft-disable: it revokes every refresh session before setting `disabled_at`,
+and protected requests fail closed after the state change. Hard deletion,
+retention, anonymization, and any helpdesk/admin re-enable policy remain
+application-specific; when RBAC is enabled, `PATCH /users/:id/status` is
+available to a recent-authenticated caller with `user:manage-status`.
+If a user loses the authenticator, `POST /users/me/mfa/recover` requires the
+current authenticated session and one unused recovery code, revokes refresh
+sessions, removes the old factor atomically, and returns a setup-only token for
+fresh MFA enrollment. Treat recovery codes as one-time credentials and define
+the helpdesk escalation policy separately.
 For `cross-site`, configure HTTPS origins, `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true`, and an exact allowed Origin; the API applies an Origin
 guard independently of CORS.
@@ -299,8 +339,8 @@ image. Debug against the `build` stage instead:
 
 `cmd/api` serves HTTP.{{#if worker}} `cmd/worker` consumes the queue and is a
 separate deployment with **no port and no health endpoint** — scale it
-independently, and remember that not running it means queued mail is never
-sent, silently.{{/if}}
+independently. Auth verification/reset mail remains inline even when this
+worker exists; other queued jobs require the worker to be running.{{/if}}
 
 Before the first deploy of a release:
 
@@ -308,12 +348,12 @@ Before the first deploy of a release:
 |---|---|
 | `APP_ENV` | `production` | production hides internal error details; the applied migration version is required in every environment |
 | migrations | `migrate -path migrations -database "$DB_DSN" up` as its own step, before the new binaries roll |
-| `TRUSTED_PROXIES` | the CIDRs of your ingress, or the auth rate limiter keys on a header anyone can send |
+| `TRUSTED_PROXIES` | the CIDRs of your ingress; otherwise ClientIP-based rate limiting and audit decisions may be spoofable |
 | `COOKIE_SECURE` | `true` · `COOKIE_SAMESITE=none` as well if your frontend is on a different site |
 | `JWT_REFRESH_MAX_TTL_MIN` | `43200` | absolute refresh-token lifetime; rotation cannot extend beyond it |
 | `OAUTH_STATE_TTL_MIN` | `10` | lifetime of the one-time server-side OAuth state transaction |
-| `/metrics` | reachable in-cluster for Prometheus, blocked at the ingress |
-| `JWT_SECRET`, `SMTP_HOST` | the app refuses to start in production without real values |
+| `/metrics` | registered only outside production; expose a protected scrape target deliberately if production needs one |
+| `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `SMTP_HOST` | the app refuses to start in production without real, service-specific values |
 
 The migration check is what makes the rollout order safe: a binary whose
 embedded migrations are ahead of the database refuses to start, while one

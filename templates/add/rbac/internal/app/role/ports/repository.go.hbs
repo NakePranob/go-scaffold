@@ -3,6 +3,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"{{goModule}}/internal/app/role/domain"
 )
@@ -21,6 +22,7 @@ type ListFilter struct {
 
 type Repository interface {
 	PermissionCodes(context.Context, string) ([]string, error)
+	PermissionVersion(context.Context, string) (time.Time, error)
 	FindAll(context.Context, ListFilter) ([]domain.Role, int64, error)
 	FindByCode(context.Context, string) (*domain.Role, error)
 	Create(context.Context, *domain.Role) error

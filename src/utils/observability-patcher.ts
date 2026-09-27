@@ -8,11 +8,13 @@ const CONFIG_FIELDS_MARKER = "// go-scaffold:config-fields";
 const CONFIG_LOAD_MARKER = "// go-scaffold:config-load";
 const OPENAPI_PATHS_MARKER = "# go-scaffold:paths";
 
-// The exact line `create` renders — matched literally rather than through a
-// marker because it's a single call in the middle of other middleware, not a
-// standalone line a marker comment can sit next to.
-const USE_LINE =
-  "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))";
+// The exact lines `create` has rendered across scaffold versions. Keep the
+// older shape accepted so `add observability` remains usable on projects
+// generated before the baseline security-header middleware was introduced.
+const USE_LINES = [
+  "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.SecurityHeaders(cfg.IsProd()), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))",
+  "r.Use(gin.Recovery(), middleware.CORS(cfg.CORSAllowedOrigins), middleware.RequestID(), middleware.Logger(logger), middleware.Error(!cfg.IsProd()))",
+];
 
 // patchMainGoForObservability wires telemetry init, the tracing/metrics
 // middleware, and the /metrics route into cmd/api/wiring.go — the same
@@ -40,14 +42,23 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   ].join("\n");
   content = insertBeforeMarkerOnce(content, PLATFORM_INIT_MARKER, initBlock, "shutdownTelemetry, err := telemetry.Init(");
 
-  if (!content.includes(USE_LINE)) {
+  const useLine = USE_LINES.find((candidate) => content.includes(candidate));
+  if (!useLine) {
     throw new Error(
       "cmd/api/wiring.go's r.Use(...) call doesn't match the text this command expects — " +
-        "it looks like it's been hand-edited. Add middleware.Metrics() and middleware.Tracing(\"<project>\") to it yourself."
+      "it looks like it's been hand-edited. Add middleware.Metrics() and middleware.Tracing(\"<project>\") to it yourself."
     );
   }
-  const newUseLine = `${USE_LINE.slice(0, -1)}, middleware.Metrics(), middleware.Tracing("${projectName}"))`;
-  content = content.replace(USE_LINE, () => newUseLine);
+  // Keep error rendering inside the observability wrappers. Error middleware
+  // writes the final AppError response after its downstream chain returns;
+  // placing Metrics/Tracing after Error would therefore record a misleading
+  // 200 for an endpoint that actually returned 4xx/5xx.
+  const errorMiddleware = ", middleware.Error(!cfg.IsProd())";
+  const newUseLine = useLine.replace(
+    errorMiddleware,
+    `, middleware.Metrics(), middleware.Tracing("${projectName}")${errorMiddleware}`,
+  );
+  content = content.replace(useLine, () => newUseLine);
 
   // This used to be registered in every environment, on the reasoning that
   // production is exactly where you want a scrape target and Prometheus
@@ -76,6 +87,39 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
   content = insertBeforeMarkerOnce(content, EXTRA_ROUTES_MARKER, metricsBlock, metricsRoute);
 
   fs.writeFileSync(mainGoPath, content);
+}
+
+// Worker processes need their own tracer provider: the global provider in
+// cmd/api does not cross a process boundary. Patch both installation orders.
+export function patchWorkerGoForObservability(workerGoPath: string, goModule: string, projectName: string): void {
+  let content = fs.readFileSync(workerGoPath, "utf8");
+  const telemetryImport = `"${goModule}/internal/platform/telemetry"`;
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, telemetryImport, telemetryImport);
+
+  if (!content.includes("shutdownTelemetry, err := telemetry.Init(")) {
+    const loggerAnchor = "slog.SetDefault(logger)";
+    if (!content.includes(loggerAnchor)) {
+      throw new Error("cmd/worker/main.go has no logger setup anchor — initialize telemetry.Init before opening the queue by hand");
+    }
+    const initBlock = [
+      `shutdownTelemetry, err := telemetry.Init(context.Background(), "${projectName}-worker", cfg.OTELExporterEndpoint)`,
+      "if err != nil {",
+      '\tlogger.Error("init telemetry", "error", err)',
+      "\tos.Exit(1)",
+      "}",
+      "defer func() { _ = shutdownTelemetry(context.Background()) }()",
+    ].join("\n");
+    content = content.replace(loggerAnchor, `${loggerAnchor}\n\n\t${initBlock}`);
+  }
+
+  const mailHandler = "mail.Handle(mail.Open(cfg))";
+  if (!content.includes("telemetry.TraceJob(mail.KindSendEmail,")) {
+    if (!content.includes(mailHandler)) {
+      throw new Error("cmd/worker/main.go has no generated mail handler — wrap its job handlers in telemetry.TraceJob by hand");
+    }
+    content = content.replace(mailHandler, `telemetry.TraceJob(mail.KindSendEmail, ${mailHandler})`);
+  }
+  fs.writeFileSync(workerGoPath, content);
 }
 
 // patchDatabaseGoForObservability wires the GORM OpenTelemetry plugin into

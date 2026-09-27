@@ -1,9 +1,14 @@
 get:
   summary: List active sessions for the current user
-  description: Returns active refresh-token sessions with safe device metadata. Raw refresh tokens and token hashes are never returned.
+  description: Returns active refresh-token sessions with safe device metadata after recent reauthentication. The response is capped by AUTH_MAX_SESSIONS; when a new login exceeds that limit, the least recently used session is revoked. Raw User-Agent, IP address, refresh tokens, and token hashes are never returned.
   operationId: listMySessions
   tags: [users]
   security: [{ bearerAuth: [] }]
+  parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
   responses:
     "200":
       description: active sessions
@@ -11,3 +16,4 @@ get:
         application/json:
           schema: { $ref: './schemas.yaml#/SessionsResponse' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }

@@ -1,0 +1,57 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+
+	"{{goModule}}/internal/app/user"
+{{#if redis}}	"{{goModule}}/internal/platform/cache"
+{{/if}}
+	"{{goModule}}/internal/platform/database"
+	"{{goModule}}/internal/shared/config"
+)
+
+// auth-cleanup is intentionally a short-lived command. Schedule it from cron,
+// a Kubernetes CronJob, or the platform's equivalent rather than hiding a
+// forever-running ticker inside the API process.
+func main() {
+	if err := run(); err != nil {
+		slog.Error("auth cleanup failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg := config.Load()
+	db, err := database.Open(cfg)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("open sql db: %w", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+	if cfg.IsProd() {
+		if err := database.CheckMigrationVersion(db); err != nil {
+			return err
+		}
+	}
+
+{{#if redis}}	rdb, err := cache.Open(cfg)
+	if err != nil {
+		return fmt.Errorf("open redis: %w", err)
+	}
+	defer func() { _ = rdb.Close() }()
+	cleaner := user.NewAuthCleanupFromDB(db, rdb)
+{{else}}	cleaner := user.NewAuthCleanupFromDB(db)
+{{/if}}
+	result, err := cleaner.Run(context.Background())
+	if err != nil {
+		return err
+	}
+	slog.Info("auth cleanup complete", "token_rows", result.TokenRows, "mfa_state_rows", result.MFAStateRows)
+	return nil
+}

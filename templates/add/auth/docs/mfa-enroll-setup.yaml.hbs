@@ -1,0 +1,21 @@
+post:
+  summary: Start required MFA enrollment
+  description: Exchanges a short-lived setup-only enrollment token returned by login when the security profile requires MFA before application access. The token does not authorize protected routes.
+  operationId: setupRequiredMFA
+  tags: [auth]
+  security: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/MFAEnrollmentSetupInput' }
+  responses:
+    "200":
+      description: secret and otpauth URI; enrollment remains disabled until confirmed
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MFASetupResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }
+    "503": { description: MFA is disabled or unavailable }

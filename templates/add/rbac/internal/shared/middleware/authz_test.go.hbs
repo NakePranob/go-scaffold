@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -84,5 +85,69 @@ func TestAuthz_Require_AllowsGrantedPermission(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200 with the required permission granted, got %d", w.Code)
+	}
+}
+
+func TestVersionedAuthz_ReResolvesWhenRoleVersionChanges(t *testing.T) {
+	var calls int32
+	version := time.Unix(1, 0)
+	a := NewVersionedAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		atomic.AddInt32(&calls, 1)
+		return map[string]struct{}{"x": {}}, nil
+	}, func(context.Context, string) (time.Time, error) {
+		return version, nil
+	}, time.Hour)
+
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("first permission read: %v", err)
+	}
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("cached permission read: %v", err)
+	}
+	version = time.Unix(2, 0)
+	if _, err := a.permsOf(context.Background(), "staff"); err != nil {
+		t.Fatalf("versioned permission read: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("want one resolve per role version, got %d", got)
+	}
+}
+
+func TestVersionedAuthz_InvalidatesAcrossTwoInstances(t *testing.T) {
+	version := time.Unix(10, 0)
+	var calls int32
+	resolve := func(context.Context, string) (map[string]struct{}, error) {
+		atomic.AddInt32(&calls, 1)
+		return map[string]struct{}{"x": {}}, nil
+	}
+	readVersion := func(context.Context, string) (time.Time, error) { return version, nil }
+	first := NewVersionedAuthz(resolve, readVersion, time.Hour)
+	second := NewVersionedAuthz(resolve, readVersion, time.Hour)
+	if _, err := first.permsOf(context.Background(), "admin"); err != nil {
+		t.Fatalf("first instance warm: %v", err)
+	}
+	if _, err := second.permsOf(context.Background(), "admin"); err != nil {
+		t.Fatalf("second instance warm: %v", err)
+	}
+	version = time.Unix(11, 0)
+	if _, err := second.permsOf(context.Background(), "admin"); err != nil {
+		t.Fatalf("second instance after shared version change: %v", err)
+	}
+	if _, err := first.permsOf(context.Background(), "admin"); err != nil {
+		t.Fatalf("first instance after shared version change: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 4 {
+		t.Fatalf("both instances must resolve once per version, got %d calls", got)
+	}
+}
+
+func TestVersionedAuthz_FailsClosedWhenVersionReadFails(t *testing.T) {
+	want := errors.New("database unavailable")
+	a := NewVersionedAuthz(func(context.Context, string) (map[string]struct{}, error) {
+		t.Fatal("resolve must not run when version cannot be read")
+		return nil, nil
+	}, func(context.Context, string) (time.Time, error) { return time.Time{}, want }, time.Hour)
+	if _, err := a.permsOf(context.Background(), "staff"); !errors.Is(err, want) {
+		t.Fatalf("version read error = %v, want %v", err, want)
 	}
 }

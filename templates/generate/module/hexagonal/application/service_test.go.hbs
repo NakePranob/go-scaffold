@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+{{#if full}}	"errors"
+{{/if}}
 	"testing"
 
 	"{{goModule}}/internal/app/{{modulePath}}/domain"
@@ -59,5 +61,20 @@ func TestService_ComposesWithRepositoryPort(t *testing.T) {
 		t.Fatal("expected service")
 	}
 }
+
+{{#if full}}
+func TestService_UnimplementedWritesDoNotTouchRepository(t *testing.T) {
+	svc := NewService(&repositoryStub{})
+	if _, err := svc.Create(context.Background(), CreateInput{}); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Create error = %v, want ErrNotImplemented", err)
+	}
+	if _, err := svc.Update(context.Background(), uuid.New(), UpdateInput{Version: 1}); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Update error = %v, want ErrNotImplemented", err)
+	}
+	if err := svc.Delete(context.Background(), uuid.New()); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Delete error = %v, want ErrNotImplemented", err)
+	}
+}
+{{/if}}
 
 // go-scaffold:repository-stub-methods

@@ -95,14 +95,15 @@ separately. Add `--auth` and `--permission <code>` only when they are wanted;
 permission also requires `--auth`. `--get-mode` is required with `--type get`;
 `--field` is required for GET-one and cannot be id. `undo` requires
 `-y`. `add auth` accepts `--store postgres|redis` and
-`--browser-topology same-origin|same-site|cross-site` and `--asvs-level 1|2|3`;
-`--defaults` selects Postgres, same-site, and ASVS L2 as a verification target.
-The target is not a compliance claim; review `docs/security/asvs-auth.md` and
-the full application. Postgres keeps refresh, recovery, and MFA state in
-Postgres and uses an in-process rate limiter. Redis keeps refresh tokens and
-rate-limit counters in Redis, while recovery and MFA state remain durable in
-Postgres. Without `add worker`, auth mail is sent inline; with a worker it uses
-the queue backend chosen by `add worker`.
+`--browser-topology same-origin|same-site|cross-site` and `--asvs-level 1|2`;
+`--defaults` selects Postgres, same-site, and the generated ASVS L2 profile.
+L3 is fail-closed until a WebAuthn/passkey adapter exists. The profile is not a compliance claim; review `docs/security/asvs-auth.md` and
+the full application. Postgres keeps refresh, recovery, MFA state, failed
+attempt counters, and role authorization versions in Postgres and uses an
+in-process rate limiter. Redis keeps refresh tokens and rate-limit counters in
+Redis, while recovery, MFA, failed-attempt, and role authorization state remain
+durable in Postgres. Auth verification/reset mail is always sent inline;
+River/Asynq is independent worker infrastructure for other jobs.
 
 Module names may be singular/plural, mixed case, hyphenated, or underscored.
 The CLI normalizes the Go package, REST path, SQL table, and error-code prefix.
@@ -174,13 +175,17 @@ method:
 
 | Type | Shape | Generated behavior |
 |---|---|---|
-| get --get-mode all | GET /<plural>/<name> | Reuses FindAll (page + total, `?q=` parsed); add fields to ports.ListFilter |
+| get --get-mode all | GET /<plural>/<name> | Safe 501 until the endpoint's own filter and repository query are implemented |
 | get --get-mode one --field <f> | GET /<plural>/<f>/:<f> | Adds a repository lookup and test seam |
-| post | POST /<plural>/<name> | Body DTO plus internal-error TODO |
+| post | POST /<plural>/<name> | Body DTO plus safe 501 stub |
 | put / patch | <VERB> /<plural>/:id/<name> | Safe 501 Not Implemented; no repository read/write |
-| delete | DELETE /<plural>/:id/<name> | Internal-error TODO until implemented |
+| delete | DELETE /<plural>/:id/<name> | Safe 501 stub until implemented |
 
-The 501 contract is intentional: a generated PUT/PATCH action must not
+Each generated use case has its own `method_<name>.go` in application and
+inbound HTTP; GET-one also gets a repository file. The existing service or
+command/query interfaces and route registration remain in their original files.
+
+The 501 contract is intentional: an unimplemented generated action must not
 pretend to update a record. Implement the use case, validation, authorization,
 repository operation, tests, and OpenAPI response together before changing
 that behavior. Replace all generated TODOs before treating an endpoint as
@@ -285,6 +290,17 @@ boundary. For browser OAuth, preserve this client-owned callback contract:
   native callback or token handoff contract from the browser flow.
 
 ### MFA contract
+
+Production password configuration must include `AUTH_COMMON_PASSWORDS_FILE`
+with at least 3,000 unique entries that match the generated password policy;
+the L2 profile additionally requires `AUTH_CONTEXT_PASSWORDS_FILE` for
+application/user/email context terms and `AUTH_BREACHED_PASSWORDS_FILE`. The
+scaffold intentionally does not ship a copied breach corpus: document the
+source, refresh process, and protection for operator-owned lists.
+
+Schedule `make auth-cleanup` (or `go run ./cmd/auth-cleanup`) as a CronJob or
+cron task. It prunes expired Postgres auth/MFA rows and stale Redis session
+indexes; auth request correctness does not depend on the maintenance job.
 
 MFA has two independent switches: an operator capability and per-user
 enrollment. Preserve both:

@@ -24,6 +24,7 @@ type Service struct {
 	refreshTokens     ports.RefreshTokenStore
 	oauthTransactions ports.OAuthTransactionStore
 	recoveryTokens    ports.RecoveryTokenStore
+	passwordPolicy    ports.PasswordPolicy
 	mfa               ports.MFAStore
 	mailer            ports.AuthMailer
 	providers         ProviderRegistry
@@ -40,8 +41,17 @@ func NewService(deps Dependencies, cfg AuthConfig) *Service {
 	if deps.Passwords == nil {
 		panic("user application: password hasher is required")
 	}
+	if deps.PasswordPolicy == nil {
+		deps.PasswordPolicy = NewCommonPasswordPolicy()
+	}
 	if cfg.JWTAccessTTL <= 0 {
 		cfg.JWTAccessTTL = 15 * time.Minute
+	}
+	if strings.TrimSpace(cfg.JWTIssuer) == "" {
+		cfg.JWTIssuer = "go-scaffold"
+	}
+	if strings.TrimSpace(cfg.JWTAudience) == "" {
+		cfg.JWTAudience = "api"
 	}
 	if cfg.JWTRefreshTTL <= 0 {
 		cfg.JWTRefreshTTL = 12 * time.Hour
@@ -50,6 +60,9 @@ func NewService(deps Dependencies, cfg AuthConfig) *Service {
 	cfg.OAuthStateTTL = defaultDuration(cfg.OAuthStateTTL, 10*time.Minute)
 	if cfg.MFA.RecoveryCodeCount == 0 {
 		cfg.MFA.RecoveryCodeCount = defaultMFACodes
+	}
+	if cfg.MaxSessions <= 0 {
+		cfg.MaxSessions = 10
 	}
 	clock := deps.Clock
 	if clock == nil {
@@ -61,10 +74,11 @@ func NewService(deps Dependencies, cfg AuthConfig) *Service {
 		refreshTokens:     deps.RefreshTokens,
 		oauthTransactions: deps.OAuthTransactions,
 		recoveryTokens:    deps.RecoveryTokens,
+		passwordPolicy:    deps.PasswordPolicy,
 		mfa:               deps.MFA,
 		mailer:            deps.Mailer,
 		providers:         deps.Providers,
-		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, deps.Passwords),
+		recovery:          NewRecovery(deps.Repository, deps.RecoveryTokens, deps.RefreshTokens, deps.Passwords, deps.PasswordPolicy),
 		config:            cfg,
 		roles:             deps.Roles,
 		now:               clock,
@@ -77,6 +91,20 @@ func defaultDuration(value, fallback time.Duration) time.Duration {
 		return value
 	}
 	return fallback
+}
+
+func (s *Service) IsSessionActive(ctx context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return false, nil
+	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if u.IsDisabled() {
+		return false, nil
+	}
+	return s.refreshTokens.IsSessionActive(ctx, userID, sessionID)
 }
 
 func (s *Service) clock() time.Time {
@@ -92,15 +120,8 @@ func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// bcrypt accepts at most 72 bytes. Enforce the same bound in the application
-// layer so every caller (HTTP, seed, jobs, and future transports) gets the
-// same safe contract instead of a provider-specific hashing failure.
-func validatePassword(password string) error {
-	length := len([]byte(password))
-	if length < 8 || length > 72 {
-		return errInvalidPassword()
-	}
-	return nil
+func (s *Service) validatePassword(password string) error {
+	return s.passwordPolicy.Validate(password)
 }
 
 // SetRole validates the role against the role catalog before persisting it.
@@ -119,11 +140,57 @@ func (s *Service) SetRole(ctx context.Context, userID uuid.UUID, roleCode string
 	if !exists {
 		return nil, errUnknownRole()
 	}
+	if u.Role == roleCode {
+		return u, nil
+	}
+	// Role is embedded in access tokens. Revoke all refresh sessions before the
+	// persisted role changes so an unavailable session store cannot leave an old
+	// privileged access token active after this operation reports success.
+	if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
+		return nil, fmt.Errorf("revoke sessions before role change: %w", err)
+	}
 	u.Role = roleCode
 	if err := s.repo.UpdateUser(ctx, u); err != nil {
 		return nil, fmt.Errorf("update user role: %w", err)
 	}
 	return u, nil
+}
+
+// RevokeSessionForUser is the admin counterpart to the current-user session
+// revoke use case. The target user id is explicit so an authorization adapter
+// can protect the operation without allowing a caller to revoke another
+// account's session through a caller-owned route.
+func (s *Service) RevokeSessionForUser(ctx context.Context, userID, sessionID uuid.UUID) error {
+	return s.RevokeSession(ctx, userID, sessionID)
+}
+
+// DisableAccount revokes every refresh session before marking the account
+// disabled. The order is deliberate: if the shared token store is unavailable,
+// the account remains usable and the caller can retry without a half-applied
+// lifecycle change.
+func (s *Service) DisableAccount(ctx context.Context, userID uuid.UUID) error {
+	return s.SetAccountDisabled(ctx, userID, true)
+}
+
+// SetAccountDisabled is the application boundary used by self-service and the
+// optional RBAC admin route. Re-enabling never creates a session; the user must
+// authenticate again through the normal login flow.
+func (s *Service) SetAccountDisabled(ctx context.Context, userID uuid.UUID, disabled bool) error {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return wrapFindErr(err)
+	}
+	if u.IsDisabled() == disabled {
+		return nil
+	}
+	if disabled {
+		if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, userID); err != nil {
+			return fmt.Errorf("revoke sessions before disabling account: %w", err)
+		}
+		now := s.clock()
+		return s.repo.SetDisabled(ctx, userID, &now)
+	}
+	return s.repo.SetDisabled(ctx, userID, nil)
 }
 
 // ServicePort is the inbound application boundary. HTTP, jobs, and future
@@ -134,25 +201,34 @@ type ServicePort interface {
 	BeginIdentityLink(context.Context, uuid.UUID, string, LoginStartInput) (*Authorization, error)
 	ExchangeIdentityLink(context.Context, uuid.UUID, string, LoginExchangeInput) (*IdentityResponse, error)
 	UnlinkIdentity(context.Context, uuid.UUID, string) error
+	Reauthenticate(context.Context, uuid.UUID, string, string) (string, error)
 	// go-scaffold:service-interface
 	Register(context.Context, RegisterInput) (*AuthResult, error)
 	Login(context.Context, LoginInput) (*AuthResult, error)
-	Refresh(context.Context, string) (*AuthResponse, error)
+	Refresh(context.Context, string, ...string) (*AuthResponse, error)
 	Logout(context.Context, string) error
 	LogoutAll(context.Context, uuid.UUID) error
 	ListSessions(context.Context, uuid.UUID, uuid.UUID) ([]Session, error)
+	IsSessionActive(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	RevokeSession(context.Context, uuid.UUID, uuid.UUID) error
+	RevokeSessionForUser(context.Context, uuid.UUID, uuid.UUID) error
+	DisableAccount(context.Context, uuid.UUID) error
+	SetAccountDisabled(context.Context, uuid.UUID, bool) error
+	ChangePassword(context.Context, uuid.UUID, string) error
 	ForgotPassword(context.Context, string) error
 	ResetPassword(context.Context, string, string) error
 	VerifyEmail(context.Context, string) error
 	ResendVerificationEmail(context.Context, uuid.UUID) error
 	BeginLogin(context.Context, string, LoginStartInput) (*Authorization, error)
 	ExchangeLogin(context.Context, string, LoginExchangeInput) (*AuthResult, error)
-	VerifyMFA(context.Context, string, string) (*AuthResponse, error)
+	VerifyMFA(context.Context, string, string, ...string) (*AuthResponse, error)
 	MFAStatus(context.Context, uuid.UUID) (MFAStatus, error)
 	SetupMFA(context.Context, uuid.UUID) (*MFASetup, error)
 	ConfirmMFA(context.Context, uuid.UUID, string) ([]string, error)
+	RecoverMFA(context.Context, uuid.UUID, string) (string, error)
 	DisableMFA(context.Context, uuid.UUID, string) error
+	SetupMFAEnrollment(context.Context, string) (*MFASetup, error)
+	ConfirmMFAEnrollment(context.Context, string, string, SessionContext) ([]string, *AuthResponse, error)
 	Get(context.Context, uuid.UUID) (*domain.User, error)
 	List(context.Context, ports.ListFilter) ([]domain.User, int64, error)
 	SetRole(context.Context, uuid.UUID, string) (*domain.User, error)

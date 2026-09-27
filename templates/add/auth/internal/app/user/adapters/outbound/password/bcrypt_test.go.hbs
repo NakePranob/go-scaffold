@@ -1,9 +1,14 @@
 package password
 
-import "testing"
+import (
+	"strings"
+	"testing"
 
-func TestBCryptHasherRoundTrip(t *testing.T) {
-	hasher := NewBCryptHasher()
+	"golang.org/x/crypto/bcrypt"
+)
+
+func TestArgon2idHasherRoundTrip(t *testing.T) {
+	hasher := NewArgon2idHasher()
 	hash, err := hasher.Hash("correct horse battery staple")
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
@@ -16,5 +21,34 @@ func TestBCryptHasherRoundTrip(t *testing.T) {
 	}
 	if err := hasher.Compare(hash, "wrong password"); err == nil {
 		t.Fatal("expected a mismatched password to be rejected")
+	}
+}
+
+func TestArgon2idHasherReadsLegacyBCrypt(t *testing.T) {
+	legacy, err := bcrypt.GenerateFromPassword([]byte("legacy password"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("create legacy hash: %v", err)
+	}
+	hasher := NewArgon2idHasher()
+	if err := hasher.Compare(string(legacy), "legacy password"); err != nil {
+		t.Fatalf("compare legacy bcrypt hash: %v", err)
+	}
+	if !hasher.NeedsRehash(string(legacy)) {
+		t.Fatal("legacy bcrypt hash should be marked for migration")
+	}
+}
+
+func TestArgon2idHasherRehashesWeakArgonParameters(t *testing.T) {
+	hasher := NewArgon2idHasher()
+	hash, err := hasher.Hash("parameter migration password")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if hasher.NeedsRehash(hash) {
+		t.Fatal("current Argon2id parameters should not need rehash")
+	}
+	weak := strings.Replace(hash, "m=19456,t=2,p=1", "m=1024,t=1,p=1", 1)
+	if !hasher.NeedsRehash(weak) {
+		t.Fatal("weaker Argon2id parameters should be marked for rehash")
 	}
 }

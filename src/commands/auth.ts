@@ -36,6 +36,8 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/auth/{provider}/login", file: "./auth/provider-login.yaml" },
   { urlPath: "/auth/{provider}/exchange", file: "./auth/provider-exchange.yaml" },
   { urlPath: "/users/me", file: "./auth/users-me.yaml" },
+  { urlPath: "/users/me/reauth", file: "./auth/users-me-reauth.yaml" },
+  { urlPath: "/users/me/password", file: "./auth/users-me-password.yaml" },
   { urlPath: "/users/me/identities", file: "./auth/users-me-identities.yaml" },
   { urlPath: "/users/me/identities/local", file: "./auth/users-me-identity-local-link.yaml" },
   { urlPath: "/users/me/identities/{provider}/link", file: "./auth/users-me-identity-link.yaml" },
@@ -45,11 +47,15 @@ const AUTH_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users/me/logout-all", file: "./auth/users-me-logout-all.yaml" },
   { urlPath: "/users/me/sessions", file: "./auth/users-me-sessions.yaml" },
   { urlPath: "/users/me/sessions/{id}", file: "./auth/users-me-session.yaml" },
+  { urlPath: "/users/{id}/sessions/{session_id}", file: "./auth/users-session.yaml" },
   { urlPath: "/users/me/mfa", file: "./auth/users-me-mfa.yaml" },
   { urlPath: "/users/me/mfa/setup", file: "./auth/users-me-mfa-setup.yaml" },
   { urlPath: "/users/me/mfa/confirm", file: "./auth/users-me-mfa-confirm.yaml" },
   { urlPath: "/users/me/mfa/disable", file: "./auth/users-me-mfa-disable.yaml" },
+  { urlPath: "/users/me/mfa/recover", file: "./auth/users-me-mfa-recover.yaml" },
   { urlPath: "/auth/mfa/verify", file: "./auth/mfa-verify.yaml" },
+  { urlPath: "/auth/mfa/enroll/setup", file: "./auth/mfa-enroll-setup.yaml" },
+  { urlPath: "/auth/mfa/enroll/confirm", file: "./auth/mfa-enroll-confirm.yaml" },
 ];
 
 // addAuth scaffolds email/password authentication: an account plus separate
@@ -69,12 +75,15 @@ export async function addAuth(
   const config = readConfig(projectDir);
   const browser = validateBrowserTopology(browserTopology);
   if (![1, 2, 3].includes(asvsLevel)) throw new Error("ASVS level must be 1, 2, or 3");
+  if (asvsLevel === 3) {
+    throw new Error("ASVS L3 generated security profile is unavailable until a phishing-resistant WebAuthn/passkey adapter is generated; choose L1 or L2");
+  }
   const lockoutPolicy = validateLockoutPolicy(lockout);
 
-  // No longer a prerequisite. Without a worker the verification and reset mail
-  // goes out inline instead of through a queue — a real trade (those two
-  // endpoints then block on SMTP), but not one worth forcing a second binary
-  // and a queue-backend decision on someone who only wanted login.
+  // No longer a prerequisite. Verification and reset mail stays inline even
+  // when a worker exists because its bearer links must not be persisted in a
+  // generic queue payload. This keeps auth standalone without weakening the
+  // token confidentiality boundary.
   const worker = config.features.worker ?? false;
 
   const userDir = path.join(projectDir, "internal", "app", "user");
@@ -99,6 +108,10 @@ export async function addAuth(
     goModule: config.goModule,
     redis: store === "redis",
     worker,
+    asvsLevel,
+    asvsL1: asvsLevel >= 1,
+    asvsL2: asvsLevel >= 2,
+    asvsL3: false,
     // one flag rather than the policy name: the templates only ever ask
     // "which shape", and a second policy name in Handlebars would need an
     // equality helper the renderer does not have
@@ -106,7 +119,14 @@ export async function addAuth(
   });
   await applyTemplateEntries(projectDir, [
     { template: "add/auth/docs/asvs-auth.md.hbs", output: "docs/security/asvs-auth.md" },
-  ], { asvsLevel, asvsL2: asvsLevel >= 2, asvsL3: asvsLevel >= 3 });
+  ], {
+    asvsLevel,
+    asvsL2: asvsLevel >= 2,
+    asvsL3: asvsLevel >= 3,
+    authStore: store,
+    authBrowserTopology: browser,
+    authLockout: lockoutPolicy,
+  });
 
   const migrationsDir = path.join(projectDir, "migrations");
   fs.ensureDirSync(migrationsDir);
@@ -116,6 +136,16 @@ export async function addAuth(
     [
       { template: "add/auth/migrations/create_users.up.sql.hbs", output: path.join("migrations", `${usersVersion}_create_users.up.sql`) },
       { template: "add/auth/migrations/create_users.down.sql.hbs", output: path.join("migrations", `${usersVersion}_create_users.down.sql`) },
+    ],
+    {}
+  );
+
+  const lifecycleVersion = newMigrationVersion(migrationsDir);
+  await applyTemplateEntries(
+    projectDir,
+    [
+      { template: "add/auth/migrations/add_user_lifecycle.up.sql.hbs", output: path.join("migrations", `${lifecycleVersion}_add_user_lifecycle.up.sql`) },
+      { template: "add/auth/migrations/add_user_lifecycle.down.sql.hbs", output: path.join("migrations", `${lifecycleVersion}_add_user_lifecycle.down.sql`) },
     ],
     {}
   );
@@ -182,27 +212,11 @@ export async function addAuth(
     {}
   );
 
-  // Only meaningful when there is a worker; readConfig fills this from the
-  // adapter file on disk, so the only way it is still unknown is a project
-  // that has internal/platform/queue with neither adapter in it. Guessing
-  // here used to emit `queue.NewAsynqEnqueuer` into River-only projects —
-  // an undefined symbol that the parse-only gate below cannot see, so the
-  // command reported success over a project that no longer compiled.
-  const queueBackend = config.features.queue;
-  if (worker && !queueBackend) {
-    throw new Error(
-      "this project has internal/platform/queue but no river.go or asynq.go — can't tell which queue backend to wire auth's mailer onto.\n" +
-        "Restore the adapter file, or remove internal/platform/queue and re-run `go-scaffold add worker`."
-    );
-  }
-
   patchGolangciForModule(path.join(projectDir, ".golangci.yml"), config.goModule, "user");
   patchConfigForAuth(path.join(projectDir, "internal", "shared", "config", "config.go"));
   patchMainGoForAuth(path.join(projectDir, "cmd", "api", "wiring.go"), {
     goModule: config.goModule,
-    queueBackend: queueBackend ?? "river",
     store,
-    worker,
   });
   patchGoModRequires(path.join(projectDir, "go.mod"), [
     "github.com/golang-jwt/jwt/v5 v5.3.1",
@@ -213,6 +227,7 @@ export async function addAuth(
   ]);
   patchEnvExample(path.join(projectDir, ".env.example"), browser);
   patchMakefile(path.join(projectDir, "Makefile"));
+  patchAuthCleanupMakefile(path.join(projectDir, "Makefile"));
 
   let docsMessage = "";
   const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
@@ -230,7 +245,7 @@ export async function addAuth(
   }
 
   gofmtTree(projectDir);
-  // parse-only: jwt/oauth2/bcrypt aren't in go.mod until the `go mod tidy`
+  // parse-only: jwt/oauth2/argon2/bcrypt aren't in go.mod until the `go mod tidy`
   // printed below, so `go vet` can't be the gate here.
   assertStillParses(projectDir, parsedBefore, "added auth");
 
@@ -240,19 +255,24 @@ export async function addAuth(
   writeConfig(projectDir, {
     ...config,
     asvs: { version: "5.0.0", level: asvsLevel },
-    features: { ...config.features, auth: true, authStore: store },
+    features: {
+      ...config.features,
+      auth: true,
+      authStore: store,
+      authBrowserTopology: browser,
+      authLockout: lockoutPolicy,
+    },
     modules: {
       ...config.modules,
       user: { surface: "minimal", applicationStyle: "service", boundary: "hexagonal", packageLayout: "split" },
     },
   });
 
-  console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, and cmd/seed"));
-  console.log(`OWASP ASVS 5.0.0 L${asvsLevel} verification target recorded; review docs/security/asvs-auth.md before making any compliance claim`);
+  console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, cmd/seed, and cmd/auth-cleanup"));
+  console.log(`OWASP ASVS 5.0.0 L${asvsLevel} generated security profile recorded; review docs/security/asvs-auth.md before making any compliance claim`);
+  console.log(`resolved auth choices: store=${store}, browser-topology=${browser}, lockout=${lockoutPolicy}; worker queue remains independent`);
   console.log(
-    worker
-      ? "verification + password-reset mail goes through the queue"
-      : "verification + password-reset mail is sent inline (no worker) — run `add worker` later to move it onto the queue"
+    "verification + password-reset mail is sent inline even when a worker exists — bearer recovery tokens are never persisted in queue jobs"
   );
   console.log(
     store === "postgres"
@@ -262,9 +282,9 @@ export async function addAuth(
   console.log(
       "registered POST /auth/{register,login,refresh,logout,forgot-password,reset-password,verify-email}, " +
       "GET /auth/{provider}/login, POST /auth/{provider}/exchange, GET /users/me, and " +
-      "POST /users/me/{resend-verification,logout-all,mfa/setup,mfa/confirm,mfa/disable}, " +
+      "POST /users/me/{resend-verification,reauth,password,logout-all,mfa/setup,mfa/confirm,mfa/disable,mfa/recover}, " +
       "GET /users/me/{identities,sessions,mfa}, POST /users/me/identities/local, POST /users/me/identities/{provider}/{link,link/exchange}, " +
-      "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, " +
+      "DELETE /users/me/identities/{provider}, DELETE /users/me/sessions/{id}, DELETE /users/{id}/sessions/{session_id}, " +
       "POST /auth/mfa/verify in cmd/api/wiring.go" +
       docsMessage
   );
@@ -311,6 +331,27 @@ function patchMakefile(makefilePath: string): void {
   fs.writeFileSync(makefilePath, content);
 }
 
+function patchAuthCleanupMakefile(makefilePath: string): void {
+  if (!fs.existsSync(makefilePath)) return;
+  let content = fs.readFileSync(makefilePath, "utf8");
+  if (content.includes("\nauth-cleanup:\n")) return;
+  if (!/\nbuild:/.test(content)) {
+    console.error(
+      pc.yellow(`skipped the Makefile \`auth-cleanup\` target — no \`build:\` target to anchor it to in ${makefilePath}.\nRun \`go run ./cmd/auth-cleanup\` from the project root when scheduling cleanup.`)
+    );
+    return;
+  }
+
+  content = content.replace(/^\.PHONY: /m, ".PHONY: auth-cleanup ");
+  const target =
+    "\n# remove expired auth tokens and MFA challenges; safe to run from cron or a CronJob.\n" +
+    "auth-cleanup:\n" +
+    "\t$(refuse_remote_db)\n" +
+    "\t@set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; go run ./cmd/auth-cleanup\n";
+  content = content.replace(/\nbuild:/, () => `${target}\nbuild:`);
+  fs.writeFileSync(makefilePath, content);
+}
+
 function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopology): void {
   if (!fs.existsSync(envExamplePath)) return;
   let content = fs.readFileSync(envExamplePath, "utf8");
@@ -320,6 +361,10 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     content.replace(/\n?$/, "\n") +
     "\n# HS256 signing secret for access tokens — change this before deploying with APP_ENV=production\n" +
     "JWT_SECRET=dev-secret-change-me\n" +
+    "AUTH_METADATA_KEY=dev-metadata-key-change-me\n" +
+    "# Stable service-specific JWT claim values — change these before deploying with APP_ENV=production\n" +
+    "JWT_ISSUER=go-scaffold\n" +
+    "JWT_AUDIENCE=api\n" +
     "JWT_ACCESS_TTL_MIN=15\n" +
     "JWT_REFRESH_TTL_MIN=43200\n" +
     "JWT_REFRESH_MAX_TTL_MIN=43200\n" +
@@ -340,17 +385,31 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "GOOGLE_CLIENT_SECRET=\n" +
     "# exact browser callback URI registered with the provider (frontend-owned route)\n" +
     "GOOGLE_OAUTH_REDIRECT_URI=\n" +
+    "# optional OIDC assurance policy; values are provider-specific and empty means no extra claim requirement\n" +
+    "GOOGLE_OIDC_MAX_AGE_SEC=0\n" +
+    "GOOGLE_OIDC_REQUIRED_ACR=\n" +
+    "GOOGLE_OIDC_REQUIRED_AMR=\n" +
     "\n# cookie/CORS deployment topology; the frontend owns its provider callback route\n" +
     `AUTH_BROWSER_TOPOLOGY=${browserTopology}\n` +
     "\n# MFA is globally off by default. When enabled, set a base64-encoded 32-byte\n" +
     "# AES-256 key (for example: openssl rand -base64 32). Users still opt in\n" +
     "# individually through /users/me/mfa/setup and /users/me/mfa/confirm.\n" +
     "AUTH_MFA_ENABLED=false\n" +
+    "# L2 production: require this to be true so every login completes MFA before receiving an application session.\n" +
+    "AUTH_MFA_REQUIRED_FOR_LOGIN=false\n" +
     "MFA_ISSUER=go-scaffold\n" +
     "MFA_ENCRYPTION_KEY=\n" +
     "MFA_CHALLENGE_TTL_MIN=5\n" +
     "MFA_TOTP_WINDOW=1\n" +
-    "MFA_RECOVERY_CODE_COUNT=10\n";
+    "MFA_RECOVERY_CODE_COUNT=10\n" +
+    "# Maximum active refresh-token sessions per user; the oldest session is evicted on a new login.\n" +
+    "AUTH_MAX_SESSIONS=10\n" +
+    "\n# Production: newline-delimited common-password list; use at least the top 3000 passwords matching your policy.\n" +
+    "AUTH_COMMON_PASSWORDS_FILE=\n" +
+    "# L2 only: newline-delimited context-derived password entries (at least 8 bytes), not arbitrary substrings.\n" +
+    "AUTH_CONTEXT_PASSWORDS_FILE=\n" +
+    "# L2 only: newline-delimited breached-password denylist. Production L2 refuses to boot when unset.\n" +
+    "AUTH_BREACHED_PASSWORDS_FILE=\n";
   fs.writeFileSync(envExamplePath, content);
 }
 
@@ -391,7 +450,7 @@ function patchEnvExampleForSMTP(envExamplePath: string): void {
   fs.writeFileSync(
     envExamplePath,
     content.replace(/\n?$/, "\n") +
-      "\n# leave SMTP_HOST unset to log emails instead of sending them (dev default)\n" +
+      "\n# leave SMTP_HOST unset to log email metadata instead of sending it (dev default)\n" +
       "SMTP_HOST=\n" +
       "SMTP_PORT=587\n" +
       "SMTP_USERNAME=\n" +

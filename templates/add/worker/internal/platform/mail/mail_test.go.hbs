@@ -2,6 +2,8 @@ package mail
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	stdmail "net/mail"
@@ -108,5 +110,53 @@ func TestSendRefusesEmptyBody(t *testing.T) {
 	client := &Client{host: "127.0.0.1", port: "1", from: "no-reply@example.com"}
 	if err := client.Send("recipient@example.com", emails.Message{Subject: "empty"}); err == nil {
 		t.Fatal("an email with no text and no html should not be sent")
+	}
+}
+
+func TestSendContextHonorsCancellationBeforeDial(t *testing.T) {
+	client := &Client{host: "127.0.0.1", port: "1", from: "no-reply@example.com"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := client.SendContext(ctx, "recipient@example.com", emails.Message{Subject: "canceled", Text: "body"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled SMTP send error = %v, want context.Canceled", err)
+	}
+}
+
+func TestProductionSendRefusesRelayWithoutSTARTTLS(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	result := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			result <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		wire := textproto.NewConn(conn)
+		_ = wire.PrintfLine("220 localhost SMTP")
+		if _, err := wire.ReadLine(); err != nil {
+			result <- err
+			return
+		}
+		// Advertise ordinary SMTP but deliberately omit STARTTLS. The client
+		// must fail before MAIL FROM, so the relay never receives plaintext
+		// credentials or message data.
+		_ = wire.PrintfLine("250 localhost")
+		result <- nil
+	}()
+	host, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{host: host, port: port, from: "no-reply@example.com", requireStartTLS: true}
+	if err := client.Send("recipient@example.com", emails.Message{Subject: "SMTP test", Text: "body"}); err == nil || !strings.Contains(err.Error(), "STARTTLS") {
+		t.Fatalf("production plaintext relay error = %v, want STARTTLS refusal", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
 	}
 }

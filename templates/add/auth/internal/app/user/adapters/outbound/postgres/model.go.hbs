@@ -8,11 +8,19 @@ import (
 	"github.com/google/uuid"
 )
 
+func authTokenUserID(userID uuid.UUID) *uuid.UUID {
+	if userID == uuid.Nil {
+		return nil
+	}
+	return &userID
+}
+
 type User struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Name      string
 	AvatarURL string
 	Role      string `gorm:"type:varchar(20);not null;default:'staff'"`
+	DisabledAt *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -36,7 +44,7 @@ type PasswordCredential struct {
 	ID                  uuid.UUID `gorm:"type:uuid;primaryKey"`
 	UserID              uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_password_credentials_user"`
 	PasswordHash        string    `gorm:"column:password_hash;type:text;not null"`
-	HashAlgorithm       string    `gorm:"type:varchar(32);not null;default:'bcrypt'"`
+	HashAlgorithm       string    `gorm:"type:varchar(32);not null;default:'argon2id'"`
 	PasswordChangedAt   time.Time `gorm:"not null"`
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -58,10 +66,11 @@ func (ExternalIdentity) TableName() string { return "user_svc.external_identitie
 
 type AuthToken struct {
 	TokenHash         string     `gorm:"primaryKey;type:text"`
-	UserID            uuid.UUID  `gorm:"type:uuid;not null;index:idx_auth_tokens_user_kind,priority:1"`
+	UserID            *uuid.UUID `gorm:"type:uuid;index:idx_auth_tokens_user_kind,priority:1"`
 	Kind              string     `gorm:"type:varchar(20);not null;index:idx_auth_tokens_user_kind,priority:2"`
 	SessionID         uuid.UUID  `gorm:"type:uuid;not null;index:idx_auth_tokens_user_session,priority:1"`
 	UserAgent         string     `gorm:"type:text;not null;default:''"`
+	IPAddress         *string    `gorm:"type:inet"`
 	ExpiresAt         time.Time  `gorm:"not null;index:idx_auth_tokens_expires_at"`
 	AbsoluteExpiresAt *time.Time `gorm:"index:idx_auth_tokens_absolute_expires_at"`
 	Provider          string     `gorm:"type:varchar(20);not null;default:''"`

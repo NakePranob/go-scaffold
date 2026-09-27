@@ -72,8 +72,11 @@ test("add worker brings the queue job and its own test along", (t) => {
   assert.match(task, /Body\s+string\s+`json:"body,omitempty"`/);
   assert.match(task, /p\.Text = p\.Body/);
 
-  // River keeps finished jobs for a day by default, and a mail payload is a
-  // password-reset link.
+  const mail = read(app, "internal", "platform", "mail", "mail.go");
+  assert.doesNotMatch(mail, /"body"\s*,\s*m\.Text/, "SMTP fallback must not log bearer-bearing mail bodies");
+
+  // River keeps finished jobs for a day by default. Auth recovery mail no
+  // longer enters this job, so its bearer links are not retained here.
   const river = read(app, "internal", "platform", "queue", "river.go");
   assert.match(river, /CompletedJobRetentionPeriod: time\.Minute/);
 });

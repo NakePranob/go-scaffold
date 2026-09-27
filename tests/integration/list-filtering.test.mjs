@@ -88,12 +88,14 @@ test("generate method --get-mode all patches in the same filter contract", (t) =
   runCLI(project, "generate", "module", "invoices", "--profile", "crud");
   runCLI(project, "generate", "method", "invoice", "overdue", "--type", "get", "--get-mode", "all");
 
-  const handler = read(project, "internal", "app", "invoice", "adapters", "inbound", "http", "handler.go");
+  const handler = read(project, "internal", "app", "invoice", "adapters", "inbound", "http", "method_overdue.go");
   assert.match(handler, /func \(h \*Handler\) overdue\(c \*gin\.Context\) \{[\s\S]*ports\.ListFilter\{[\s\S]*Sort:\s+p\.Sort/);
   assert.match(handler, /items, total, err := h\.svc\.Overdue\(c\.Request\.Context\(\), filter\)/);
 
-  const service = read(project, "internal", "app", "invoice", "application", "service.go");
-  assert.match(service, /Overdue\(context\.Context, ports\.ListFilter\) \(\[\]domain\.Invoice, int64, error\)/);
+  const service = read(project, "internal", "app", "invoice", "application", "method_overdue.go");
+  assert.match(read(project, "internal", "app", "invoice", "application", "service.go"), /Overdue\(context\.Context, ports\.ListFilter\) \(\[\]domain\.Invoice, int64, error\)/);
+  assert.match(service, /func \(s \*Service\) Overdue[\s\S]*return nil, 0, domain\.ErrNotImplemented/);
+  assert.match(read(project, "docs", "invoices", "methods", "overdue.yaml"), /"501":/);
 
   go(project, "mod", "tidy");
   go(project, "build", "./...");

@@ -16,23 +16,21 @@ type RedisLimiter struct {
 
 func NewRedisLimiter(rdb *redis.Client) *RedisLimiter { return &RedisLimiter{rdb: rdb} }
 
-func (r *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) bool {
+func (r *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	redisKey := "ratelimit:" + key
 
 	count, err := r.rdb.Incr(ctx, redisKey).Result()
 	if err != nil {
-		// fail open: a Redis blip shouldn't take down login/register entirely
-		// — the endpoint's own logic is still the real guard.
-		return true
+		return false, err
 	}
 	if count == 1 {
 		if err := r.rdb.Expire(ctx, redisKey, window).Err(); err != nil {
 			// Never leave a counter without a TTL: an expired window must not
-			// become a permanent lockout after a transient Redis failure. The
-			// limiter is intentionally fail-open, so discard this best-effort
-			// counter and let the endpoint's own controls handle the request.
+			// become a permanent lockout after a transient Redis failure. Remove
+			// the uncertain counter and fail closed for this request.
 			_ = r.rdb.Del(ctx, redisKey).Err()
+			return false, err
 		}
 	}
-	return count <= int64(limit)
+	return count <= int64(limit), nil
 }

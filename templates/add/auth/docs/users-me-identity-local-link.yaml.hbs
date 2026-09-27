@@ -4,6 +4,11 @@ post:
   operationId: linkMyLocalIdentity
   tags: [users]
   security: [{ bearerAuth: [] }]
+  parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
   requestBody:
     required: true
     content:
@@ -13,4 +18,5 @@ post:
     "204": { description: email/password login linked }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "409": { description: email/password login is already linked }

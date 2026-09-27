@@ -43,12 +43,10 @@ function dropFeature(app, key) {
   writeFileSync(configPath(app), JSON.stringify(cfg, null, 2));
 }
 
-// `add auth` guessed "asynq" for a missing queue key, which wrote
-// queue.NewAsynqEnqueuer(cfg.RedisURL) into a River-only project. Neither
-// symbol exists there, and the gate after that patch is parse-only (the new
-// deps aren't in go.mod yet), so the CLI exited 0 over a project that no
-// longer compiled.
-test("a config with no queue key does not make add auth guess the wrong enqueuer", (t) => {
+// Auth recovery mail no longer depends on the worker backend. A missing queue
+// key must therefore not make `add auth` guess an enqueuer or require queue
+// wiring at all.
+test("a config with no queue key keeps auth mail inline", (t) => {
   const app = project(t, "stale-queue");
   cli(app, "add", "worker", "--queue", "postgres", "--yes");
   dropFeature(app, "queue");
@@ -56,9 +54,9 @@ test("a config with no queue key does not make add auth guess the wrong enqueuer
   cli(app, "add", "auth", "--defaults");
 
   const wiring = read(app, "cmd/api/wiring.go");
-  assert.match(wiring, /queue\.NewRiverEnqueuer\(db\)/, "must wire the adapter this project actually has");
-  assert.doesNotMatch(wiring, /NewAsynqEnqueuer/, "River project must never get the Asynq enqueuer");
-  assert.doesNotMatch(wiring, /cfg\.RedisURL/, "River project has no RedisURL in its config struct");
+  assert.match(wiring, /user\.NewHandlerFromDB\(db, cfg, nil, nil\)\.Register\(api\)/);
+  assert.doesNotMatch(wiring, /NewRiverEnqueuer|NewAsynqEnqueuer/);
+  assert.doesNotMatch(read(app, "internal/app/user/composition.go"), /mail\.NewAsyncClient|queue\.Enqueuer/);
 });
 
 // The refusal that stops `undo module` deleting the auth domain read

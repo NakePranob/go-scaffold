@@ -5,33 +5,36 @@ export const DEFAULT_ASVS_LEVEL: AsvsLevel = 2;
 
 export function parseAsvsLevel(raw: string): AsvsLevel {
   const value = raw.trim();
-  if (value !== "1" && value !== "2" && value !== "3") {
-    throw new Error(`--asvs-level must be one of: 1, 2, 3 (got "${raw}")`);
+  if (value === "3") {
+    throw new Error("ASVS L3 generated security profile is unavailable until a phishing-resistant WebAuthn/passkey adapter is generated; choose L1 or L2");
+  }
+  if (value !== "1" && value !== "2") {
+    throw new Error(`--asvs-level must be one of: 1, 2 (got "${raw}"); L3 is unavailable until WebAuthn/passkey support is generated`);
   }
   return Number(value) as AsvsLevel;
 }
 
 export async function promptAsvsLevel(): Promise<AsvsLevel> {
   return select<AsvsLevel>({
-    message: "Which OWASP ASVS 5.0.0 level should this project target for verification?",
+    message: "Which OWASP ASVS 5.0.0 generated security profile should this project use?",
     default: DEFAULT_ASVS_LEVEL,
     choices: [
-      { name: "L1 — baseline", value: 1, description: "minimum security verification target" },
-      { name: "L2 — most applications", value: 2, description: "includes L1; requires further auth controls and review" },
-      { name: "L3 — high assurance", value: 3, description: "includes L1 and L2; requires phishing-resistant MFA and review" },
+      { name: "L1 — baseline", value: 1, description: "generated common-password screening profile" },
+      { name: "L2 — most applications", value: 2, description: "generated breached-password and stronger re-auth profile" },
+      { name: "L3 — unavailable", value: 3, disabled: "requires a generated WebAuthn/passkey adapter" },
     ],
   });
 }
 
-// The one decision `add auth` cannot make for you: where refresh tokens and
-// rate-limit counters live. Recovery tokens always use the durable Postgres
+// The one decision `add auth` cannot make for you: the refresh-token store
+// and whether rate-limit counters are process-local or shared. Recovery tokens always use the durable Postgres
 // table so consumption can share a transaction with the user update.
 //
 // Mirrors promptQueueBackend: the choice exists as `--store` for scripting,
 // but nobody should have to know the flag name to discover the option.
 export async function promptAuthStore(): Promise<AuthStore> {
   return select<AuthStore>({
-    message: "Where should refresh tokens and rate-limit counters be stored?",
+    message: "Where should refresh tokens live, and should rate limits be shared across replicas?",
     default: "postgres",
     choices: [
       {
