@@ -1409,11 +1409,43 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   const recoveryVerified = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: recoveryLoginBody.challenge, code: mfaConfirmBody.recovery_codes[0] })]);
   if (status(recoveryVerified) !== "200" || !field(recoveryVerified, "access_token")) throw new Error(`expected a recovery code to complete MFA login, got:\n${recoveryVerified}`);
 
-  const mfaDisableReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ password: "brandnewpassword123", code: totpCode(mfaSetupBody.secret) })]);
+  // Lost-factor recovery is a separate authenticated flow: one unused
+  // recovery code is consumed with the already-authenticated session, all
+  // refresh sessions are revoked, and the caller receives only a setup
+  // capability until a fresh factor is confirmed.
+  const mfaSessionCookie = cookie(mfaVerified);
+  if (!mfaSessionCookie) throw new Error(`expected the MFA session cookie needed for recovery revocation, got:\n${mfaVerified}`);
+  const mfaRecovery = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/recover`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ code: mfaConfirmBody.recovery_codes[1] })]);
+  const mfaRecoveryBody = jsonBody(mfaRecovery);
+  if (status(mfaRecovery) !== "200" || !mfaRecoveryBody.mfa_recovery_started || !mfaRecoveryBody.enrollment_token) {
+    throw new Error(`expected lost-factor recovery to return a setup-only enrollment token, got:\n${mfaRecovery}`);
+  }
+  const revokedMfaSession = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/refresh`, "-H", `Cookie: refresh_token=${mfaSessionCookie}`]);
+  if (status(revokedMfaSession) !== "401") throw new Error(`expected MFA recovery to revoke existing refresh sessions, got:\n${revokedMfaSession}`);
+
+  const replacementSetup = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/enroll/setup`, ...jsonHeader, "-d", JSON.stringify({ enrollment_token: mfaRecoveryBody.enrollment_token })]);
+  const replacementSetupBody = jsonBody(replacementSetup);
+  if (status(replacementSetup) !== "200" || !replacementSetupBody.secret || !replacementSetupBody.otpauth_uri?.startsWith("otpauth://totp/")) {
+    throw new Error(`expected recovery to permit a fresh MFA setup, got:\n${replacementSetup}`);
+  }
+  const replacementCode = totpCode(replacementSetupBody.secret);
+  const replacementConfirm = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/enroll/confirm`, ...jsonHeader, "-d", JSON.stringify({ enrollment_token: mfaRecoveryBody.enrollment_token, code: replacementCode })]);
+  if (status(replacementConfirm) !== "200" || !field(replacementConfirm, "access_token")) {
+    throw new Error(`expected fresh MFA confirmation to issue a new application session, got:\n${replacementConfirm}`);
+  }
+  access = field(replacementConfirm, "access_token");
+  const mfaRecoveryReplay = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/recover`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ code: mfaConfirmBody.recovery_codes[1] })]);
+  if (status(mfaRecoveryReplay) !== "401") throw new Error(`expected the consumed recovery code to be rejected on replay, got:\n${mfaRecoveryReplay}`);
+  const mfaRecoveredStatus = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
+  if (status(mfaRecoveredStatus) !== "200" || !jsonBody(mfaRecoveredStatus).enabled) {
+    throw new Error(`expected the replacement MFA enrollment to be enabled, got:\n${mfaRecoveredStatus}`);
+  }
+
+  const mfaDisableReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ password: "brandnewpassword123", code: replacementCode })]);
   if (status(mfaDisableReauth) !== "200") throw new Error(`expected password plus TOTP reauthentication before disabling MFA, got:\n${mfaDisableReauth}`);
   const mfaDisableReauthToken = field(mfaDisableReauth, "reauth_token");
   if (!mfaDisableReauthToken) throw new Error(`expected a short-lived reauth token before disabling MFA, got:\n${mfaDisableReauth}`);
-  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaDisableReauthToken}`, "-d", JSON.stringify({ code: totpCode(mfaSetupBody.secret) })]);
+  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaDisableReauthToken}`, "-d", JSON.stringify({ code: replacementCode })]);
   if (status(mfaDisable) !== "204") throw new Error(`expected a valid TOTP to disable MFA, got:\n${mfaDisable}`);
   const mfaStatusDisabled = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
   if (status(mfaStatusDisabled) !== "200" || jsonBody(mfaStatusDisabled).enabled) throw new Error(`expected MFA to be disabled after the authenticated disable flow, got:\n${mfaStatusDisabled}`);
@@ -1495,6 +1527,7 @@ step(hasDocker ? "add auth: wires /auth/* and /users/me* into docs/openapi.yaml,
     "/v1/users/me/mfa/setup:",
     "/v1/users/me/mfa/confirm:",
     "/v1/users/me/mfa/disable:",
+    "/v1/users/me/mfa/recover:",
     "/v1/auth/mfa/verify:",
   ]) {
     if (!openapi.includes(p)) throw new Error(`expected ${p} in docs/openapi.yaml after add auth, got:\n${openapi}`);
