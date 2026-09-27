@@ -9,6 +9,7 @@ type SecurityProfile struct {
 	Version                         string
 	Level                           int
 	CommonPasswordScreening        bool
+	ContextPasswordScreening       bool
 	BreachedPasswordScreening      bool
 	RequireMFAForSensitiveActions  bool
 	RequireMFAForApplicationAccess bool
@@ -21,6 +22,7 @@ func GeneratedSecurityProfile() SecurityProfile {
 		Version:                        "5.0.0",
 		Level:                          {{asvsLevel}},
 		CommonPasswordScreening:       true,
+		ContextPasswordScreening:      {{#if asvsL2}}true{{else}}false{{/if}},
 		BreachedPasswordScreening:     {{#if asvsL2}}true{{else}}false{{/if}},
 		RequireMFAForSensitiveActions: {{#if asvsL2}}true{{else}}false{{/if}},
 		RequireMFAForApplicationAccess: {{#if asvsL2}}true{{else}}false{{/if}},
@@ -33,9 +35,12 @@ func GeneratedSecurityProfile() SecurityProfile {
 // production when its operator-owned controls were never configured. Local
 // development is intentionally allowed to start so a fresh scaffold remains
 // inspectable before deployment secrets and policy data exist.
-func (p SecurityProfile) ValidateRuntime(production, mfaEnabled, commonPasswordListConfigured, breachListConfigured, requireMFAForApplicationAccess bool) error {
+func (p SecurityProfile) ValidateRuntime(production, mfaEnabled, commonPasswordListConfigured, contextPasswordListConfigured, breachListConfigured, requireMFAForApplicationAccess bool) error {
 	if p.CommonPasswordScreening && production && !commonPasswordListConfigured {
-		return errors.New("ASVS requires AUTH_COMMON_PASSWORDS_FILE in production")
+		return errors.New("ASVS requires AUTH_COMMON_PASSWORDS_FILE in production; set a newline-delimited top-3000 corpus")
+	}
+	if p.Level >= 2 && p.ContextPasswordScreening && production && !contextPasswordListConfigured {
+		return errors.New("ASVS L2 requires AUTH_CONTEXT_PASSWORDS_FILE in production; set application, username, and email context terms")
 	}
 	if p.Level >= 2 && production && p.BreachedPasswordScreening && !breachListConfigured {
 		return errors.New("ASVS L2 requires AUTH_BREACHED_PASSWORDS_FILE in production")

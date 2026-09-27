@@ -200,6 +200,10 @@ function validateFeatures(features: Partial<ProjectFeatures>): void {
     throw new Error(`${CONFIG_FILE}.features.auth must be true or false`);
   }
   if (features.authStore !== undefined) assertOneOf(features.authStore, "features.authStore", ["postgres", "redis"]);
+  if (features.authBrowserTopology !== undefined) {
+    assertOneOf(features.authBrowserTopology, "features.authBrowserTopology", ["same-origin", "same-site", "cross-site"]);
+  }
+  if (features.authLockout !== undefined) assertOneOf(features.authLockout, "features.authLockout", ["progressive", "fixed"]);
   if (features.rbac !== undefined && typeof features.rbac !== "boolean") {
     throw new Error(`${CONFIG_FILE}.features.rbac must be true or false`);
   }

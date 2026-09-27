@@ -14,35 +14,38 @@ func TestGeneratedSecurityProfile(t *testing.T) {
 		t.Fatal("generated profile disabled common-password screening")
 	}
 {{#if asvsL2}}
-	if !profile.BreachedPasswordScreening || !profile.RequireMFAForSensitiveActions || !profile.RequireMFAForApplicationAccess {
+	if !profile.ContextPasswordScreening || !profile.BreachedPasswordScreening || !profile.RequireMFAForSensitiveActions || !profile.RequireMFAForApplicationAccess {
 		t.Fatal("generated L2 profile omitted a required runtime control")
 	}
 {{else}}
-	if profile.BreachedPasswordScreening || profile.RequireMFAForSensitiveActions || profile.RequireMFAForApplicationAccess {
+	if profile.ContextPasswordScreening || profile.BreachedPasswordScreening || profile.RequireMFAForSensitiveActions || profile.RequireMFAForApplicationAccess {
 		t.Fatal("generated L1 profile enabled L2-only controls")
 	}
 {{/if}}
 	if profile.PhishingResistantMFA {
 		t.Fatal("generated profile claims phishing-resistant MFA without a WebAuthn adapter")
 	}
-	if err := profile.ValidateRuntime(true, true, true, true, {{#if asvsL2}}true{{else}}false{{/if}}); err != nil {
+	if err := profile.ValidateRuntime(true, true, true, true, {{#if asvsL2}}true{{else}}false{{/if}}, {{#if asvsL2}}true{{else}}false{{/if}}); err != nil {
 		t.Fatalf("configured production profile rejected: %v", err)
 	}
-	if err := profile.ValidateRuntime(true, true, false, true, {{#if asvsL2}}true{{else}}false{{/if}}); err == nil {
+	if err := profile.ValidateRuntime(true, true, false, true, {{#if asvsL2}}true{{else}}false{{/if}}, {{#if asvsL2}}true{{else}}false{{/if}}); err == nil {
 		t.Fatal("production profile accepted a missing common-password corpus")
 	}
 {{#if asvsL2}}
-	if err := profile.ValidateRuntime(true, false, true, true, true); err == nil {
+	if err := profile.ValidateRuntime(true, false, true, true, true, true); err == nil {
 		t.Fatal("L2 production profile accepted disabled MFA")
 	}
-	if err := profile.ValidateRuntime(true, true, true, false, true); err == nil {
+	if err := profile.ValidateRuntime(true, true, true, true, true, false); err == nil {
 		t.Fatal("L2 production profile accepted MFA access enforcement disabled")
 	}
-	if err := profile.ValidateRuntime(true, true, true, true, false); err == nil {
+	if err := profile.ValidateRuntime(true, true, true, true, false, true); err == nil {
 		t.Fatal("L2 production profile accepted a missing breached-password denylist")
 	}
+	if err := profile.ValidateRuntime(true, true, true, false, true, true); err == nil {
+		t.Fatal("L2 production profile accepted a missing context-password list")
+	}
 {{else}}
-	if err := profile.ValidateRuntime(true, false, true, false, false); err != nil {
+	if err := profile.ValidateRuntime(true, false, true, false, false, false); err != nil {
 		t.Fatalf("L1 production profile unexpectedly required L2 controls: %v", err)
 	}
 {{/if}}

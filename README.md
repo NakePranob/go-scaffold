@@ -496,17 +496,18 @@ go-scaffold add auth --browser-topology same-site
 go-scaffold add auth --browser-topology cross-site
 go-scaffold add auth --asvs-level 1                    # ASVS 5.0.0 L1 verification target
 go-scaffold add auth --asvs-level 2                    # L2 target (default)
-go-scaffold add auth --asvs-level 3                    # L3 target
 go-scaffold add auth --defaults                        # Postgres + same-site + L2
 ~~~
 
 Auth adds:
 
-- an OWASP ASVS 5.0.0 verification target (L1/L2/L3), recorded in
+- an OWASP ASVS 5.0.0 assessment target (L1/L2), recorded in
   `go-scaffold.config.json`, with an auth assessment worksheet at
   `docs/security/asvs-auth.md`. The selection does not certify the generated
-  application. `go-scaffold check` reports known generator gaps for the chosen
-  level; the worksheet and a full application assessment still need completion.
+  application. L3 is rejected until phishing-resistant WebAuthn/passkey,
+  recovery, notification, and step-up controls are generated. `go-scaffold
+  check` reports known generator gaps for the chosen level; the worksheet and a
+  full application assessment still need completion.
 - JWT access tokens and refresh-token rotation with reuse detection
 - registration, login, logout, refresh, password reset, and email verification
 - generic provider OAuth routes, with Google as the first adapter
@@ -555,8 +556,9 @@ make migrate-up
 SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='change-me' make seed
 ~~~
 
-Without add worker, verification and password-reset mail is sent inline. If a
-worker is already installed, those jobs use the queue instead.
+Verification and password-reset mail is always sent inline. River/Asynq worker
+queues remain an independent choice for other jobs and never become the source
+of auth state or bearer-link delivery.
 
 ### add rbac — roles and permissions
 

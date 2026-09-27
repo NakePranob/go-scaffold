@@ -49,7 +49,15 @@ export function patchMainGoForObservability(mainGoPath: string, goModule: string
       "it looks like it's been hand-edited. Add middleware.Metrics() and middleware.Tracing(\"<project>\") to it yourself."
     );
   }
-  const newUseLine = `${useLine.slice(0, -1)}, middleware.Metrics(), middleware.Tracing("${projectName}"))`;
+  // Keep error rendering inside the observability wrappers. Error middleware
+  // writes the final AppError response after its downstream chain returns;
+  // placing Metrics/Tracing after Error would therefore record a misleading
+  // 200 for an endpoint that actually returned 4xx/5xx.
+  const errorMiddleware = ", middleware.Error(!cfg.IsProd())";
+  const newUseLine = useLine.replace(
+    errorMiddleware,
+    `, middleware.Metrics(), middleware.Tracing("${projectName}")${errorMiddleware}`,
+  );
   content = content.replace(useLine, () => newUseLine);
 
   // This used to be registered in every environment, on the reasoning that

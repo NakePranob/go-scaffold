@@ -19,7 +19,7 @@ type filePasswordPolicy struct {
 // corpus, and production must choose a source and refresh procedure suitable
 // for its data-handling policy.
 func NewFilePasswordPolicy(path string) (ports.PasswordPolicy, error) {
-	return loadFilePasswordPolicy(path, 1)
+	return loadFilePasswordPolicy(path, 1, 8)
 }
 
 // NewCommonPasswordFilePolicy loads the L1 common-password corpus. ASVS 5.0
@@ -27,10 +27,18 @@ func NewFilePasswordPolicy(path string) (ports.PasswordPolicy, error) {
 // policy; rejecting a shorter file prevents a production deployment from
 // silently claiming that a tiny denylist is the required corpus.
 func NewCommonPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
-	return loadFilePasswordPolicy(path, 3000)
+	return loadFilePasswordPolicy(path, 3000, 8)
 }
 
-func loadFilePasswordPolicy(path string, minimumEntries int) (ports.PasswordPolicy, error) {
+// NewContextPasswordFilePolicy loads application-specific terms such as the
+// product name, host name, username, and email fragments. L2 requires the
+// operator to provide at least one term; the generated service applies this
+// policy on register, password change, reset, and identity-link flows.
+func NewContextPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
+	return loadFilePasswordPolicy(path, 1, 1)
+}
+
+func loadFilePasswordPolicy(path string, minimumEntries, minimumTermBytes int) (ports.PasswordPolicy, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("password denylist path is empty")
 	}
@@ -47,7 +55,7 @@ func loadFilePasswordPolicy(path string, minimumEntries int) (ports.PasswordPoli
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if len([]byte(line)) < 8 || len([]byte(line)) > 256 {
+		if len([]byte(line)) < minimumTermBytes || len([]byte(line)) > 256 {
 			continue
 		}
 		passwords[strings.ToLower(line)] = struct{}{}

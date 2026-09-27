@@ -142,6 +142,7 @@ type MFAStore interface {
 	ConfirmEnrollment(context.Context, uuid.UUID, string, []string) error
 	Disable(context.Context, uuid.UUID) error
 	CreateChallenge(context.Context, string, MFAChallenge) error
+	GetChallenge(context.Context, string) (MFAChallenge, bool, error)
 	ConsumeChallenge(context.Context, string) (MFAChallenge, bool, error)
 	ConsumeRecoveryCode(context.Context, uuid.UUID, string) (bool, error)
 }

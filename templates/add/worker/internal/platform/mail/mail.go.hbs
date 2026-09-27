@@ -20,12 +20,12 @@ import (
 	"{{goModule}}/internal/shared/emails"
 )
 
-// Client sends plain-text email over SMTP (net/smtp already handles STARTTLS
-// when the server offers it, which covers Gmail/SendGrid/Mailgun/SES/Resend
-// SMTP relays on port 587) — talks to a real external system, so it lives in
-// platform/, not shared/.
+// Client sends plain-text email over SMTP. Production requires STARTTLS before
+// authentication or envelope commands; development may use a local catcher
+// that does not advertise TLS.
 type Client struct {
 	host, port, username, password, from string
+	requireStartTLS bool
 	slots chan struct{}
 }
 
@@ -41,6 +41,7 @@ func Open(cfg config.Config) *Client {
 		username: cfg.SMTPUsername,
 		password: cfg.SMTPPassword,
 		from:     cfg.SMTPFrom,
+		requireStartTLS: cfg.IsProd(),
 		slots:    make(chan struct{}, maxConcurrentSMTP),
 	}
 }
@@ -111,7 +112,7 @@ func (c *Client) sendSMTP(ctx context.Context, from, to string, auth smtp.Auth, 
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if deadline, ok := deadlineCtx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -129,7 +130,7 @@ func (c *Client) sendSMTP(ctx context.Context, from, to string, auth smtp.Auth, 
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if err := client.Hello("localhost"); err != nil {
 		return err
 	}
@@ -137,6 +138,8 @@ func (c *Client) sendSMTP(ctx context.Context, from, to string, auth smtp.Auth, 
 		if err := client.StartTLS(&tls.Config{ServerName: c.host, MinVersion: tls.VersionTLS12}); err != nil {
 			return err
 		}
+	} else if c.requireStartTLS {
+		return fmt.Errorf("smtp: relay does not support STARTTLS; refusing plaintext delivery in production")
 	}
 	if auth != nil {
 		if ok, _ := client.Extension("AUTH"); !ok {

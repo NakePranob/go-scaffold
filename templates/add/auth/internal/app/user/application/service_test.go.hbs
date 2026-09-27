@@ -381,6 +381,16 @@ func (f *fakeMFAStore) CreateChallenge(_ context.Context, hash string, challenge
 	return nil
 }
 
+func (f *fakeMFAStore) GetChallenge(_ context.Context, hash string) (MFAChallenge, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	challenge, ok := f.challenges[hash]
+	if !ok || !challenge.ExpiresAt.After(time.Now()) {
+		return MFAChallenge{}, false, nil
+	}
+	return challenge, true, nil
+}
+
 func (f *fakeMFAStore) ConsumeChallenge(_ context.Context, hash string) (MFAChallenge, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -447,6 +457,9 @@ func (f *fakeRepo) LoginLockedUntil(_ context.Context, key string) (time.Time, e
 	}
 	if f.lastAttempt == nil {
 		f.lastAttempt = map[string]string{}
+	}
+	if f.failures == nil {
+		f.failures = map[string]int{}
 	}
 	// same rule as the SQL: a repeat of the fingerprint already on the row
 	// changes nothing, and "" is never a repeat

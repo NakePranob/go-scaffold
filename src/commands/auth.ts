@@ -118,7 +118,14 @@ export async function addAuth(
   });
   await applyTemplateEntries(projectDir, [
     { template: "add/auth/docs/asvs-auth.md.hbs", output: "docs/security/asvs-auth.md" },
-  ], { asvsLevel, asvsL2: asvsLevel >= 2, asvsL3: asvsLevel >= 3 });
+  ], {
+    asvsLevel,
+    asvsL2: asvsLevel >= 2,
+    asvsL3: asvsLevel >= 3,
+    authStore: store,
+    authBrowserTopology: browser,
+    authLockout: lockoutPolicy,
+  });
 
   const migrationsDir = path.join(projectDir, "migrations");
   fs.ensureDirSync(migrationsDir);
@@ -247,7 +254,13 @@ export async function addAuth(
   writeConfig(projectDir, {
     ...config,
     asvs: { version: "5.0.0", level: asvsLevel },
-    features: { ...config.features, auth: true, authStore: store },
+    features: {
+      ...config.features,
+      auth: true,
+      authStore: store,
+      authBrowserTopology: browser,
+      authLockout: lockoutPolicy,
+    },
     modules: {
       ...config.modules,
       user: { surface: "minimal", applicationStyle: "service", boundary: "hexagonal", packageLayout: "split" },
@@ -256,6 +269,7 @@ export async function addAuth(
 
   console.log(pc.green("\nadded internal/app/user/, internal/shared/middleware/auth.go, cmd/seed, and cmd/auth-cleanup"));
   console.log(`OWASP ASVS 5.0.0 L${asvsLevel} generated security profile recorded; review docs/security/asvs-auth.md before making any compliance claim`);
+  console.log(`resolved auth choices: store=${store}, browser-topology=${browser}, lockout=${lockoutPolicy}; worker queue remains independent`);
   console.log(
     "verification + password-reset mail is sent inline even when a worker exists — bearer recovery tokens are never persisted in queue jobs"
   );
@@ -391,6 +405,8 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "AUTH_MAX_SESSIONS=10\n" +
     "\n# Production: newline-delimited common-password list; use at least the top 3000 passwords matching your policy.\n" +
     "AUTH_COMMON_PASSWORDS_FILE=\n" +
+    "# L2 only: newline-delimited application/user/context terms to reject as passwords.\n" +
+    "AUTH_CONTEXT_PASSWORDS_FILE=\n" +
     "# L2 only: newline-delimited breached-password denylist. Production L2 refuses to boot when unset.\n" +
     "AUTH_BREACHED_PASSWORDS_FILE=\n";
   fs.writeFileSync(envExamplePath, content);

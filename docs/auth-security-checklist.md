@@ -153,6 +153,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 ### 3.2 MFA implementation details
 
 - [x] TOTP/recovery code ใช้ one-time verification และมี expiration/attempt controls ตาม generated flow
+- [x] MFA verification ใช้ durable per-user `login_throttle` key, ตรวจ lock ก่อน consume challenge, นับ TOTP/recovery failure และล้าง counter เมื่อสำเร็จ; การสร้าง challenge ใหม่ถูกปิดระหว่าง lock
 - [x] secret/token generation ใช้ CSPRNG path ที่มี test รองรับ
 - [~] ต้องยืนยันเวลาของ server ที่ใช้ตรวจ TOTP และกำหนด clock-drift policy ใน production
 - [~] ต้องยืนยันว่า MFA secret และ recovery codes encrypted/protected ตาม deployment secret policy
@@ -212,7 +213,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] system roles (`staff`, `admin`) กันการลบ และมี last-role-manager guard
 - [x] role change revoke refresh sessions ก่อนเปลี่ยน role เพราะ role อยู่ใน access token
 - [x] permission update invalidate local authz cache ทันทีใน process เดียวกัน
-- [~] authz cache ข้าม pod อาจ stale จนถึง TTL; ต้องเลือก TTL/Redis pub-sub และตรวจ behavior ตอน permission ถูกถอน
+- [x] authz cache ตรวจ `roles.updated_at` จาก Postgres ทุก request และ permission replacement อัปเดต version ใน transaction เดียวกัน จึงไม่ใช้ permission map เก่าหลัง revocation ข้าม replica; version-read failure fail closed
 - [~] role-management route ยังต้องทบทวน recent-auth/step-up policy สำหรับการเปลี่ยนสิทธิ์ผู้ใช้หรือ role ที่มีอำนาจสูง
 - [~] ต้องมี audit log สำหรับ grant/revoke permission, role change, role delete และ admin user lookup
 - [ ] generic RBAC ไม่ได้สร้าง object-level/tenant-level authorization ให้อัตโนมัติ; ทุก generated domain ต้องตรวจ resource ownership/scope เอง

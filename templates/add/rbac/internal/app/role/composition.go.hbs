@@ -39,7 +39,7 @@ func NewServiceFromDB(db *gorm.DB) *Service {
 
 func NewCompositionFromDB(db *gorm.DB, jwtSecret string, jwtIssuer string, jwtAudience string, cacheTTL time.Duration, sessionValidators ...middleware.SessionValidator) *Composition {
 	service := NewServiceFromDB(db)
-	authz := middleware.NewAuthz(service.PermissionsOf, cacheTTL)
+	authz := middleware.NewVersionedAuthz(service.PermissionsOf, service.PermissionVersion, cacheTTL)
 	return &Composition{
 		Service: service,
 		Authz:   authz,

@@ -284,6 +284,7 @@ export function checkProject(projectDir: string = process.cwd()): void {
       "internal/app/user/application/security_profile.go",
       "internal/app/user/application/password_policy.go",
       "internal/app/user/adapters/outbound/password/policy.go",
+      "internal/app/user/composition.go",
     ];
     const missing = required.filter((file) => !fs.existsSync(path.join(projectDir, file)));
     if (missing.length) throw new Error(`ASVS generated security profile check failed: missing ${missing.join(", ")}`);
@@ -295,21 +296,29 @@ export function checkProject(projectDir: string = process.cwd()): void {
       throw new Error("ASVS generated security profile check failed: L3 requires a generated phishing-resistant WebAuthn/passkey adapter");
     }
     const profile = fs.readFileSync(path.join(projectDir, "internal/app/user/application/security_profile.go"), "utf8");
+    const composition = fs.readFileSync(path.join(projectDir, "internal/app/user/composition.go"), "utf8");
     if (!new RegExp(`Level:\\s+${config.asvs.level},`).test(profile)) {
       throw new Error("ASVS generated security profile check failed: security_profile.go does not match the selected level");
     }
     if (!/CommonPasswordScreening:\s+true/.test(profile)) {
       throw new Error("ASVS generated security profile check failed: common-password screening is disabled");
     }
-    if (config.asvs.level === 2 && (!/BreachedPasswordScreening:\s+true/.test(profile) || !/RequireMFAForSensitiveActions:\s+true/.test(profile))) {
+    if (config.asvs.level === 2 && (!/ContextPasswordScreening:\s+true/.test(profile) || !/BreachedPasswordScreening:\s+true/.test(profile) || !/RequireMFAForSensitiveActions:\s+true/.test(profile) || !/RequireMFAForApplicationAccess:\s+true/.test(profile) || !/cfg\.AuthMFAEnabled/.test(composition) || !/cfg\.AuthMFARequiredForLogin/.test(composition))) {
       throw new Error("ASVS generated security profile check failed: L2 controls are disabled");
     }
     console.log(`ASVS ${config.asvs.version} L${config.asvs.level} generated security profile: present; runtime and deployment evidence still require review`);
     if (config.asvs.level === 2) {
-      console.log("  - L2 production guard: configure AUTH_COMMON_PASSWORDS_FILE, AUTH_BREACHED_PASSWORDS_FILE and AUTH_MFA_ENABLED=true");
+      console.log("  - L2 production guard: configure AUTH_COMMON_PASSWORDS_FILE, AUTH_CONTEXT_PASSWORDS_FILE, AUTH_BREACHED_PASSWORDS_FILE, AUTH_MFA_ENABLED=true and AUTH_MFA_REQUIRED_FOR_LOGIN=true");
     } else {
       console.log("  - L1 production guard: configure AUTH_COMMON_PASSWORDS_FILE with at least the top 3000 policy-matching passwords");
     }
     console.log("  - L3 is intentionally unavailable until a phishing-resistant WebAuthn/passkey adapter is generated");
+    const unresolvedChoices = [
+      config.features.authBrowserTopology === undefined ? "features.authBrowserTopology" : undefined,
+      config.features.authLockout === undefined ? "features.authLockout" : undefined,
+    ].filter((value): value is string => value !== undefined);
+    if (unresolvedChoices.length) {
+      console.warn(`  - unresolved auth wizard choices in go-scaffold.config.json: ${unresolvedChoices.join(", ")} (legacy project; inspect manually)`);
+    }
   }
 }

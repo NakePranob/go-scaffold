@@ -25,6 +25,8 @@ for (const level of [1, 2]) {
     const app = project(t);
     run(app, "add", "auth", "--store", "postgres", "--browser-topology", "same-site", "--asvs-level", String(level), "--yes");
     assert.deepEqual(config(app).asvs, { version: "5.0.0", level });
+    assert.equal(config(app).features.authBrowserTopology, "same-site");
+    assert.equal(config(app).features.authLockout, "progressive");
     const worksheet = readFileSync(path.join(app, "docs/security/asvs-auth.md"), "utf8");
     assert.match(worksheet, new RegExp(`OWASP ASVS 5\\.0\\.0 Level ${level}`));
     assert.equal(existsSync(path.join(app, "cmd/auth-cleanup/main.go")), true);
@@ -32,14 +34,23 @@ for (const level of [1, 2]) {
     assert.match(worksheet, /6\.2\.4: common passwords/);
     assert.equal(worksheet.includes("6.2.12: breached passwords"), level >= 2);
     const profile = readFileSync(path.join(app, "internal/app/user/application/security_profile.go"), "utf8");
+    const wiring = readFileSync(path.join(app, "cmd/api/wiring.go"), "utf8");
     assert.match(profile, new RegExp(`Level:\\s+${level},`));
     assert.match(profile, /CommonPasswordScreening:\s+true/);
-    assert.match(readFileSync(path.join(app, ".env.example"), "utf8"), /AUTH_COMMON_PASSWORDS_FILE=/);
+    assert.equal(/ContextPasswordScreening:\s+true/.test(profile), level >= 2);
+    const envExample = readFileSync(path.join(app, ".env.example"), "utf8");
+    assert.match(envExample, /AUTH_COMMON_PASSWORDS_FILE=/);
+    assert.match(envExample, /AUTH_CONTEXT_PASSWORDS_FILE=/);
+    assert.equal((envExample.match(/^APP_ENV=/gm) ?? []).length, 1, "auth patch must not duplicate APP_ENV");
     assert.equal(/BreachedPasswordScreening:\s+true/.test(profile), level >= 2);
+    assert.match(wiring, /APP_ENV must be set explicitly/);
+    assert.match(wiring, /must be an absolute http\(s\) URL/);
+    assert.match(wiring, /must use https:\/\/ when APP_ENV=production/);
     const output = run(app, "check");
     assert.match(output, /architecture check passed/);
     assert.match(output, new RegExp(`ASVS 5\\.0\\.0 L${level} generated security profile: present`));
     assert.equal(output.includes("L2 production guard"), level >= 2);
+    assert.equal(output.includes("AUTH_MFA_REQUIRED_FOR_LOGIN=true"), level >= 2);
     assert.match(output, /L3 is intentionally unavailable/);
   });
 }

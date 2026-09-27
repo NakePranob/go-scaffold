@@ -299,6 +299,7 @@ MFA has an operator capability switch and a separate per-user enrollment:
   baseline. Production must also set `AUTH_COMMON_PASSWORDS_FILE` to an
   operator-owned newline-delimited corpus with at least 3,000 unique entries
   that match the application's password policy; L2 additionally requires
+  `AUTH_CONTEXT_PASSWORDS_FILE` for application/user/email terms and
   `AUTH_BREACHED_PASSWORDS_FILE`.
 
 - `AUTH_MFA_ENABLED=false` is the default. When enabled, the composition root
@@ -313,8 +314,9 @@ MFA has an operator capability switch and a separate per-user enrollment:
   `{ "mfa_required": true, "challenge": "..." }`. Do not issue an access
   token or refresh cookie until `POST /auth/mfa/verify` succeeds. Challenges
   are hashed, short-lived, and one-use; failed verification consumes the
-  challenge. Recovery codes are hashed, atomic one-use login factors and are
-  not accepted to disable MFA.
+  challenge and counts against a durable per-user throttle before another
+  challenge can be created. Recovery codes are hashed, atomic one-use login
+  factors and are not accepted to disable MFA.
 - MFA data is durable in Postgres for both refresh-token store choices. The
   `create_mfa` migration must be applied before production and covered by
   real-store/concurrency tests.

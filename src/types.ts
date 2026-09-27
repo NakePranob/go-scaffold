@@ -92,6 +92,10 @@ export interface ProjectFeatures {
   auth?: boolean;
   /** which backing store `add auth` chose for tokens + rate limiting */
   authStore?: AuthStore;
+  /** browser/API cookie and CORS topology selected by `add auth` */
+  authBrowserTopology?: BrowserTopology;
+  /** failed-login lockout shape selected by `add auth` */
+  authLockout?: LockoutPolicy;
   /** set by `go-scaffold add rbac` — internal/app/role + authz middleware exist */
   rbac?: boolean;
   /** chosen at `create` time — Prometheus /metrics + OpenTelemetry tracing (Gin + GORM) */

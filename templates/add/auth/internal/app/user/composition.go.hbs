@@ -74,6 +74,7 @@ func NewHandlerFromDB(
 		cfg.IsProd(),
 		cfg.AuthMFAEnabled,
 		strings.TrimSpace(cfg.AuthCommonPasswordsFile) != "",
+		strings.TrimSpace(cfg.AuthContextPasswordsFile) != "",
 		strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "",
 		cfg.AuthMFARequiredForLogin,
 	); err != nil {
@@ -86,6 +87,13 @@ func NewHandlerFromDB(
 			panic(fmt.Errorf("load AUTH_COMMON_PASSWORDS_FILE: %w", err))
 		}
 		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, commonPolicy)
+	}
+	if profile.ContextPasswordScreening && strings.TrimSpace(cfg.AuthContextPasswordsFile) != "" {
+		contextPolicy, err := userpassword.NewContextPasswordFilePolicy(cfg.AuthContextPasswordsFile)
+		if err != nil {
+			panic(fmt.Errorf("load AUTH_CONTEXT_PASSWORDS_FILE: %w", err))
+		}
+		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, contextPolicy)
 	}
 	if profile.BreachedPasswordScreening && strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "" {
 		breachedPolicy, err := userpassword.NewFilePasswordPolicy(cfg.AuthBreachedPasswordsFile)

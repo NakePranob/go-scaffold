@@ -42,3 +42,18 @@ func TestNewCommonPasswordFilePolicyRejectsShortCorpus(t *testing.T) {
 		t.Fatal("expected a short common-password corpus to be rejected")
 	}
 }
+
+func TestNewContextPasswordFilePolicyAcceptsShortContextTerm(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "context.txt")
+	if err := os.WriteFile(path, []byte("Acme\nproject.example\n"), 0o600); err != nil {
+		t.Fatalf("write context corpus: %v", err)
+	}
+	policy, err := NewContextPasswordFilePolicy(path)
+	if err != nil {
+		t.Fatalf("load context corpus: %v", err)
+	}
+	if err := policy.Validate("acme"); err == nil {
+		t.Fatal("expected a short context term to be rejected")
+	}
+}

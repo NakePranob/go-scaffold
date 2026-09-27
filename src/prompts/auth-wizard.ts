@@ -5,8 +5,11 @@ export const DEFAULT_ASVS_LEVEL: AsvsLevel = 2;
 
 export function parseAsvsLevel(raw: string): AsvsLevel {
   const value = raw.trim();
-  if (value !== "1" && value !== "2" && value !== "3") {
-    throw new Error(`--asvs-level must be one of: 1, 2, 3 (got "${raw}")`);
+  if (value === "3") {
+    throw new Error("ASVS L3 generated security profile is unavailable until a phishing-resistant WebAuthn/passkey adapter is generated; choose L1 or L2");
+  }
+  if (value !== "1" && value !== "2") {
+    throw new Error(`--asvs-level must be one of: 1, 2 (got "${raw}"); L3 is unavailable until WebAuthn/passkey support is generated`);
   }
   return Number(value) as AsvsLevel;
 }
@@ -18,7 +21,7 @@ export async function promptAsvsLevel(): Promise<AsvsLevel> {
     choices: [
       { name: "L1 — baseline", value: 1, description: "generated common-password screening profile" },
       { name: "L2 — most applications", value: 2, description: "generated breached-password and stronger re-auth profile" },
-      { name: "L3 — unavailable", value: 3, description: "requires a generated WebAuthn/passkey adapter" },
+      { name: "L3 — unavailable", value: 3, disabled: "requires a generated WebAuthn/passkey adapter" },
     ],
   });
 }

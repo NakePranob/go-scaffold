@@ -106,6 +106,24 @@ func (s *PostgresMFAStore) CreateChallenge(ctx context.Context, hash string, cha
 	return tx.From(ctx, s.db).WithContext(ctx).Create(&row).Error
 }
 
+// GetChallenge reads the user binding without consuming the one-time
+// challenge. MFA lockout must be checked before consumption, otherwise an
+// already-locked account can spend a fresh challenge and learn whether the
+// code path reached TOTP/recovery validation.
+func (s *PostgresMFAStore) GetChallenge(ctx context.Context, hash string) (ports.MFAChallenge, bool, error) {
+	var row MFAChallenge
+	err := tx.From(ctx, s.db).WithContext(ctx).
+		Where("challenge_hash = ? AND expires_at > now()", hash).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ports.MFAChallenge{}, false, nil
+	}
+	if err != nil {
+		return ports.MFAChallenge{}, false, err
+	}
+	return ports.MFAChallenge{UserID: row.UserID, SessionID: row.SessionID, UserAgent: row.UserAgent, ExpiresAt: row.ExpiresAt}, true, nil
+}
+
 func (s *PostgresMFAStore) ConsumeChallenge(ctx context.Context, hash string) (ports.MFAChallenge, bool, error) {
 	var challenge ports.MFAChallenge
 	err := tx.From(ctx, s.db).WithContext(ctx).Raw(

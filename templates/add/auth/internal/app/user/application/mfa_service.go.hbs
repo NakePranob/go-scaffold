@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -138,6 +139,9 @@ func (s *Service) completeLogin(ctx context.Context, u *domain.User, sessions ..
 			return nil, err
 		}
 		return TokenResult(auth), nil
+	}
+	if s.throttled(ctx, mfaThrottleKey(u.ID)) {
+		return nil, errTooManyAttempts()
 	}
 
 	rawChallenge, err := randomToken()
@@ -302,9 +306,11 @@ func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string)
 	return nil
 }
 
-// VerifyMFA consumes the challenge before checking the code. This makes every
-// challenge single-use, including a failed attempt, and prevents an attacker
-// from turning a leaked challenge into an unlimited six-digit guessing oracle.
+// VerifyMFA checks the account-scoped throttle before consuming the challenge,
+// then consumes it before checking the code. A bad TOTP/recovery code counts
+// against the same durable login_throttle row, while a successful verification
+// clears that row. The challenge-generation path checks the same key so a
+// caller cannot bypass the lock by obtaining another challenge.
 func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAddress ...string) (*AuthResponse, error) {
 	settings, err := s.requireMFA()
 	if err != nil {
@@ -313,7 +319,19 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 	if s.mfa == nil {
 		return nil, errors.New("MFA store is not configured")
 	}
-	challenge, found, err := s.mfa.ConsumeChallenge(ctx, hashToken(rawChallenge))
+	challengeHash := hashToken(rawChallenge)
+	challenge, found, err := s.mfa.GetChallenge(ctx, challengeHash)
+	if err != nil {
+		return nil, fmt.Errorf("read MFA challenge: %w", err)
+	}
+	if !found {
+		return nil, errMFAInvalid()
+	}
+	key := mfaThrottleKey(challenge.UserID)
+	if s.throttled(ctx, key) {
+		return nil, errTooManyAttempts()
+	}
+	challenge, found, err = s.mfa.ConsumeChallenge(ctx, challengeHash)
 	if err != nil {
 		return nil, fmt.Errorf("consume MFA challenge: %w", err)
 	}
@@ -334,6 +352,10 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
 		recoveryHash, ok := normalizedRecoveryCodeHash(code)
 		if !ok {
+			if err := s.recordFailure(ctx, key, ""); err != nil {
+				slog.Error("record MFA failure", "error", err)
+				return nil, errTooManyAttempts()
+			}
 			return nil, errMFAInvalid()
 		}
 		used, err := s.mfa.ConsumeRecoveryCode(ctx, challenge.UserID, recoveryHash)
@@ -341,8 +363,16 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 			return nil, fmt.Errorf("consume MFA recovery code: %w", err)
 		}
 		if !used {
+			if err := s.recordFailure(ctx, key, ""); err != nil {
+				slog.Error("record MFA failure", "error", err)
+				return nil, errTooManyAttempts()
+			}
 			return nil, errMFAInvalid()
 		}
+	}
+	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
+		slog.Error("clear MFA failures", "error", err)
+		return nil, errTooManyAttempts()
 	}
 
 	u, err := s.repo.FindByID(ctx, challenge.UserID)
@@ -354,6 +384,10 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 		address = ipAddress[0]
 	}
 	return s.issueTokens(ctx, u, SessionContext{ID: challenge.SessionID, IsNew: true, UserAgent: challenge.UserAgent, IPAddress: address})
+}
+
+func mfaThrottleKey(userID uuid.UUID) string {
+	return hashToken("mfa:" + userID.String())
 }
 
 func (s *Service) requireMFA() (MFASettings, error) {

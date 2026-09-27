@@ -52,6 +52,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     "MFARecoveryCodeCount int",
     "AuthMaxSessions int",
     "AuthCommonPasswordsFile string",
+    "AuthContextPasswordsFile string",
     "AuthBreachedPasswordsFile string",
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_FIELDS_MARKER, fieldsBlock, "JWTSecret");
@@ -91,6 +92,7 @@ export function patchConfigForAuth(configGoPath: string): void {
     'MFARecoveryCodeCount: envInt("MFA_RECOVERY_CODE_COUNT", 10),',
     'AuthMaxSessions: envInt("AUTH_MAX_SESSIONS", 10),',
     'AuthCommonPasswordsFile: env("AUTH_COMMON_PASSWORDS_FILE", ""),',
+    'AuthContextPasswordsFile: env("AUTH_CONTEXT_PASSWORDS_FILE", ""),',
     'AuthBreachedPasswordsFile: env("AUTH_BREACHED_PASSWORDS_FILE", ""),',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_LOAD_MARKER, loadBlock, 'env("JWT_SECRET"');
@@ -132,6 +134,7 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
 
   const importLine = `"${goModule}/internal/app/user"`;
   content = insertBeforeMarkerOnce(content, IMPORT_MARKER, importLine, importLine);
+  content = insertBeforeMarkerOnce(content, IMPORT_MARKER, `"net/url"`, `"net/url"`);
   const modelImportLine = `usermodel "${goModule}/internal/app/user/adapters/outbound/postgres"`;
   // Only the development AutoMigrate list ever used this alias, so it is only
   // an import where that list still exists — see the guard further down.
@@ -139,6 +142,9 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
     content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
   }
   const checkBlock = [
+    'if os.Getenv("APP_ENV") == "" {',
+    '\treturn errors.New("APP_ENV must be set explicitly for auth-enabled projects (use development locally or production when deployed)")',
+    "}",
     'if cfg.IsProd() && cfg.JWTSecret == "dev-secret-change-me" {',
     '\treturn errors.New("JWT_SECRET is still the dev default — set a real secret before deploying with APP_ENV=production")',
     "}",
@@ -160,6 +166,15 @@ export function patchMainGoForAuth(mainGoPath: string, w: AuthWiring): void {
     'if cfg.IsProd() && cfg.AuthMetadataKey == cfg.JWTSecret {',
     '\treturn errors.New("AUTH_METADATA_KEY must be different from JWT_SECRET before deploying with APP_ENV=production")',
     "}",
+    'for _, endpoint := range []struct { name, value string }{{"PASSWORD_RESET_URL", cfg.PasswordResetURL}, {"EMAIL_VERIFY_URL", cfg.EmailVerifyURL}} {',
+    '\tu, err := url.Parse(endpoint.value)',
+    '\tif err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {',
+    '\t\treturn fmt.Errorf("%s must be an absolute http(s) URL; set it in the deployment environment", endpoint.name)',
+    '\t}',
+    '\tif cfg.IsProd() && u.Scheme != "https" {',
+    '\t\treturn fmt.Errorf("%s must use https:// when APP_ENV=production", endpoint.name)',
+    '\t}',
+    '}',
   ].join("\n");
   content = insertBeforeMarkerOnce(content, CONFIG_CHECKS_MARKER, checkBlock, "JWT_SECRET is still the dev default");
 
