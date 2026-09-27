@@ -193,7 +193,9 @@ Google), `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_REFRESH_MAX_TTL_MIN`, `OAUTH_STATE_T
 `EMAIL_VERIFY_URL` to absolute `https://` URLs, and set `AUTH_COMMON_PASSWORDS_FILE`
 to a newline-delimited corpus containing at least the top 3000 passwords that
 match this application's policy; L2 also requires
-`AUTH_CONTEXT_PASSWORDS_FILE` (application/user/email context terms) and
+`AUTH_CONTEXT_PASSWORDS_FILE` (context-derived password entries such as
+product-name/year or username variants; compare complete entries, not arbitrary
+substrings) and
 `AUTH_BREACHED_PASSWORDS_FILE`.
 Refresh rotation uses the configured inactivity TTL
 but never moves a token past its absolute lifetime. The backend stores a

@@ -299,7 +299,7 @@ MFA has an operator capability switch and a separate per-user enrollment:
   baseline. Production must also set `AUTH_COMMON_PASSWORDS_FILE` to an
   operator-owned newline-delimited corpus with at least 3,000 unique entries
   that match the application's password policy; L2 additionally requires
-  `AUTH_CONTEXT_PASSWORDS_FILE` for application/user/email terms and
+  `AUTH_CONTEXT_PASSWORDS_FILE` for context-derived password entries and
   `AUTH_BREACHED_PASSWORDS_FILE`.
 
 - `AUTH_MFA_ENABLED=false` is the default. When enabled, the composition root

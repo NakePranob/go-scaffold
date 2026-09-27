@@ -247,6 +247,10 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string)
 	if s.mfa == nil {
 		return nil, errors.New("MFA store is not configured")
 	}
+	key := mfaThrottleKey(userID)
+	if s.throttled(ctx, key) {
+		return nil, errTooManyAttempts()
+	}
 	enrollment, found, err := s.mfa.GetEnrollment(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("read MFA enrollment: %w", err)
@@ -262,7 +266,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string)
 		return nil, errMFAConfig()
 	}
 	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
-		return nil, errMFAInvalid()
+		return nil, s.recordMFAFailure(ctx, key)
 	}
 
 	codes, hashes, err := newRecoveryCodes(settings.RecoveryCodeCount)
@@ -271,6 +275,9 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string)
 	}
 	if err := s.mfa.ConfirmEnrollment(ctx, userID, enrollment.EncryptedSecret, hashes); err != nil {
 		return nil, fmt.Errorf("confirm MFA enrollment: %w", err)
+	}
+	if err := s.clearMFAFailures(ctx, key); err != nil {
+		return nil, err
 	}
 	return codes, nil
 }
@@ -286,6 +293,10 @@ func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string)
 	if s.mfa == nil {
 		return errors.New("MFA store is not configured")
 	}
+	key := mfaThrottleKey(userID)
+	if s.throttled(ctx, key) {
+		return errTooManyAttempts()
+	}
 	enrollment, found, err := s.mfa.GetEnrollment(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("read MFA enrollment: %w", err)
@@ -298,10 +309,13 @@ func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string)
 		return errMFAConfig()
 	}
 	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
-		return errMFAInvalid()
+		return s.recordMFAFailure(ctx, key)
 	}
 	if err := s.mfa.Disable(ctx, userID); err != nil {
 		return fmt.Errorf("disable MFA: %w", err)
+	}
+	if err := s.clearMFAFailures(ctx, key); err != nil {
+		return err
 	}
 	return nil
 }
@@ -352,27 +366,18 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
 		recoveryHash, ok := normalizedRecoveryCodeHash(code)
 		if !ok {
-			if err := s.recordFailure(ctx, key, ""); err != nil {
-				slog.Error("record MFA failure", "error", err)
-				return nil, errTooManyAttempts()
-			}
-			return nil, errMFAInvalid()
+			return nil, s.recordMFAFailure(ctx, key)
 		}
 		used, err := s.mfa.ConsumeRecoveryCode(ctx, challenge.UserID, recoveryHash)
 		if err != nil {
 			return nil, fmt.Errorf("consume MFA recovery code: %w", err)
 		}
 		if !used {
-			if err := s.recordFailure(ctx, key, ""); err != nil {
-				slog.Error("record MFA failure", "error", err)
-				return nil, errTooManyAttempts()
-			}
-			return nil, errMFAInvalid()
+			return nil, s.recordMFAFailure(ctx, key)
 		}
 	}
-	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
-		slog.Error("clear MFA failures", "error", err)
-		return nil, errTooManyAttempts()
+	if err := s.clearMFAFailures(ctx, key); err != nil {
+		return nil, err
 	}
 
 	u, err := s.repo.FindByID(ctx, challenge.UserID)
@@ -388,6 +393,22 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 
 func mfaThrottleKey(userID uuid.UUID) string {
 	return hashToken("mfa:" + userID.String())
+}
+
+func (s *Service) recordMFAFailure(ctx context.Context, key string) error {
+	if err := s.recordFailure(ctx, key, ""); err != nil {
+		slog.Error("record MFA failure", "error", err)
+		return errTooManyAttempts()
+	}
+	return errMFAInvalid()
+}
+
+func (s *Service) clearMFAFailures(ctx context.Context, key string) error {
+	if err := s.repo.ClearLoginFailures(ctx, key); err != nil {
+		slog.Error("clear MFA failures", "error", err)
+		return errTooManyAttempts()
+	}
+	return nil
 }
 
 func (s *Service) requireMFA() (MFASettings, error) {

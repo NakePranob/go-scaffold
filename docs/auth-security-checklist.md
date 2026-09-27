@@ -153,7 +153,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 ### 3.2 MFA implementation details
 
 - [x] TOTP/recovery code ใช้ one-time verification และมี expiration/attempt controls ตาม generated flow
-- [x] MFA verification ใช้ durable per-user `login_throttle` key, ตรวจ lock ก่อน consume challenge, นับ TOTP/recovery failure และล้าง counter เมื่อสำเร็จ; การสร้าง challenge ใหม่ถูกปิดระหว่าง lock
+- [x] MFA verification และ enrollment/step-up paths ใช้ durable per-user `login_throttle` key, ตรวจ lock ก่อนยอมรับ OTP, นับ TOTP failure และล้าง counter เมื่อสำเร็จ; การสร้าง challenge ใหม่ถูกปิดระหว่าง lock
 - [x] secret/token generation ใช้ CSPRNG path ที่มี test รองรับ
 - [~] ต้องยืนยันเวลาของ server ที่ใช้ตรวจ TOTP และกำหนด clock-drift policy ใน production
 - [~] ต้องยืนยันว่า MFA secret และ recovery codes encrypted/protected ตาม deployment secret policy

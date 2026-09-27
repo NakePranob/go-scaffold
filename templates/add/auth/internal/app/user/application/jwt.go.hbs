@@ -151,15 +151,22 @@ func (s *Service) Reauthenticate(ctx context.Context, userID uuid.UUID, password
 			return "", fmt.Errorf("read MFA enrollment for reauthentication: %w", enrollmentErr)
 		}
 		if found && enrollment.Enabled {
+			key := mfaThrottleKey(userID)
+			if s.throttled(ctx, key) {
+				return "", errTooManyAttempts()
+			}
 			secret, decryptErr := decryptMFASecret(settings.EncryptionKey, enrollment.EncryptedSecret)
 			if decryptErr != nil {
 				return "", errMFAConfig()
 			}
 			if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
-				return "", errMFAInvalid()
+				return "", s.recordMFAFailure(ctx, key)
 			}
 			if settings.RequireForReauth && !passwordVerified {
 				return "", errLocalIdentityRequired()
+			}
+			if err := s.clearMFAFailures(ctx, key); err != nil {
+				return "", err
 			}
 			if settings.RequireForReauth {
 				return s.issueReauthToken(userID)

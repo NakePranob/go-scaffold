@@ -40,7 +40,7 @@ func (p SecurityProfile) ValidateRuntime(production, mfaEnabled, commonPasswordL
 		return errors.New("ASVS requires AUTH_COMMON_PASSWORDS_FILE in production; set a newline-delimited top-3000 corpus")
 	}
 	if p.Level >= 2 && p.ContextPasswordScreening && production && !contextPasswordListConfigured {
-		return errors.New("ASVS L2 requires AUTH_CONTEXT_PASSWORDS_FILE in production; set application, username, and email context terms")
+		return errors.New("ASVS L2 requires AUTH_CONTEXT_PASSWORDS_FILE in production; set context-derived password entries of at least 8 bytes")
 	}
 	if p.Level >= 2 && production && p.BreachedPasswordScreening && !breachListConfigured {
 		return errors.New("ASVS L2 requires AUTH_BREACHED_PASSWORDS_FILE in production")

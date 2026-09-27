@@ -160,6 +160,28 @@ func TestMFAChallengeIsRequiredAndOneUse(t *testing.T) {
 	}
 }
 
+func TestMFAEnrollmentUsesTheDurableThrottle(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	validCode, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+
+	for i := 0; i < lockoutAfter; i++ {
+		if _, err := svc.ConfirmMFA(ctx, userID, "999999"); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+			t.Fatalf("wrong enrollment code %d = %v, want AUTH_MFA_INVALID", i, err)
+		}
+	}
+	if _, err := svc.ConfirmMFA(ctx, userID, validCode); codeOfMFAError(err) != "AUTH_TOO_MANY_ATTEMPTS" {
+		t.Fatalf("enrollment must be locked by the durable per-user MFA throttle, got %v", err)
+	}
+}
+
 func TestMFARecoveryCodeIsOneUse(t *testing.T) {
 	svc, _, userID, now := configuredMFATestService(t)
 	ctx := context.Background()

@@ -43,17 +43,31 @@ func TestNewCommonPasswordFilePolicyRejectsShortCorpus(t *testing.T) {
 	}
 }
 
-func TestNewContextPasswordFilePolicyAcceptsShortContextTerm(t *testing.T) {
+func TestNewContextPasswordFilePolicyRejectsShortContextCorpus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "context.txt")
-	if err := os.WriteFile(path, []byte("Acme\nproject.example\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("Acme\napp\nprod\n"), 0o600); err != nil {
+		t.Fatalf("write context corpus: %v", err)
+	}
+	if _, err := NewContextPasswordFilePolicy(path); err == nil {
+		t.Fatal("expected a corpus without policy-length password entries to be rejected")
+	}
+}
+
+func TestNewContextPasswordFilePolicyRejectsConfiguredPasswordEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "context.txt")
+	if err := os.WriteFile(path, []byte("Acme2026\nproject.example2026\n"), 0o600); err != nil {
 		t.Fatalf("write context corpus: %v", err)
 	}
 	policy, err := NewContextPasswordFilePolicy(path)
 	if err != nil {
 		t.Fatalf("load context corpus: %v", err)
 	}
-	if err := policy.Validate("acme"); err == nil {
-		t.Fatal("expected a short context term to be rejected")
+	if err := policy.Validate("acme2026"); err == nil {
+		t.Fatal("expected a configured context-derived password to be rejected")
+	}
+	if err := policy.Validate("correct horse battery staple 2026!"); err != nil {
+		t.Fatalf("unexpected substring-style rejection: %v", err)
 	}
 }

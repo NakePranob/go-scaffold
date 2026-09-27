@@ -30,12 +30,15 @@ func NewCommonPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
 	return loadFilePasswordPolicy(path, 3000, 8)
 }
 
-// NewContextPasswordFilePolicy loads application-specific terms such as the
-// product name, host name, username, and email fragments. L2 requires the
-// operator to provide at least one term; the generated service applies this
-// policy on register, password change, reset, and identity-link flows.
+// NewContextPasswordFilePolicy loads application-specific password entries and
+// derivatives such as product-name/year, host-name/year, username variants,
+// and email-derived choices. Entries are compared as complete passwords, not
+// substrings: a long passphrase must not be rejected merely because it
+// contains a harmless context word. L2 requires at least one entry that could
+// pass the generated eight-byte minimum; the service applies this policy on
+// register, password change, reset, and identity-link flows.
 func NewContextPasswordFilePolicy(path string) (ports.PasswordPolicy, error) {
-	return loadFilePasswordPolicy(path, 1, 1)
+	return loadFilePasswordPolicy(path, 1, 8)
 }
 
 func loadFilePasswordPolicy(path string, minimumEntries, minimumTermBytes int) (ports.PasswordPolicy, error) {

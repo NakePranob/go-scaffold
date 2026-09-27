@@ -405,7 +405,7 @@ function patchEnvExample(envExamplePath: string, browserTopology: BrowserTopolog
     "AUTH_MAX_SESSIONS=10\n" +
     "\n# Production: newline-delimited common-password list; use at least the top 3000 passwords matching your policy.\n" +
     "AUTH_COMMON_PASSWORDS_FILE=\n" +
-    "# L2 only: newline-delimited application/user/context terms to reject as passwords.\n" +
+    "# L2 only: newline-delimited context-derived password entries (at least 8 bytes), not arbitrary substrings.\n" +
     "AUTH_CONTEXT_PASSWORDS_FILE=\n" +
     "# L2 only: newline-delimited breached-password denylist. Production L2 refuses to boot when unset.\n" +
     "AUTH_BREACHED_PASSWORDS_FILE=\n";
