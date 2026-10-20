@@ -330,7 +330,8 @@ test("check rejects a forbidden shared package imported by its exact path", () =
       writeFileSync(path.join(moduleDir, file), `${pkg}\n\nimport _ "example.com/sample/${imported}"\n`);
       assert.throws(
         () => run(project, "check"),
-        new RegExp(`${layer} layer imports forbidden dependency example\\.com/sample/${imported.replaceAll("/", "\\/")}(?:\\n|$)`),
+        // not `(?:\n|$)`: under CI, picocolors puts a color reset right after the path
+        new RegExp(`${layer} layer imports forbidden dependency example\\.com/sample/${imported.replaceAll("/", "\\/")}(?![\\w/])`),
         `${file} importing ${imported}`
       );
       rmSync(path.join(moduleDir, file));
