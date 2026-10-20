@@ -10,6 +10,8 @@ import {
   MODULE_FILES_CQRS,
   MODULE_FILES_MINIMAL,
   MODULE_FILES_MINIMAL_CQRS,
+  MODULE_FILES_NONE,
+  MODULE_FILES_NONE_CQRS,
 } from "../templates/module-manifest";
 import { assertMainGoPatchable, patchMainGo } from "../utils/main-patcher";
 import { patchOpenapiIndex } from "../utils/openapi-patcher";
@@ -17,9 +19,10 @@ import { patchGolangciForModule } from "../utils/golangci-patcher";
 import { newMigrationVersion } from "../utils/migrations";
 import { assertNoDrift, typeChecks } from "../utils/gocheck";
 import { promptModuleName } from "../prompts/generate-wizard";
+import { ModuleSurface } from "../types";
 
 export interface GenerateModuleOptions {
-  full?: boolean;
+  surface?: ModuleSurface;
   cqrs?: boolean;
   auth?: boolean;
   permission?: string;
@@ -33,6 +36,9 @@ export async function generateModule(
   projectDir: string = process.cwd()
 ): Promise<void> {
   const config = readConfig(projectDir);
+  const surface = opts.surface ?? "minimal";
+  const full = surface === "crud";
+  const noDatabase = surface === "none";
 
   // --permission implies --auth (authz.Require must run after RequireAuth) —
   // require both explicitly rather than silently turning one on, so the
@@ -77,19 +83,18 @@ export async function generateModule(
     modulePath,
     auth: opts.auth,
     permission: opts.permission,
-    full: opts.full,
+    full,
+    noDatabase,
     cqrs: opts.cqrs,
-    moduleSurface: opts.full ? "crud" : "minimal",
+    moduleSurface: surface,
     applicationStyle: opts.cqrs ? "cqrs" : "service",
   };
 
-  const moduleFiles = opts.cqrs
-    ? opts.full
-      ? MODULE_FILES_CQRS
-      : MODULE_FILES_MINIMAL_CQRS
-    : opts.full
-      ? MODULE_FILES
-      : MODULE_FILES_MINIMAL;
+  const moduleFiles = {
+    minimal: opts.cqrs ? MODULE_FILES_MINIMAL_CQRS : MODULE_FILES_MINIMAL,
+    crud: opts.cqrs ? MODULE_FILES_CQRS : MODULE_FILES,
+    none: opts.cqrs ? MODULE_FILES_NONE_CQRS : MODULE_FILES_NONE,
+  }[surface];
   const moduleEntries = moduleFiles.map((f) => ({
     template: f.template,
     output: path.join("internal", "app", modulePath, f.output),
@@ -98,13 +103,15 @@ export async function generateModule(
 
   // skip if a create_<plural> migration already exists — re-running after
   // only the module folder was deleted shouldn't leave a duplicate migration.
+  // A module without a database has no table to create.
   const migrationsDir = path.join(projectDir, "migrations");
   const slug = migrationSlug(naming);
   const migrationExists =
-    fs.existsSync(migrationsDir) &&
-    fs
-      .readdirSync(migrationsDir)
-      .some((f) => migrationSlugAliases(naming).some((alias) => f.endsWith(`_create_${alias}.up.sql`)));
+    noDatabase ||
+    (fs.existsSync(migrationsDir) &&
+      fs
+        .readdirSync(migrationsDir)
+        .some((f) => migrationSlugAliases(naming).some((alias) => f.endsWith(`_create_${alias}.up.sql`))));
   let seq = "";
   if (!migrationExists) {
     seq = newMigrationVersion(migrationsDir);
@@ -151,6 +158,7 @@ export async function generateModule(
     schemaName: naming.schemaName,
     auth: opts.auth,
     permission: opts.permission,
+    noDatabase,
     authSessionValidatorLine: opts.auth
       ? `sessionValidator := user.NewSessionValidatorFromDB(db, cfg` + (config.features.authStore === "redis" ? ", rdb" : "") + `)`
       : undefined,
@@ -158,7 +166,7 @@ export async function generateModule(
 
   let docsMessage = "";
   const openapiPath = path.join(projectDir, "docs", "openapi.yaml");
-  if (opts.full && config.features.openapiDocs && fs.existsSync(openapiPath)) {
+  if (full && config.features.openapiDocs && fs.existsSync(openapiPath)) {
     const docsEntries = [
       { template: "generate/module/docs/collection.yaml.hbs", output: path.join("docs", naming.plural, "collection.yaml") },
       { template: "generate/module/docs/item.yaml.hbs", output: path.join("docs", naming.plural, "item.yaml") },
@@ -176,7 +184,7 @@ export async function generateModule(
     modules: {
       ...config.modules,
       [modulePath]: {
-        surface: opts.full ? "crud" : "minimal",
+        surface,
         applicationStyle: opts.cqrs ? "cqrs" : "service",
         boundary: "hexagonal",
         packageLayout: "split",
@@ -189,10 +197,12 @@ export async function generateModule(
   if (opts.cqrs) {
     console.log("application boundary: CQRS command/query handlers in application/commands.go and application/queries.go");
   }
-  console.log(`recorded module defaults: ${opts.full ? "crud" : "minimal"} + ${opts.cqrs ? "cqrs" : "service"}`);
-  if (opts.full) {
+  console.log(`recorded module defaults: ${surface} + ${opts.cqrs ? "cqrs" : "service"}`);
+  if (full) {
     console.log(`registered route ${routePath} in cmd/api/wiring.go`);
     console.log("create/update/delete return 501 until their application use cases are implemented");
+  } else if (noDatabase) {
+    console.log(`registered empty route group ${routePath} in cmd/api/wiring.go — add routes by hand in adapters/inbound/http/handler.go`);
   } else {
     console.log(
       `registered empty route group ${routePath} in cmd/api/wiring.go — ` +
@@ -208,7 +218,9 @@ export async function generateModule(
       pc.yellow(`note: this project has auth installed, but ${routePath} is PUBLIC — re-run with --auth (and --permission <code> if you also have rbac) to require login`)
     );
   }
-  if (seq) {
+  if (noDatabase) {
+    console.log("migration: none — this module owns no table");
+  } else if (seq) {
     console.log(`migration: migrations/${seq}_create_${slug}.{up,down}.sql`);
   } else {
     console.log(`migration: reused existing migrations/*_create_${slug}.{up,down}.sql`);
@@ -217,6 +229,15 @@ export async function generateModule(
     console.log(`migration: migrations/${permissionSeq}_add_${slug}_permission.{up,down}.sql (seeds the "${opts.permission}" permission — grant it to a role via PATCH /roles/:code/permissions)`);
   }
   if (docsMessage) console.log(docsMessage);
+  if (noDatabase) {
+    console.log(
+      pc.dim(
+        "\nnext: add domain rules in domain/, use cases in application/, and routes in adapters/inbound/http/handler.go; " +
+          "declare outside dependencies as interfaces in ports/ and wire their adapters in composition.go"
+      )
+    );
+    return;
+  }
   console.log(
     pc.dim(
       `\nnext: add real fields to domain/entity.go, application/dto.go, adapters/inbound/http/dto.go, and the outbound persistence model, then run \`go build ./...\` and apply the migration ` +

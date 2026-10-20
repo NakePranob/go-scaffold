@@ -148,6 +148,12 @@ async function generateHexagonalMethod(
   if (!moduleConfig) {
     throw new Error("module " + naming.pkg + " has no split-layout metadata in go-scaffold.config.json; run go-scaffold check first");
   }
+  if (moduleConfig.surface === "none") {
+    throw new Error(
+      "module " + naming.pkg + " has no database (surface none), and `generate method` writes a repository method and DTOs. " +
+        "Add the endpoint by hand: a route in internal/app/" + naming.pkg + "/adapters/inbound/http/handler.go and a use case in its application package.",
+    );
+  }
   const cqrs = moduleConfig.applicationStyle === "cqrs";
   const authModule = naming.pkg === "user" && fs.existsSync(path.join(moduleDir, "application", "contracts.go"));
   // `add rbac`'s role module, not a module someone generated and named "role":

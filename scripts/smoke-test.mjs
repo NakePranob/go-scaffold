@@ -2021,6 +2021,10 @@ step(
     goScaffold(["generate", "module", "cart", "--full", "--auth", "--defaults"], fullApp);
     goScaffold(["generate", "module", "secret", "--full", "--auth", "--permission", "secret:manage", "--defaults"], fullApp);
     const noteOut = goScaffold(["generate", "module", "note", "--full", "--defaults"], fullApp);
+    // the none surface's composition root takes the same auth arguments
+    // without a database handle; the build below is what proves they line up
+    goScaffold(["generate", "module", "beacon", "--surface", "none", "--auth", "--permission", "beacon:use", "--defaults"], fullApp);
+    assertFileContains(path.join(fullApp, "cmd", "api", "wiring.go"), "beacon.NewHandler(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, roleComposition.Authz, sessionValidator).Register(api)");
     if (!noteOut.includes("PUBLIC")) throw new Error(`expected a PUBLIC-route reminder since fullApp already has auth installed, got:\n${noteOut}`);
 
     assertFileContains(
@@ -2704,6 +2708,28 @@ step("default minimal module layers up to full build", () => {
     const out = run("golangci-lint", ["run"], minApp);
     if (out.trim() && !out.includes("0 issues")) throw new Error(`layered minimal module: expected 0 issues, got:\n${out}`);
   }
+});
+
+step("none surface: modules with no database build, test, lint, and pass check", () => {
+  goScaffold(["create", "nodb-app", "--defaults"], scratch);
+  const app = path.join(scratch, "nodb-app");
+  run("go", ["mod", "tidy"], app);
+  goScaffold(["generate", "module", "relay", "--surface", "none", "--defaults"], app);
+  goScaffold(["generate", "module", "presence", "--surface", "none", "--cqrs", "--defaults"], app);
+  goScaffold(["generate", "module", "flow", "--profile", "lean", "--defaults"], app);
+  const checkOut = goScaffold(["check"], app);
+  if (!checkOut.includes("architecture check passed: 3 split module(s)")) throw new Error(`expected check to pass, got:\n${checkOut}`);
+  run("go", ["build", "./..."], app);
+  run("go", ["vet", "./..."], app);
+  // no database in this step: test only the packages that need none
+  run("go", ["test", "./internal/app/relay/...", "./internal/app/presence/...", "./internal/app/flow/application/...", "./internal/app/flow/adapters/inbound/..."], app);
+  const dirty = run("gofmt", ["-l", "."], app).trim();
+  if (dirty) throw new Error(`gofmt found unformatted files:\n${dirty}`);
+  if (hasGolangciLint) {
+    const out = run("golangci-lint", ["run"], app);
+    if (out.trim() && !out.includes("0 issues")) throw new Error(`none surface: expected 0 issues, got:\n${out}`);
+  }
+  expectThrows(() => goScaffold(["generate", "method", "relay", "ping", "--type", "post"], app), "has no database (surface none)");
 });
 
 // riverTxTest is written into the scratch project by the step below. It lives

@@ -151,7 +151,11 @@ test("named module profiles resolve to supported architecture combinations", () 
 
     assert.match(
       fails(project, "generate", "module", "orders", "--profile", "lean", "--full", "--defaults"),
-      /--profile cannot be combined with --full, --no-full, or --cqrs/
+      /--profile cannot be combined with --surface, --full, --no-full, or --cqrs/
+    );
+    assert.match(
+      fails(project, "generate", "module", "orders", "--profile", "lean", "--surface", "none", "--defaults"),
+      /--profile cannot be combined with --surface/
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });

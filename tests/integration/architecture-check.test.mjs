@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -258,6 +258,114 @@ test("check accepts an external test package beside composition.go, and still re
     // that is what the rule is for.
     writeFileSync(path.join(moduleDir, "helpers.go"), "package order\n");
     assert.throws(() => run(project, "check"), /root module package may only contain composition\.go/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// A check that only reads adapters/inbound/http lets a second transport carry
+// any import it likes. Every folder under adapters/inbound is the inbound
+// layer; outbound already worked this way and stays covered here.
+test("check applies layer rules to every adapter folder, not only inbound/http", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-adapters-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "generate", "module", "orders", "--profile", "lean", "--defaults");
+    run(project, "generate", "module", "tickets", "--profile", "lean", "--defaults");
+    const moduleDir = path.join(project, "internal", "app", "order");
+    const write = (relative, content) => {
+      mkdirSync(path.dirname(path.join(moduleDir, relative)), { recursive: true });
+      writeFileSync(path.join(moduleDir, relative), content);
+    };
+
+    write("adapters/inbound/ws/ws.go", 'package ws\n\nimport _ "gorm.io/gorm"\n');
+    assert.throws(() => run(project, "check"), /adapters\/inbound\/ws\/ws\.go: inbound layer imports forbidden dependency gorm\.io\/gorm/);
+
+    write("adapters/inbound/ws/ws.go", 'package ws\n\nimport _ "example.com/sample/internal/app/ticket"\n');
+    assert.throws(() => run(project, "check"), /adapters\/inbound\/ws\/ws\.go: imports sibling module ticket/);
+
+    write("adapters/inbound/ws/ws.go", 'package ws\n\nimport _ "example.com/sample/internal/app/order/adapters/outbound/postgres"\n');
+    assert.throws(() => run(project, "check"), /adapters\/inbound\/ws\/ws\.go: inbound layer imports forbidden internal layer/);
+
+    write("adapters/inbound/ws/ws.go", 'package ws\n\nimport _ "github.com/gin-gonic/gin"\n');
+    write("adapters/outbound/memory/presence.go", 'package memory\n\nimport _ "github.com/gin-gonic/gin"\n');
+    assert.throws(() => run(project, "check"), /adapters\/outbound\/memory\/presence\.go: outbound layer imports forbidden dependency github\.com\/gin-gonic\/gin/);
+    rmSync(path.join(moduleDir, "adapters", "outbound", "memory"), { recursive: true });
+
+    // A folder outside every layer passes, but is named so it cannot hide,
+    // and the sibling-module rule still reaches it.
+    write("adapters/kafka/consumer.go", "package kafka\n");
+    const output = execFileSync("node", [CLI, "check"], { cwd: project, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    assert.match(output, /architecture check passed/);
+    const warned = execFileSync("sh", ["-c", `node "${CLI}" check 2>&1 >/dev/null`], { cwd: project, encoding: "utf8" });
+    assert.match(warned, /internal\/app\/order\/adapters\/kafka: not a layer check knows/);
+    write("adapters/kafka/consumer.go", 'package kafka\n\nimport _ "example.com/sample/internal/app/ticket"\n');
+    assert.throws(() => run(project, "check"), /adapters\/kafka\/consumer\.go: imports sibling module ticket/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// The forbidden-package patterns used to end in `\/`, so they matched
+// `internal/shared/tx/sub` but not `internal/shared/tx` — the package itself,
+// which is the import anyone actually writes.
+test("check rejects a forbidden shared package imported by its exact path", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-exact-import-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "generate", "module", "orders", "--profile", "crud", "--defaults");
+    const moduleDir = path.join(project, "internal", "app", "order");
+    const cases = [
+      ["application/illegal.go", "package application", "internal/shared/apperror", "application"],
+      ["application/illegal.go", "package application", "internal/shared/middleware", "application"],
+      ["ports/illegal.go", "package ports", "internal/shared/tx", "ports"],
+      ["ports/illegal.go", "package ports", "internal/platform", "ports"],
+      ["adapters/outbound/postgres/illegal.go", "package postgres", "internal/shared/middleware", "outbound"],
+      ["adapters/outbound/postgres/illegal.go", "package postgres", "internal/shared/httpx", "outbound"],
+      ["domain/illegal.go", "package domain", "internal/shared", "domain"],
+    ];
+    for (const [file, pkg, imported, layer] of cases) {
+      writeFileSync(path.join(moduleDir, file), `${pkg}\n\nimport _ "example.com/sample/${imported}"\n`);
+      assert.throws(
+        () => run(project, "check"),
+        new RegExp(`${layer} layer imports forbidden dependency example\\.com/sample/${imported.replaceAll("/", "\\/")}(?:\\n|$)`),
+        `${file} importing ${imported}`
+      );
+      rmSync(path.join(moduleDir, file));
+    }
+
+    // The boundary is a path segment: a package that merely starts with a
+    // forbidden name is somebody else's package.
+    writeFileSync(path.join(moduleDir, "application", "fine.go"), 'package application\n\nimport _ "example.com/sample/internal/shared/txlog"\n');
+    assert.match(run(project, "check"), /architecture check passed/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// check got stricter; a project generated today must not notice. Every module
+// profile, both auth features, and their adapter folders pass with no warning.
+test("check passes every freshly generated profile with no warnings", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-profiles-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "add", "auth", "--defaults");
+    run(project, "add", "rbac", "--yes");
+    run(project, "generate", "module", "leans", "--profile", "lean", "--defaults");
+    run(project, "generate", "module", "cruds", "--profile", "crud", "--defaults");
+    run(project, "generate", "module", "queries", "--profile", "cqrs", "--defaults");
+    run(project, "generate", "module", "mixes", "--full", "--cqrs", "--defaults");
+    run(project, "generate", "module", "relays", "--surface", "none", "--defaults");
+    run(project, "generate", "module", "streams", "--surface", "none", "--cqrs", "--defaults");
+    run(project, "generate", "module", "guards", "--surface", "none", "--auth", "--permission", "guards:use", "--defaults");
+
+    const result = spawnSync("node", [CLI, "check"], { cwd: project, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /architecture check passed: 9 split module\(s\)/);
+    assert.equal(result.stderr, "");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

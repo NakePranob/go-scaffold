@@ -16,15 +16,16 @@ import {
 
 const CONFIG_FILE = "go-scaffold.config.json";
 export const CONFIG_SCHEMA_VERSION = 2;
+const MODULE_SURFACES: readonly ModuleSurface[] = ["minimal", "crud", "none"];
 
 export function configPath(projectDir: string): string {
   return path.join(projectDir, CONFIG_FILE);
 }
 
-export function parseModuleSurface(value: string | undefined): ModuleSurface | undefined {
+export function parseModuleSurface(value: string | undefined, flag = "--module-surface"): ModuleSurface | undefined {
   if (value === undefined) return undefined;
   const normalized = value.trim().toLowerCase();
-  assertOneOf(normalized, "--module-surface", ["minimal", "crud"]);
+  assertOneOf(normalized, flag, MODULE_SURFACES);
   return normalized as ModuleSurface;
 }
 
@@ -150,7 +151,7 @@ function normalizeArchitecture(raw: unknown): ArchitectureConfig {
   assertOneOf(architecture.style, "architecture.style", ["modular-monolith"]);
   assertOneOf(architecture.boundary, "architecture.boundary", ["hexagonal"]);
   assertOneOf(architecture.packageLayout, "architecture.packageLayout", ["split"]);
-  assertOneOf(architecture.defaultModuleSurface, "architecture.defaultModuleSurface", ["minimal", "crud"]);
+  assertOneOf(architecture.defaultModuleSurface, "architecture.defaultModuleSurface", MODULE_SURFACES);
   assertOneOf(architecture.defaultApplicationStyle, "architecture.defaultApplicationStyle", ["service", "cqrs"]);
 
   return {
@@ -175,7 +176,7 @@ function normalizeModules(raw: unknown): Record<string, ModuleConfig> {
 
     const boundary = entry.boundary ?? DEFAULT_ARCHITECTURE_CONFIG.boundary;
     const packageLayout = entry.packageLayout ?? DEFAULT_ARCHITECTURE_CONFIG.packageLayout;
-    assertOneOf(entry.surface, `modules.${name}.surface`, ["minimal", "crud"]);
+    assertOneOf(entry.surface, `modules.${name}.surface`, MODULE_SURFACES);
     assertOneOf(entry.applicationStyle, `modules.${name}.applicationStyle`, ["service", "cqrs"]);
     assertOneOf(boundary, `modules.${name}.boundary`, ["hexagonal"]);
     assertOneOf(packageLayout, `modules.${name}.packageLayout`, ["split"]);
