@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (proposed 0.14.0)
+## 0.14.0
 
 `go-scaffold check` is stricter. A project that passed under 0.13.0 can fail
 under this release if it already broke a layer rule somewhere the old check did
