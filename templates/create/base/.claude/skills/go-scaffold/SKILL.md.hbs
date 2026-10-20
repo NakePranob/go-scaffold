@@ -73,7 +73,7 @@ changes without the project's required owner approval.
 Run from the project root and pass every value as a flag:
 
 ~~~bash
-go-scaffold generate module <name> [--profile <lean|crud|cqrs>] [--defaults] [--auth] [--permission <code>]
+go-scaffold generate module <name> [--profile <lean|crud|cqrs> | --surface <minimal|crud|none> [--cqrs]] [--defaults] [--auth] [--permission <code>]
 go-scaffold generate method <module> <name> --type <get|post|put|patch|delete> [--get-mode all|one] [--field <name>]
 go-scaffold generate migration <name>
 go-scaffold check
@@ -90,8 +90,9 @@ Lean (`minimal + service`). `--profile` is the non-interactive equivalent of
 choosing a named architecture preset. The older `--full` and `--cqrs` flags
 remain supported for existing scripts, but cannot be combined with
 `--profile`; `--full` means CRUD surface and `--cqrs` means separate command /
-query handlers. Advanced is a wizard-only choice that asks the two axes
-separately. Add `--auth` and `--permission <code>` only when they are wanted;
+query handlers. `--surface <minimal|crud|none>` picks the surface directly and
+also cannot be combined with `--profile`; `none` is for a module that owns no
+table. Advanced is the wizard's way to ask the two axes separately. Add `--auth` and `--permission <code>` only when they are wanted;
 permission also requires `--auth`. `--get-mode` is required with `--type get`;
 `--field` is required for GET-one and cannot be id. `undo` requires
 `-y`. `add auth` accepts `--store postgres|redis` and
@@ -156,6 +157,14 @@ replaces `application/service.go` and its test with
 `application/cqrs_test.go`; Advanced can combine CRUD + CQRS, or use CQRS
 alone before adding methods one at a time. Service and CQRS are mutually
 exclusive within one module, but may coexist across modules.
+
+The `none` surface (`--surface none`, or "No database" under Advanced) is for
+a module that owns no table, such as a WebSocket relay. It keeps `domain/`,
+the application service or command/query handlers, the HTTP handler and its
+test, and `composition.go`, whose `NewHandler` takes no database handle. It
+has no `ports/repository.go`, no DTO files, no `adapters/outbound/postgres/`,
+and no migration. `generate method` refuses it, so add its routes by hand, and
+declare outside dependencies as interfaces in `ports/` when they are needed.
 With OpenAPI enabled it also creates the per-domain documents and updates
 docs/openapi.yaml.
 

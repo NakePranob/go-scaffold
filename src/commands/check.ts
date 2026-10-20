@@ -6,32 +6,34 @@ import { ModuleConfig, ProjectConfig } from "../types";
 
 type Layer = "domain" | "application" | "ports" | "inbound" | "outbound" | "composition";
 
+// Package paths end at `(?:\/|$)`, not at `\/`: `internal/shared/tx` is the
+// package itself and must match as surely as a subpackage of it does.
 const forbiddenByLayer: Record<Exclude<Layer, "composition">, RegExp[]> = {
   domain: [
     /github\.com\/gin-gonic\/gin/,
     /gorm\.io\//,
     /net\/http/,
-    /internal\/(shared|platform)\//,
+    /internal\/(shared|platform)(?:\/|$)/,
     /^github\.com\/redis\/go-redis(?:\/|$)/,
   ],
   application: [
     /github\.com\/gin-gonic\/gin/,
     /gorm\.io\//,
     /database\/sql/,
-    /internal\/platform\//,
-    /internal\/shared\/(apperror|httpx|middleware|tx|dberr)\//,
+    /internal\/platform(?:\/|$)/,
+    /internal\/shared\/(apperror|httpx|middleware|tx|dberr)(?:\/|$)/,
     /^github\.com\/redis\/go-redis(?:\/|$)/,
   ],
   ports: [
     /github\.com\/gin-gonic\/gin/,
     /gorm\.io\//,
     /database\/sql/,
-    /internal\/platform\//,
-    /internal\/shared\/(apperror|httpx|middleware|tx|dberr)\//,
+    /internal\/platform(?:\/|$)/,
+    /internal\/shared\/(apperror|httpx|middleware|tx|dberr)(?:\/|$)/,
     /^github\.com\/redis\/go-redis(?:\/|$)/,
   ],
-  inbound: [/gorm\.io\//, /internal\/platform\//],
-  outbound: [/github\.com\/gin-gonic\/gin/, /internal\/shared\/httpx\//, /internal\/shared\/middleware\//],
+  inbound: [/gorm\.io\//, /internal\/platform(?:\/|$)/],
+  outbound: [/github\.com\/gin-gonic\/gin/, /internal\/shared\/(httpx|middleware)(?:\/|$)/],
 };
 
 // A split module is not hexagonal merely because its folders have the right
@@ -74,17 +76,22 @@ function imports(content: string): string[] {
   return found;
 }
 
+// layerOf maps a slash-separated path inside a module — a file or an import —
+// to its layer. Every transport under adapters/inbound/ (http, ws, grpc, ...)
+// is inbound and every store under adapters/outbound/ is outbound, so a new
+// adapter folder inherits its side's rules instead of escaping them.
+function layerOf(relative: string): Layer | undefined {
+  const [top, side] = relative.split("/");
+  if (top === "domain" || top === "application" || top === "ports") return top;
+  if (top === "adapters" && (side === "inbound" || side === "outbound")) return side;
+  if (relative === "composition.go" || relative === "composition") return "composition";
+  return undefined;
+}
+
 function internalLayer(imported: string, moduleName: string): Layer | undefined {
   const match = imported.match(/(?:^|\/)internal\/app\/([^/]+)\/(.+)$/);
   if (!match || match[1] !== moduleName) return undefined;
-  const relative = match[2];
-  if (relative === "domain" || relative.startsWith("domain/")) return "domain";
-  if (relative === "application" || relative.startsWith("application/")) return "application";
-  if (relative === "ports" || relative.startsWith("ports/")) return "ports";
-  if (relative === "adapters/inbound" || relative.startsWith("adapters/inbound/")) return "inbound";
-  if (relative === "adapters/outbound" || relative.startsWith("adapters/outbound/")) return "outbound";
-  if (relative === "composition.go" || relative === "composition") return "composition";
-  return undefined;
+  return layerOf(match[2]);
 }
 
 function siblingModule(imported: string, current: string): string | undefined {
@@ -99,17 +106,6 @@ function appImport(imported: string): { module: string; privatePath: string } | 
   return { module: match[1], privatePath: match[2] ?? "" };
 }
 
-function filesForLayer(moduleDir: string, layer: Layer): string[] {
-  if (layer === "composition") return goFiles(moduleDir).filter((file) => path.basename(file) === "composition.go");
-  const relative =
-    layer === "inbound"
-      ? path.join("adapters", "inbound", "http")
-      : layer === "outbound"
-        ? path.join("adapters", "outbound")
-        : layer;
-  return goFiles(path.join(moduleDir, relative));
-}
-
 function moduleNames(projectDir: string, config: ProjectConfig): string[] {
   const appDir = path.join(projectDir, "internal", "app");
   const discovered = fs.existsSync(appDir)
@@ -119,23 +115,24 @@ function moduleNames(projectDir: string, config: ProjectConfig): string[] {
 }
 
 function expectedFiles(moduleDir: string, module: ModuleConfig): string[] {
-  const required = [
-    "composition.go",
-    "domain/entity.go",
-    "domain/errors.go",
-    "ports/repository.go",
-    "application/dto.go",
-    "adapters/inbound/http/dto.go",
-    "adapters/inbound/http/handler.go",
-    "adapters/outbound/postgres/model.go",
-    "adapters/outbound/postgres/repository.go",
-  ];
+  const required = ["composition.go", "domain/entity.go", "domain/errors.go", "adapters/inbound/http/handler.go"];
+  // A "none" module owns no table: no repository port, persistence adapter,
+  // or the DTO seams `generate method` writes into.
+  if (module.surface !== "none") {
+    required.push(
+      "ports/repository.go",
+      "application/dto.go",
+      "adapters/inbound/http/dto.go",
+      "adapters/outbound/postgres/model.go",
+      "adapters/outbound/postgres/repository.go"
+    );
+  }
   if (module.applicationStyle === "service") required.push("application/service.go");
   else required.push("application/commands.go", "application/queries.go");
   return required.map((file) => path.join(moduleDir, file));
 }
 
-function checkModule(projectDir: string, config: ProjectConfig, name: string, module: ModuleConfig | undefined): string[] {
+function checkModule(projectDir: string, name: string, module: ModuleConfig | undefined, warnings: string[]): string[] {
   const errors: string[] = [];
   const moduleDir = path.join(projectDir, "internal", "app", name);
   if (!module) {
@@ -168,42 +165,44 @@ function checkModule(projectDir: string, config: ProjectConfig, name: string, mo
     errors.push(`internal/app/${name}: service module must not contain application/cqrs_test.go; use service_test.go`);
   }
 
-  for (const [layer, patterns] of Object.entries(forbiddenByLayer) as [Exclude<Layer, "composition">, RegExp[]][]) {
-    for (const file of filesForLayer(moduleDir, layer)) {
-      const content = fs.readFileSync(file, "utf8");
-      for (const imported of imports(content)) {
-        const rule = patterns.find((pattern) => pattern.test(imported));
-        if (rule) errors.push(`${path.relative(projectDir, file)}: ${layer} layer imports forbidden dependency ${imported}`);
-        const importedLayer = internalLayer(imported, name);
-        if (importedLayer && forbiddenInternalLayers[layer].includes(importedLayer)) {
-          errors.push(`${path.relative(projectDir, file)}: ${layer} layer imports forbidden internal layer ${imported}`);
-        }
-        const other = siblingModule(imported, name);
-        if (other) {
-          errors.push(`${path.relative(projectDir, file)}: imports sibling module ${other}; use a port and process composition`);
-        }
-      }
-      if (layer === "application" && path.basename(file) === "dto.go" && content.includes("json:")) {
-        errors.push(`${path.relative(projectDir, file)}: application DTOs must be transport-neutral; keep JSON tags in adapters/inbound/http/dto.go`);
-      }
-    }
-  }
-  for (const file of filesForLayer(moduleDir, "composition")) {
-    const content = fs.readFileSync(file, "utf8");
-    for (const imported of imports(content)) {
-      const other = siblingModule(imported, name);
-      if (other) {
-        errors.push(`${path.relative(projectDir, file)}: imports sibling module ${other}; use a port and process composition`);
-      }
-    }
-  }
+  // Walk every file rather than a list of known folders: a folder check does
+  // not know about is exactly where a forbidden import would otherwise hide.
+  const unlayered = new Set<string>();
   for (const file of goFiles(moduleDir)) {
+    const relative = path.relative(moduleDir, file).split(path.sep).join("/");
+    const shown = path.relative(projectDir, file);
+    const atRoot = !relative.includes("/");
+    const layer = layerOf(relative);
+    if (!layer && !atRoot) unlayered.add(path.dirname(shown));
     const content = fs.readFileSync(file, "utf8");
     for (const imported of imports(content)) {
       if (/\/internal\/app\/[^/]+\/model(?:\/|$)/.test(imported)) {
-        errors.push(`${path.relative(projectDir, file)}: imports a forbidden feature-level model package ${imported}`);
+        errors.push(`${shown}: imports a forbidden feature-level model package ${imported}`);
+      }
+      // Other root files are either the root rule's error below or an
+      // external composition test, which adds no dependency edge.
+      if (atRoot && layer !== "composition") continue;
+      const other = siblingModule(imported, name);
+      if (other) {
+        errors.push(`${shown}: imports sibling module ${other}; use a port and process composition`);
+      }
+      if (!layer || layer === "composition") continue;
+      if (forbiddenByLayer[layer].some((pattern) => pattern.test(imported))) {
+        errors.push(`${shown}: ${layer} layer imports forbidden dependency ${imported}`);
+      }
+      const importedLayer = internalLayer(imported, name);
+      if (importedLayer && forbiddenInternalLayers[layer].includes(importedLayer)) {
+        errors.push(`${shown}: ${layer} layer imports forbidden internal layer ${imported}`);
       }
     }
+    if (layer === "application" && path.basename(file) === "dto.go" && content.includes("json:")) {
+      errors.push(`${shown}: application DTOs must be transport-neutral; keep JSON tags in adapters/inbound/http/dto.go`);
+    }
+  }
+  for (const dir of unlayered) {
+    warnings.push(
+      `${dir}: not a layer check knows (domain, application, ports, adapters/inbound/**, adapters/outbound/**); only the sibling-module rule applies to its files`
+    );
   }
   const rootGoFiles = fs.existsSync(moduleDir)
     ? fs
@@ -270,7 +269,9 @@ export function checkProject(projectDir: string = process.cwd()): void {
   if (config.architecture.boundary !== "hexagonal") errors.push("architecture.boundary must be hexagonal");
   if (config.architecture.packageLayout !== "split") errors.push("architecture.packageLayout must be split");
   errors.push(...checkProcessComposition(projectDir));
-  for (const name of moduleNames(projectDir, config)) errors.push(...checkModule(projectDir, config, name, config.modules[name]));
+  const warnings: string[] = [];
+  for (const name of moduleNames(projectDir, config)) errors.push(...checkModule(projectDir, name, config.modules[name], warnings));
+  for (const warning of warnings) console.warn(pc.yellow(`warning: ${warning}`));
   if (errors.length) {
     throw new Error(`${pc.red("architecture check failed")}:\n${errors.map((error) => `  - ${error}`).join("\n")}`);
   }

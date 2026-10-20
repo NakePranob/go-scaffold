@@ -227,7 +227,7 @@ the path's final segment.
 | --observability | Include Prometheus /metrics and OpenTelemetry tracing at creation time |
 | --api-prefix <prefix> | Put every API route under a prefix such as v1 or api/v1 |
 | --module-profile <lean\|crud\|cqrs> | Set the default profile for future generate module commands |
-| --module-surface <minimal\|crud> | Legacy way to set the future module surface; prefer --module-profile |
+| --module-surface <minimal\|crud\|none> | Set the future module surface; none means no database. Prefer --module-profile for the common shapes |
 | --application-style <service\|cqrs> | Legacy way to set the future application boundary; prefer --module-profile |
 
 The route prefix is a project-wide choice. For example, --api-prefix v1 puts a
@@ -254,9 +254,10 @@ architecture choices:
 | lean | Minimal surface + one service | The domain should start small and gain endpoints as requirements become real |
 | crud | CRUD surface + one service | The domain needs list/get/create/update/delete starter endpoints |
 | cqrs | Minimal surface + command/query handlers | Reads and writes have different application concerns |
-| Advanced | Choose surface and application style separately | You need a custom combination, such as CRUD + CQRS |
+| Advanced | Choose surface and application style separately | You need a custom combination, such as CRUD + CQRS, or a module with no database |
 
-minimal means no default CRUD endpoints are invented. CQRS separates the
+minimal means no default CRUD endpoints are invented. none means the module
+owns no table: see [Modules without a database](#modules-without-a-database). CQRS separates the
 command and query application paths inside the same modular monolith; it does
 not add a second database, broker, or event-sourcing system.
 
@@ -273,6 +274,7 @@ go-scaffold generate module orders --profile lean
 go-scaffold generate module orders --profile crud
 go-scaffold generate module orders --profile cqrs
 go-scaffold generate module orders --defaults        # use project defaults
+go-scaffold generate module relay --surface none     # no database (wizard asks the style)
 go-scaffold g m orders --profile crud
 ~~~
 
@@ -286,12 +288,14 @@ tables use plural names such as orders and order_items.
 |---|---|
 | --profile <lean\|crud\|cqrs> | Select a named profile without opening the profile question |
 | --full | Legacy alias for the CRUD surface |
-| --cqrs | Legacy axis flag for command/query handlers; combine with --full for CRUD + CQRS |
+| --cqrs | Legacy axis flag for command/query handlers; combine with --full or --surface for CRUD + CQRS or none + CQRS |
+| --surface <minimal\|crud\|none> | Choose the surface directly; none generates a module with no database |
 | --auth | Require a valid access token for this module's routes; needs add auth |
 | --permission <code> | Also require an RBAC permission such as orders:manage; needs add rbac and --auth |
 | --defaults | Use the project's recorded module defaults, skip prompts, and keep the module public |
 
---profile cannot be combined with the legacy --full or --cqrs flags. With
+--profile cannot be combined with --surface or the legacy --full or --cqrs
+flags, and --surface cannot be combined with --full. With
 --defaults, a fresh project generates the Lean shape. If the project has auth
 installed, the module remains public unless --auth is explicitly passed.
 
@@ -325,6 +329,29 @@ CRUD modules contain starter list/get/create/update/delete routes; writes return
 501 until fields and business rules are implemented. Lean
 modules keep the endpoint surface small so it can be extended with
 generate method.
+
+### Modules without a database
+
+A module that owns no table — a WebSocket relay, a proxy in front of another
+service — uses the none surface (`--surface none`, or "No database" under
+Advanced):
+
+~~~text
+internal/app/relay/
+├── domain/              # entity.go, errors.go
+├── application/         # service.go (or commands.go + queries.go) and its test
+├── adapters/inbound/http/
+│   ├── handler.go       # Gin delivery adapter; add routes by hand
+│   └── handler_test.go
+└── composition.go       # relay.NewHandler(), no database handle
+~~~
+
+There is no `ports/repository.go`, no DTO files, no
+`adapters/outbound/postgres/`, and no migration, and `go-scaffold check` does
+not require them for this surface. `generate method` refuses the module because
+it writes repository calls and DTOs. When the module needs something from
+outside, declare an interface in `ports/` and wire its adapter in
+`composition.go`, as with any other module.
 
 Every generated list endpoint reads `?limit=&offset=&q=&sort=&order=`, passes
 one `ports.ListFilter` from handler to application to repository, and answers
@@ -675,7 +702,11 @@ The generated service and CQRS styles are exclusive within a module: a
 service module has `application/service.go`; a CQRS module has
 `application/commands.go` and `application/queries.go` and no service facade.
 Different modules may choose different styles. `go-scaffold check` enforces the
-physical layout and dependency direction.
+physical layout and dependency direction. Every folder under
+`adapters/inbound/` (http, ws, grpc, ...) follows the inbound rules and every
+folder under `adapters/outbound/` the outbound rules; a folder outside the
+known layers passes with a warning, and only the sibling-module rule applies to
+it.
 
 The module name orders produces the Go package order, REST collection /orders,
 plural table names such as order_items, and a module-owned schema such as

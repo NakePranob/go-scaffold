@@ -12,7 +12,7 @@ import { addWorker } from "./commands/worker";
 import { addAuth } from "./commands/auth";
 import { addRbac } from "./commands/rbac";
 import { addObservability } from "./commands/observability";
-import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile, AsvsLevel, LockoutPolicy } from "./types";
+import { MethodType, GetMethodMode, QueueBackend, AuthStore, BrowserTopology, ModuleProfile, ModuleSurface, AsvsLevel, LockoutPolicy } from "./types";
 import { promptQueueBackend } from "./prompts/worker-wizard";
 import {
   DEFAULT_BROWSER_TOPOLOGY,
@@ -37,7 +37,7 @@ import {
 } from "./prompts/generate-wizard";
 import { configureProject, showProjectConfig, validateProjectConfig } from "./commands/config";
 import { checkProject } from "./commands/check";
-import { isProjectDir, parseModuleProfile, readConfig } from "./utils/config";
+import { isProjectDir, parseModuleProfile, parseModuleSurface, readConfig } from "./utils/config";
 import { architectureForModuleProfile, moduleProfileFor } from "./utils/module-profile";
 
 // fail is every command's catch: one place so the two non-obvious cases stay
@@ -86,7 +86,7 @@ program
   .option("--observability", "include Prometheus /metrics and OpenTelemetry tracing; off unless this flag is passed")
   .option("--api-prefix <prefix>", 'group every API route under a prefix such as "v1" or "api/v1"; omit for no prefix')
   .option("--module-profile <profile>", "default profile for future modules: lean, crud, or cqrs; replaces the two profile questions")
-  .option("--module-surface <surface>", "legacy axis flag for future modules: minimal or crud; wizard asks when omitted")
+  .option("--module-surface <surface>", "legacy axis flag for future modules: minimal, crud, or none (no database); wizard asks when omitted")
   .option("--application-style <style>", "legacy axis flag for future modules: service or cqrs; wizard asks when omitted")
   .action(async (name, opts) => {
     try {
@@ -115,7 +115,7 @@ program
 // historical minimal/service/no-auth result.
 type ModuleWizardOptions = {
   profile?: ModuleProfile;
-  full?: boolean;
+  surface?: ModuleSurface;
   cqrs?: boolean;
   auth?: boolean;
   permission?: string;
@@ -135,7 +135,7 @@ function assertModuleWizardInputs(
   // --defaults answers every optional wizard question. The name is still
   // required because there is no safe module name to invent.
   if (!opts.defaults) {
-    if (opts.profile === undefined && opts.full === undefined) missing.push("--profile or --full/--no-full");
+    if (opts.profile === undefined && opts.surface === undefined) missing.push("--profile, --surface, or --full/--no-full");
     if (opts.profile === undefined && opts.cqrs === undefined) missing.push("--profile or --cqrs");
     if (config.features.auth && opts.auth === undefined) {
       missing.push("--auth (or --defaults for no auth)");
@@ -157,7 +157,7 @@ async function runModuleWizard(
   name: string | undefined,
   opts: ModuleWizardOptions
 ): Promise<void> {
-  let { full, cqrs, auth, permission } = opts;
+  let { surface, cqrs, auth, permission } = opts;
   // Read before checking the prompt contract so the error can name the
   // feature-dependent auth/RBAC choices, and so a non-project still fails
   // with the useful project error rather than a list of flags.
@@ -166,7 +166,7 @@ async function runModuleWizard(
 
   if (opts.profile) {
     const architecture = architectureForModuleProfile(opts.profile);
-    full = architecture.moduleSurface === "crud";
+    surface = architecture.moduleSurface;
     cqrs = architecture.applicationStyle === "cqrs";
   }
 
@@ -175,7 +175,7 @@ async function runModuleWizard(
     // the features they depend on — offering them otherwise would present a
     // choice whose only outcome is generateModule's error.
     if (name === undefined) name = await promptModuleName();
-    if (opts.profile === undefined && full === undefined && cqrs === undefined) {
+    if (opts.profile === undefined && surface === undefined && cqrs === undefined) {
       const profile = await promptModuleProfile(
         moduleProfileFor(config.architecture.defaultModuleSurface, config.architecture.defaultApplicationStyle)
       );
@@ -184,19 +184,19 @@ async function runModuleWizard(
           config.architecture.defaultModuleSurface,
           config.architecture.defaultApplicationStyle
         );
-        full = architecture.moduleSurface === "crud";
+        surface = architecture.moduleSurface;
         cqrs = architecture.applicationStyle === "cqrs";
       } else {
         const architecture = architectureForModuleProfile(profile);
-        full = architecture.moduleSurface === "crud";
+        surface = architecture.moduleSurface;
         cqrs = architecture.applicationStyle === "cqrs";
       }
     } else {
       // A legacy axis flag is still an explicit answer. Ask only for the
       // other axis so `--full` never gets silently changed by the profile
       // selector.
-      if (full === undefined) {
-        full = (await promptModuleSurface(config.architecture.defaultModuleSurface)) === "crud";
+      if (surface === undefined) {
+        surface = await promptModuleSurface(config.architecture.defaultModuleSurface);
       }
       if (cqrs === undefined) {
         cqrs = (await promptApplicationStyle(config.architecture.defaultApplicationStyle)) === "cqrs";
@@ -209,11 +209,11 @@ async function runModuleWizard(
     // still resolve to the historical minimal/service behaviour, while a
     // project config wizard can intentionally choose another default for new
     // modules without making CI scripts interactive.
-    full ??= config.architecture.defaultModuleSurface === "crud";
+    surface ??= config.architecture.defaultModuleSurface;
     cqrs ??= config.architecture.defaultApplicationStyle === "cqrs";
   }
 
-  await generateModule(name, { full: full ?? false, cqrs: cqrs ?? false, auth, permission });
+  await generateModule(name, { surface: surface ?? "minimal", cqrs: cqrs ?? false, auth, permission });
 }
 
 // runGenerateWizard is `generate`/`g` run bare — asks which target, then
@@ -267,6 +267,10 @@ generate
     "--cqrs",
     "legacy axis flag: split state-changing commands from read-only queries; combine with --full for CRUD + CQRS"
   )
+  .option(
+    "--surface <surface>",
+    "module surface: minimal, crud, or none (no database: no repository, Postgres adapter, DTOs, or migration); combine with --cqrs"
+  )
   // kept working for muscle memory, hidden from help: minimal is already the
   // default, so advertising a flag that asks for it is pure noise.
   .addOption(new Option("--no-full", "deprecated compatibility alias; minimal is already the default").hideHelp())
@@ -276,15 +280,19 @@ generate
   .action(async (name, opts) => {
     try {
       const profile = parseModuleProfile(opts.profile);
-      if (profile && (opts.full !== undefined || opts.cqrs !== undefined)) {
-        throw new Error("--profile cannot be combined with --full, --no-full, or --cqrs — choose one configuration style");
+      const surface = parseModuleSurface(opts.surface, "--surface");
+      if (profile && (opts.full !== undefined || opts.cqrs !== undefined || surface)) {
+        throw new Error("--profile cannot be combined with --surface, --full, --no-full, or --cqrs — choose one configuration style");
+      }
+      if (surface && opts.full !== undefined) {
+        throw new Error("--surface cannot be combined with --full or --no-full — they choose the same thing");
       }
       // anything not passed as a flag gets asked for — declaring both --full
       // and --no-full leaves opts.full undefined when neither is given, which
       // is exactly the "not answered yet" signal runModuleWizard needs.
       await runModuleWizard(name, {
         profile,
-        full: opts.full,
+        surface: surface ?? (opts.full === undefined ? undefined : opts.full ? "crud" : "minimal"),
         cqrs: opts.cqrs,
         auth: opts.auth,
         permission: opts.permission,

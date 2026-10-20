@@ -32,6 +32,8 @@ an empty layer for every noun.
 - **Inbound adapter:** `adapters/inbound/http/dto.go` owns JSON/binding request
   DTOs, response DTOs, and mapping at the HTTP boundary; `handler.go` parses
   HTTP and calls the relevant application service or command/query port.
+  Another transport gets its own folder, such as `adapters/inbound/ws/`, and
+  the same inbound rules.
 - **Application boundary:** `application/service.go` (or
   `application/commands.go`/`application/queries.go` when
   the module uses `--cqrs`) orchestrates use cases. It owns
@@ -52,7 +54,10 @@ handling and a `{{defaultModuleSurface}}` surface. The `generate module` wizard
 starts there through the named Lean/CRUD/CQRS profiles; `Advanced` exposes the
 two axes for unusual combinations. `--profile` is the clear per-module
 override, while `--cqrs`/`--full` remain supported for existing scripts, and
-`go-scaffold config` changes defaults for future modules only.
+`go-scaffold config` changes defaults for future modules only. A module that
+owns no table (a WebSocket relay, a proxy) uses `--surface none`: no repository
+port, Postgres adapter, DTO seams, or migration, and `generate method` does not
+apply to it.
 
 Use CQRS when a feature has genuinely different command and query models,
 consistency needs, or scaling/read-shape pressure: commands mutate state and
@@ -391,7 +396,9 @@ work untouched.
   without writing.
 - `go-scaffold check` — validates every module's split hexagonal layout,
   forbidden layer dependencies, sibling imports, and the exclusive
-  service-versus-CQRS contract.
+  service-versus-CQRS contract. Every folder under `adapters/inbound/` and
+  `adapters/outbound/` follows its side's rules; a folder outside the known
+  layers is reported as a warning.
 - `go-scaffold undo module <name> -y` — removes an unshipped generated module,
   its migration, and its wiring. It refuses once those migrations are
   committed or applied; use a reviewed drop migration for a shipped domain.

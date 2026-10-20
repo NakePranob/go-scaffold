@@ -98,6 +98,11 @@ export async function promptModuleSurface(defaultValue: ModuleSurface = "minimal
         value: "crud",
         description: "five routes wired; writes return 501 until fields and business rules are implemented",
       },
+      {
+        name: "No database — domain + application + HTTP handler, no persistence",
+        value: "none",
+        description: "for a module that owns no table, such as a WebSocket relay; no repository, Postgres adapter, DTOs, or migration, and no `generate method`",
+      },
     ],
   });
 }
@@ -150,7 +155,7 @@ export async function promptModuleProfile(defaultValue: ModuleProfileChoice = "l
       {
         name: "Advanced — choose surface and application boundary",
         value: "advanced",
-        description: "for the uncommon CRUD + CQRS combination or a deliberately customised module",
+        description: "for CRUD + CQRS, a module with no database, or a deliberately customised module",
       },
     ],
   });

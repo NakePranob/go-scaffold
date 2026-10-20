@@ -2,16 +2,33 @@ package {{pkg}}
 
 import (
 	httpadapter "{{goModule}}/internal/app/{{modulePath}}/adapters/inbound/http"
+{{#unless noDatabase}}
 	"{{goModule}}/internal/app/{{modulePath}}/adapters/outbound/postgres"
+{{/unless}}
 	"{{goModule}}/internal/app/{{modulePath}}/application"
 {{#unless cqrs}}
+{{#unless noDatabase}}
 	"{{goModule}}/internal/app/{{modulePath}}/ports"
 {{/unless}}
+{{/unless}}
+{{#unless noDatabase}}
 	"gorm.io/gorm"
+{{/unless}}
 {{#if auth}}	"{{goModule}}/internal/shared/middleware"
 {{/if}}
 )
 
+{{#if noDatabase}}
+// NewHandler is this module's composition root. The module owns no table, so
+// the process root hands it no database handle.
+func NewHandler({{#if auth}}jwtSecret string, jwtIssuer string, jwtAudience string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}{{#if auth}}, sessionValidators ...middleware.SessionValidator{{/if}}) *httpadapter.Handler {
+{{#if cqrs}}
+	return httpadapter.NewHandler(application.NewCommandHandler(), application.NewQueryHandler(){{#if auth}}, jwtSecret, jwtIssuer, jwtAudience{{/if}}{{#if permission}}, authz{{/if}}{{#if auth}}, sessionValidators...{{/if}})
+{{else}}
+	return httpadapter.NewHandler(application.NewService(){{#if auth}}, jwtSecret, jwtIssuer, jwtAudience{{/if}}{{#if permission}}, authz{{/if}}{{#if auth}}, sessionValidators...{{/if}})
+{{/if}}
+}
+{{else}}
 // NewHandlerFromDB is this module's composition root. The process root owns
 // the database handle; this package owns the feature's adapter graph.
 func NewHandlerFromDB(db *gorm.DB{{#if auth}}, jwtSecret string, jwtIssuer string, jwtAudience string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}{{#if auth}}, sessionValidators ...middleware.SessionValidator{{/if}}) *httpadapter.Handler {
@@ -25,3 +42,4 @@ func NewHandlerFromDB(db *gorm.DB{{#if auth}}, jwtSecret string, jwtIssuer strin
 	return httpadapter.NewHandler(application.NewService(service){{#if auth}}, jwtSecret, jwtIssuer, jwtAudience{{/if}}{{#if permission}}, authz{{/if}}{{#if auth}}, sessionValidators...{{/if}})
 {{/if}}
 }
+{{/if}}

@@ -4,13 +4,24 @@ import (
 	"context"
 
 	"{{goModule}}/internal/app/{{modulePath}}/domain"
+{{#unless noDatabase}}
 	"{{goModule}}/internal/app/{{modulePath}}/ports"
+{{/unless}}
 )
 
 type CommandPort interface {
 	// go-scaffold:command-interface
 }
 
+{{#if noDatabase}}
+// CommandHandler has no repository: this module owns no table. Declare what it
+// needs as an interface in ports/ and take it here when it is earned.
+type CommandHandler struct{}
+
+func NewCommandHandler() *CommandHandler {
+	return &CommandHandler{}
+}
+{{else}}
 type CommandHandler struct {
 	repo ports.CommandRepository
 }
@@ -18,6 +29,7 @@ type CommandHandler struct {
 func NewCommandHandler(repo ports.CommandRepository) *CommandHandler {
 	return &CommandHandler{repo: repo}
 }
+{{/if}}
 
 var _ context.Context
 var _ *domain.{{pascalName}}

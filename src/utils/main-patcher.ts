@@ -23,6 +23,8 @@ export interface RoutePatch {
   permission?: string;
   /** declares the shared active-session validator for protected modules */
   authSessionValidatorLine?: string;
+  /** a "none" surface module: composed without the database handle */
+  noDatabase?: boolean;
 }
 
 // the exact lines patchMainGo inserts for a module — one source of truth so
@@ -33,7 +35,7 @@ export interface RoutePatch {
 // registers the feature's handler.
 function mainGoLines(patch: RoutePatch) {
   const modelAlias = `${patch.pkg}postgres`; // every domain's persistence adapter is named "postgres"
-  const handlerArgs = ["db"];
+  const handlerArgs = patch.noDatabase ? [] : ["db"];
   const legacyHandlerArgs = [`${patch.pkg}Svc`];
   if (patch.auth) handlerArgs.push("cfg.JWTSecret", "cfg.JWTIssuer", "cfg.JWTAudience");
   // RBAC's Authz is owned by role/composition.go. wiring.go registers a
@@ -68,7 +70,7 @@ function mainGoLines(patch: RoutePatch) {
     // `roleComposition.Authz` only exists in main.go once `add rbac` has run —
     // patch.permission is only ever set once that has been verified by the
     // caller.
-    routeLine: `${patch.pkg}.NewHandlerFromDB(${handlerArgs.join(", ")}).Register(api)`,
+    routeLine: `${patch.pkg}.${patch.noDatabase ? "NewHandler" : "NewHandlerFromDB"}(${handlerArgs.join(", ")}).Register(api)`,
     authSessionValidatorLine: patch.auth ? patch.authSessionValidatorLine : undefined,
   };
 }
@@ -115,11 +117,11 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   // it the schema/model markers. A project scaffolded before that still has
   // them, and still wants its tables registered there — so these stay, guarded
   // by the marker's presence rather than deleted. New projects skip them.
-  if (hasMarker(content, MODEL_MARKER)) {
+  if (hasMarker(content, MODEL_MARKER) && !patch.noDatabase) {
     content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
     content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
   }
-  if (hasMarker(content, SCHEMA_MARKER)) {
+  if (hasMarker(content, SCHEMA_MARKER) && !patch.noDatabase) {
     content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
   }
   if (authSessionValidatorLine) {
@@ -138,7 +140,10 @@ export function unpatchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
   const { importLine, modelImportLine, schemaLines, migrateLine, legacyServicePrefix, legacyRouteLine, routeLine, authSessionValidatorLine } = mainGoLines(patch);
 
-  content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine, legacyRouteLine]);
+  // Both composition shapes: undo reads the auth flags back out of the
+  // handler, but nothing records whether the module was composed with a DB.
+  const otherRouteLine = mainGoLines({ ...patch, noDatabase: !patch.noDatabase }).routeLine;
+  content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine, otherRouteLine, legacyRouteLine]);
   if (authSessionValidatorLine) {
     const withoutSessionValidator = removeLines(content, [authSessionValidatorLine]);
     if (!withoutSessionValidator.includes("sessionValidator")) {
