@@ -16,21 +16,8 @@ export function toPosix(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-/**
- * A stable, package-scoped skill name. A repository-root project keeps the
- * historical `go-scaffold` name; a nested monorepo package gets a suffix from
- * its repo-relative path so two generated services cannot overwrite each
- * other's skill.
- */
-export function agentSkillName(projectDir: string, repoRoot = findRepoRoot(projectDir)): string {
-  const relative = toPosix(path.relative(repoRoot, path.resolve(projectDir))).replace(/^\.\/?$/, "");
-  if (!relative) return "go-scaffold";
-  const slug = relative
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug ? `go-scaffold-${slug}` : "go-scaffold";
-}
+/** The one repository-wide skill every generated package shares. */
+export const AGENT_SKILL_NAME = "go-scaffold";
 
 export interface AgentSkillResult {
   files: string[];
@@ -39,18 +26,27 @@ export interface AgentSkillResult {
 }
 
 /**
- * Refuse to silently replace a different skill with the same name. Two
- * package paths can slug to the same value (`services/api` and
- * `services-api`), and a generated skill is not disposable user content.
+ * Refuse to silently replace a different skill with the same name.
+ *
+ * The skill is repository-wide, so every package in a monorepo maps to the
+ * same file. The same CLI version renders identical content; a different
+ * version, or a hand-edited file, means two sources of truth and is reported
+ * instead of silently choosing the newer run.
  */
 export function assertAgentSkillAvailable(projectDir: string, name: string, content: string): void {
   const repoRoot = findRepoRoot(projectDir);
   const skillFile = path.join(repoRoot, ".agents", "skills", name, "SKILL.md");
   if (!fs.existsSync(skillFile)) return;
+  if (!fs.statSync(skillFile).isFile()) {
+    throw new Error(
+      `agent skill "${name}" path exists at ${toPosix(path.relative(projectDir, skillFile))} but is not a file — ` +
+        `remove it, then run create again`
+    );
+  }
   if (fs.readFileSync(skillFile, "utf8") === content) return;
   throw new Error(
     `agent skill "${name}" already exists at ${toPosix(path.relative(projectDir, skillFile))} with different content — ` +
-      `two package paths map to the same skill name; rename the package or remove that skill first`
+      `it was written by a different CLI version or edited by hand; update or remove it, then run create again`
   );
 }
 
@@ -81,7 +77,14 @@ export function writeAgentSkill(
     if (path.resolve(path.dirname(link), current) === path.resolve(skillDir)) {
       return { files: written, link, note: `${toPosix(path.relative(projectDir, link))} -> ${linkTarget}` };
     }
-    fs.unlinkSync(link);
+    // A link the user pointed somewhere else is not ours to replace. The
+    // authoritative skill is already written; report the mismatch instead of
+    // silently redirecting their tooling.
+    return {
+      files: written,
+      link,
+      note: `${toPosix(path.relative(projectDir, link))} points at ${current}; left untouched (expected ${linkTarget})`,
+    };
   } else if (existing) {
     if (!existing.isDirectory()) {
       return {
