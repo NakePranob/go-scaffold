@@ -18,11 +18,14 @@ import (
 )
 
 const (
-	refreshCookieName = "refresh_token"
+	legacyRefreshCookieName = "refresh_token"
+	hostRefreshCookieName   = "__Host-refresh_token"
 )
 
 const PermUserManageRole = "user:manage-role"
 const PermUserRead = "user:read"
+const PermUserManageSession = "user:manage-session"
+const PermUserManageStatus = "user:manage-status"
 
 // go-scaffold:user-handler-consts
 
@@ -35,7 +38,10 @@ type authorizer interface {
 type Handler struct {
 	svc            application.ServicePort
 	jwtSecret      string
+	jwtIssuer      string
+	jwtAudience    string
 	refreshTTL     time.Duration
+	oauthStateTTL  time.Duration
 	cookieSecure   bool
 	cookieSameSite string
 	allowedOrigins []string
@@ -56,7 +62,7 @@ func NewHandler(
 	authz ...authorizer,
 	// go-scaffold:user-handler-params
 ) *Handler {
-	return newHandler(svc, jwtSecret, refreshTTL, cookieSecure, cookieSameSite, nil, limiter, authz...)
+	return newHandler(svc, jwtSecret, "", "", refreshTTL, cookieSecure, cookieSameSite, nil, 10*time.Minute, limiter, authz...)
 }
 
 // NewHandlerWithOrigins is the composition entry point when the application
@@ -72,16 +78,56 @@ func NewHandlerWithOrigins(
 	authz ...authorizer,
 	// go-scaffold:user-handler-with-origins-params
 ) *Handler {
-	return newHandler(svc, jwtSecret, refreshTTL, cookieSecure, cookieSameSite, allowedOrigins, limiter, authz...)
+	return newHandler(svc, jwtSecret, "", "", refreshTTL, cookieSecure, cookieSameSite, allowedOrigins, 10*time.Minute, limiter, authz...)
 }
 
-func newHandler(
+// NewHandlerWithOriginsAndOAuthTTL is the composition entry point when the
+// application also supplies the configured OAuth state lifetime.
+func NewHandlerWithOriginsAndOAuthTTL(
 	svc application.ServicePort,
 	jwtSecret string,
 	refreshTTL time.Duration,
 	cookieSecure bool,
 	cookieSameSite string,
 	allowedOrigins []string,
+	oauthStateTTL time.Duration,
+	limiter middleware.Limiter,
+	authz ...authorizer,
+	// go-scaffold:user-handler-with-origins-ttl-params
+) *Handler {
+	return newHandler(svc, jwtSecret, "", "", refreshTTL, cookieSecure, cookieSameSite, allowedOrigins, oauthStateTTL, limiter, authz...)
+}
+
+// NewHandlerWithOriginsAndOAuthTTLAndJWT is the production composition entry
+// point. Issuer and audience prevent a token minted for another service that
+// happens to share the signing secret from being accepted here.
+func NewHandlerWithOriginsAndOAuthTTLAndJWT(
+	svc application.ServicePort,
+	jwtSecret string,
+	jwtIssuer string,
+	jwtAudience string,
+	refreshTTL time.Duration,
+	cookieSecure bool,
+	cookieSameSite string,
+	allowedOrigins []string,
+	oauthStateTTL time.Duration,
+	limiter middleware.Limiter,
+	authz ...authorizer,
+	// go-scaffold:user-handler-with-origins-ttl-jwt-params
+) *Handler {
+	return newHandler(svc, jwtSecret, jwtIssuer, jwtAudience, refreshTTL, cookieSecure, cookieSameSite, allowedOrigins, oauthStateTTL, limiter, authz...)
+}
+
+func newHandler(
+	svc application.ServicePort,
+	jwtSecret string,
+	jwtIssuer string,
+	jwtAudience string,
+	refreshTTL time.Duration,
+	cookieSecure bool,
+	cookieSameSite string,
+	allowedOrigins []string,
+	oauthStateTTL time.Duration,
 	limiter middleware.Limiter,
 	authz ...authorizer,
 ) *Handler {
@@ -92,7 +138,10 @@ func newHandler(
 	return &Handler{
 		svc:            svc,
 		jwtSecret:      jwtSecret,
+		jwtIssuer:      jwtIssuer,
+		jwtAudience:    jwtAudience,
 		refreshTTL:     refreshTTL,
+		oauthStateTTL:  oauthStateTTL,
 		cookieSecure:   cookieSecure,
 		cookieSameSite: cookieSameSite,
 		allowedOrigins: append([]string(nil), allowedOrigins...),
@@ -108,15 +157,21 @@ func newHandler(
 func (h *Handler) Register(rg gin.IRouter) {
 	loginLimit := middleware.RateLimit(h.limiter, "login", 10, time.Minute)
 	registerLimit := middleware.RateLimit(h.limiter, "register", 5, time.Minute)
+	oauthLoginLimit := middleware.RateLimit(h.limiter, "oauth-login", 10, time.Minute)
+	oauthExchangeLimit := middleware.RateLimit(h.limiter, "oauth-exchange", 10, time.Minute)
 	forgotPasswordLimit := middleware.RateLimit(h.limiter, "forgot-password", 5, time.Minute)
 	resetPasswordLimit := middleware.RateLimit(h.limiter, "reset-password", 10, time.Minute)
 	verifyEmailLimit := middleware.RateLimit(h.limiter, "verify-email", 10, time.Minute)
 	resendVerificationLimit := middleware.RateLimit(h.limiter, "resend-verification", 5, time.Minute)
 	mfaVerifyLimit := middleware.RateLimit(h.limiter, "mfa-verify", 5, time.Minute)
+	mfaEnrollmentLimit := middleware.RateLimit(h.limiter, "mfa-enrollment", 5, time.Minute)
 	mfaSetupLimit := middleware.RateLimit(h.limiter, "mfa-setup", 5, time.Minute)
 	mfaConfirmLimit := middleware.RateLimit(h.limiter, "mfa-confirm", 5, time.Minute)
 	mfaDisableLimit := middleware.RateLimit(h.limiter, "mfa-disable", 5, time.Minute)
+	mfaRecoveryLimit := middleware.RateLimit(h.limiter, "mfa-recovery", 5, time.Minute)
 	identityLinkLimit := middleware.RateLimit(h.limiter, "identity-link", 10, time.Minute)
+	reauthLimit := middleware.RateLimit(h.limiter, "reauth", 5, time.Minute)
+	recentAuth := middleware.RequireRecentAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience)
 
 	authGroup := rg.Group("/auth")
 	authGroup.POST("/register", registerLimit, h.register)
@@ -127,20 +182,26 @@ func (h *Handler) Register(rg gin.IRouter) {
 	authGroup.POST("/reset-password", resetPasswordLimit, h.resetPassword)
 	authGroup.POST("/verify-email", verifyEmailLimit, h.verifyEmail)
 	authGroup.POST("/mfa/verify", mfaVerifyLimit, h.verifyMFA)
-	authGroup.GET("/:provider/login", h.providerLogin)
-	authGroup.POST("/:provider/exchange", h.providerExchange)
+	authGroup.POST("/mfa/enroll/setup", mfaEnrollmentLimit, h.setupMFAEnrollment)
+	authGroup.POST("/mfa/enroll/confirm", mfaEnrollmentLimit, h.confirmMFAEnrollment)
+	authGroup.GET("/:provider/login", oauthLoginLimit, h.providerLogin)
+	authGroup.POST("/:provider/exchange", oauthExchangeLimit, h.providerExchange)
 
-	usersGroup := rg.Group("/users", middleware.RequireAuth(h.jwtSecret))
+	usersGroup := rg.Group("/users", middleware.RequireAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience, h.svc))
 	usersGroup.GET("/me", h.me)
 	usersGroup.POST("/me/resend-verification", resendVerificationLimit, h.resendVerification)
-	usersGroup.POST("/me/logout-all", h.logoutAll)
-	usersGroup.GET("/me/sessions", h.sessions)
-	usersGroup.DELETE("/me/sessions/:id", h.revokeSession)
+	usersGroup.POST("/me/reauth", reauthLimit, h.reauthenticate)
+	usersGroup.POST("/me/password", reauthLimit, recentAuth, h.changePassword)
+	usersGroup.POST("/me/logout-all", recentAuth, h.logoutAll)
+	usersGroup.DELETE("/me", reauthLimit, recentAuth, h.disableMe)
+	usersGroup.GET("/me/sessions", recentAuth, h.sessions)
+	usersGroup.DELETE("/me/sessions/:id", recentAuth, h.revokeSession)
 	usersGroup.GET("/me/mfa", h.mfaStatus)
-	usersGroup.POST("/me/mfa/setup", mfaSetupLimit, h.setupMFA)
-	usersGroup.POST("/me/mfa/confirm", mfaConfirmLimit, h.confirmMFA)
-	usersGroup.POST("/me/mfa/disable", mfaDisableLimit, h.disableMFA)
-	h.registerIdentityRoutes(usersGroup, identityLinkLimit)
+	usersGroup.POST("/me/mfa/setup", mfaSetupLimit, recentAuth, h.setupMFA)
+	usersGroup.POST("/me/mfa/confirm", mfaConfirmLimit, recentAuth, h.confirmMFA)
+	usersGroup.POST("/me/mfa/disable", mfaDisableLimit, recentAuth, h.disableMFA)
+	usersGroup.POST("/me/mfa/recover", mfaRecoveryLimit, h.recoverMFA)
+	h.registerIdentityRoutes(usersGroup, identityLinkLimit, recentAuth)
 	// Admin user routes are enabled only when the optional RBAC authorizer is
 	// supplied by the composition root. Auth-only projects keep the endpoint
 	// surface limited to authentication and the current-user operations.
@@ -148,6 +209,8 @@ func (h *Handler) Register(rg gin.IRouter) {
 		usersGroup.GET("", h.authz.Require(PermUserRead), h.adminListUsers)
 		usersGroup.GET("/:id", h.authz.Require(PermUserRead), h.adminGetUser)
 		usersGroup.PATCH("/:id/set-role", h.authz.Require(PermUserManageRole), h.setRole)
+		usersGroup.PATCH("/:id/status", h.authz.Require(PermUserManageStatus), recentAuth, h.setAccountStatus)
+		usersGroup.DELETE("/:id/sessions/:session_id", h.authz.Require(PermUserManageSession), h.adminRevokeSession)
 	}
 	// go-scaffold:handler-routes
 	// go-scaffold:user-routes
@@ -205,6 +268,28 @@ func (h *Handler) setRole(c *gin.Context) {
 	c.JSON(http.StatusOK, toMeResponse(u))
 }
 
+func (h *Handler) setAccountStatus(c *gin.Context) {
+	id, ok := httpx.ParseID(c)
+	if !ok {
+		return
+	}
+	var in setAccountStatusInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.Error(httpx.BindErr(err))
+		return
+	}
+	if err := h.svc.SetAccountDisabled(c.Request.Context(), id, in.Disabled); err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	u, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		c.Error(toHTTPError(err))
+		return
+	}
+	c.JSON(http.StatusOK, toMeResponse(u))
+}
+
 func toHTTPError(err error) error {
 	if err == nil {
 		return nil
@@ -227,6 +312,8 @@ func toHTTPError(err error) error {
 			status = http.StatusUnauthorized
 		case "AUTH_INVALID_PASSWORD":
 			status = http.StatusBadRequest
+		case "AUTH_REAUTH_REQUIRED", "AUTH_LOCAL_IDENTITY_REQUIRED":
+			status = http.StatusForbidden
 		case "AUTH_MFA_UNAVAILABLE":
 			status = http.StatusServiceUnavailable
 		case "AUTH_TOO_MANY_ATTEMPTS":

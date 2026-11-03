@@ -38,6 +38,7 @@ func NewRedisTokenStore(rdb *redis.Client, db *gorm.DB) *RedisTokenStore {
 var _ ports.RefreshTokenStore = (*RedisTokenStore)(nil)
 var _ ports.OAuthTransactionStore = (*RedisTokenStore)(nil)
 var _ ports.RecoveryTokenStore = (*RedisTokenStore)(nil)
+var _ ports.ExpiredAuthStateStore = (*RedisTokenStore)(nil)
 
 var consumeRefreshScript = redis.NewScript(`
 local token = redis.call("GET", KEYS[1])
@@ -118,10 +119,64 @@ end
 return revoked
 `)
 
-func (s *RedisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
+var setRefreshTokenWithLimitScript = redis.NewScript(`
+local max_sessions = tonumber(ARGV[5])
+local entries = {}
+local hashes = redis.call("SMEMBERS", KEYS[2])
+for _, hash in ipairs(hashes) do
+  local key = KEYS[3] .. hash
+  local raw = redis.call("GET", key)
+  local ttl = redis.call("PTTL", key)
+  if not raw or ttl < 1 then
+    redis.call("SREM", KEYS[2], hash)
+  else
+    local decoded, token_data = pcall(cjson.decode, raw)
+    if decoded and type(token_data) == "table" and token_data.user_id == ARGV[4] and
+       type(token_data.last_used_at) == "string" and token_data.last_used_at ~= "" and
+       type(token_data.created_at) == "string" and token_data.created_at ~= "" then
+      table.insert(entries, {hash = hash, data = token_data})
+    else
+      redis.call("SREM", KEYS[2], hash)
+    end
+  end
+end
+
+local function is_older(left, right)
+  if left.last_used_at == right.last_used_at then
+    return left.created_at < right.created_at
+  end
+  return left.last_used_at < right.last_used_at
+end
+
+while #entries >= max_sessions do
+  local oldest = 1
+  for i = 2, #entries do
+    if is_older(entries[i].data, entries[oldest].data) then
+      oldest = i
+    end
+  end
+  redis.call("DEL", KEYS[3] .. entries[oldest].hash)
+  redis.call("SREM", KEYS[2], entries[oldest].hash)
+  table.remove(entries, oldest)
+end
+
+redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+redis.call("SADD", KEYS[2], ARGV[3])
+return #entries
+`)
+
+func validateRefreshTokenRecord(token ports.RefreshTokenRecord) (time.Duration, error) {
 	ttl := time.Until(token.ExpiresAt)
 	if token.UserID == uuid.Nil || ttl <= 0 || token.AbsoluteExpiresAt.IsZero() || token.AbsoluteExpiresAt.Before(token.ExpiresAt) {
-		return fmt.Errorf("refresh token expiry is invalid")
+		return 0, fmt.Errorf("refresh token expiry is invalid")
+	}
+	return ttl, nil
+}
+
+func (s *RedisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord) error {
+	ttl, err := validateRefreshTokenRecord(token)
+	if err != nil {
+		return err
 	}
 	payload, err := json.Marshal(token)
 	if err != nil {
@@ -131,6 +186,27 @@ func (s *RedisTokenStore) SetRefreshToken(ctx context.Context, tokenHash string,
 	pipe.Set(ctx, refreshKeyPrefix+tokenHash, payload, ttl)
 	pipe.SAdd(ctx, refreshUserKeyPrefix+token.UserID.String(), tokenHash)
 	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// SetRefreshTokenWithLimit performs eviction and insertion in one Lua
+// invocation, so concurrent logins cannot exceed the configured per-user
+// session limit or leave an evicted session behind when insertion fails.
+func (s *RedisTokenStore) SetRefreshTokenWithLimit(ctx context.Context, tokenHash string, token ports.RefreshTokenRecord, maxSessions int) error {
+	ttl, err := validateRefreshTokenRecord(token)
+	if err != nil {
+		return err
+	}
+	if maxSessions <= 0 {
+		return s.SetRefreshToken(ctx, tokenHash, token)
+	}
+	payload, err := json.Marshal(token)
+	if err != nil {
+		return fmt.Errorf("encode refresh token record: %w", err)
+	}
+	_, err = setRefreshTokenWithLimitScript.Run(ctx, s.rdb,
+		[]string{refreshKeyPrefix + tokenHash, refreshUserKeyPrefix + token.UserID.String(), refreshKeyPrefix},
+		string(payload), ttl.Milliseconds(), tokenHash, token.UserID.String(), maxSessions).Result()
 	return err
 }
 
@@ -210,11 +286,27 @@ func (s *RedisTokenStore) ListRefreshSessions(ctx context.Context, userID uuid.U
 	out := make([]ports.RefreshSession, 0, len(tokens))
 	for _, token := range tokens {
 		out = append(out, ports.RefreshSession{
-			ID: token.SessionID, UserAgent: token.UserAgent, CreatedAt: token.CreatedAt,
+			ID: token.SessionID, UserAgent: token.UserAgent, IPAddress: token.IPAddress, CreatedAt: token.CreatedAt,
 			LastUsedAt: token.LastUsedAt, ExpiresAt: token.ExpiresAt,
 		})
 	}
 	return out, nil
+}
+
+func (s *RedisTokenStore) IsSessionActive(ctx context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return false, nil
+	}
+	sessions, err := s.ListRefreshSessions(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *RedisTokenStore) RevokeRefreshSession(ctx context.Context, userID, sessionID uuid.UUID) error {
@@ -282,10 +374,18 @@ func (s *RedisTokenStore) SetPasswordResetToken(ctx context.Context, tokenHash s
 	return s.recovery.SetPasswordResetToken(ctx, tokenHash, userID, ttl)
 }
 
+func (s *RedisTokenStore) ReplacePasswordResetToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
+	return s.recovery.ReplacePasswordResetToken(ctx, tokenHash, userID, ttl)
+}
+
 // ConsumePasswordResetToken is one-time-use by construction: the SQL DELETE
 // runs inside the same transaction as the user update.
 func (s *RedisTokenStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, bool, error) {
 	return s.recovery.ConsumePasswordResetToken(ctx, tokenHash)
+}
+
+func (s *RedisTokenStore) RevokePasswordResetTokens(ctx context.Context, userID uuid.UUID) error {
+	return s.recovery.RevokePasswordResetTokens(ctx, userID)
 }
 
 func (s *RedisTokenStore) SetEmailVerifyToken(ctx context.Context, tokenHash string, userID uuid.UUID, ttl time.Duration) error {
@@ -300,4 +400,50 @@ func (s *RedisTokenStore) ConsumeEmailVerifyToken(ctx context.Context, tokenHash
 
 func (s *RedisTokenStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
 	return s.recovery.WithTransaction(ctx, fn)
+}
+
+// DeleteExpired lets the scheduleable auth cleanup command remove recovery
+// rows from Postgres and stale members from Redis' per-user session indexes.
+// Active refresh/reuse/OAuth keys already have Redis TTLs; only the secondary
+// user sets need pruning after their primary keys expire.
+func (s *RedisTokenStore) DeleteExpired(ctx context.Context) (int64, error) {
+	var deleted int64
+	if cleaner, ok := s.recovery.(ports.ExpiredAuthStateStore); ok {
+		rows, err := cleaner.DeleteExpired(ctx)
+		if err != nil {
+			return 0, err
+		}
+		deleted += rows
+	}
+
+	var cursor uint64
+	for {
+		keys, next, err := s.rdb.Scan(ctx, cursor, refreshUserKeyPrefix+"*", 100).Result()
+		if err != nil {
+			return deleted, err
+		}
+		for _, key := range keys {
+			hashes, err := s.rdb.SMembers(ctx, key).Result()
+			if err != nil {
+				return deleted, err
+			}
+			for _, hash := range hashes {
+				exists, err := s.rdb.Exists(ctx, refreshKeyPrefix+hash).Result()
+				if err != nil {
+					return deleted, err
+				}
+				if exists == 0 {
+					removed, err := s.rdb.SRem(ctx, key, hash).Result()
+					if err != nil {
+						return deleted, err
+					}
+					deleted += removed
+				}
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return deleted, nil
+		}
+	}
 }

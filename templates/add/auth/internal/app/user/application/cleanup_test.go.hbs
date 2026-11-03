@@ -1,0 +1,39 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+type fakeExpiredAuthStateStore struct {
+	rows int64
+	err  error
+}
+
+func (f *fakeExpiredAuthStateStore) DeleteExpired(context.Context) (int64, error) {
+	return f.rows, f.err
+}
+
+func TestAuthCleanupRunsTokenAndMFAStores(t *testing.T) {
+	tokens := &fakeExpiredAuthStateStore{rows: 7}
+	mfa := &fakeExpiredAuthStateStore{rows: 3}
+	result, err := NewAuthCleanup(tokens, mfa).Run(context.Background())
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if result.TokenRows != 7 || result.MFAStateRows != 3 {
+		t.Fatalf("cleanup result = %+v, want token=7 mfa=3", result)
+	}
+}
+
+func TestAuthCleanupStopsAfterTokenStoreFailure(t *testing.T) {
+	wantErr := errors.New("token store unavailable")
+	result, err := NewAuthCleanup(&fakeExpiredAuthStateStore{err: wantErr}, &fakeExpiredAuthStateStore{rows: 3}).Run(context.Background())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("cleanup error = %v, want %v", err, wantErr)
+	}
+	if result != (CleanupResult{}) {
+		t.Fatalf("cleanup result after token failure = %+v, want zero", result)
+	}
+}

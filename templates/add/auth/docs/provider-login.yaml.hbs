@@ -1,6 +1,6 @@
 get:
   summary: Start an external OAuth login flow
-  description: Redirects the browser to the configured provider. The browser client supplies state and an S256 PKCE challenge; the server creates a one-time transaction bound to that state, provider, challenge, and OIDC nonce, then uses the exact provider-registered redirect URI. It never accepts a client redirect URI.
+  description: Redirects the browser to the configured provider. The server creates a high-entropy state, binds it to an HttpOnly browser cookie and a one-time transaction with the provider, S256 challenge, and OIDC nonce, then uses the exact provider-registered redirect URI. If configured, the provider adapter also requests max_age/acr/amr assurance claims. The browser client supplies only the PKCE challenge; it never supplies state or a client redirect URI.
   operationId: providerLogin
   tags: [auth]
   security: []
@@ -9,10 +9,6 @@ get:
       in: path
       required: true
       schema: { type: string, example: google }
-    - name: state
-      in: query
-      required: true
-      schema: { type: string, minLength: 1 }
     - name: code_challenge
       in: query
       required: true
@@ -27,5 +23,5 @@ get:
       schema: { type: string, enum: [S256] }
   responses:
     "302": { description: redirect to the provider's authorization endpoint }
-    "400": { description: missing or invalid state/PKCE parameters; response uses a controlled OAuth error code }
+    "400": { description: missing or invalid PKCE parameters; response uses a controlled OAuth error code }
     "503": { description: provider is unavailable or not configured }

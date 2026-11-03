@@ -41,6 +41,10 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const service = read(project, ...application, "service.go");
   const identities = read(project, ...application, "identities.go");
   const applicationDTO = read(project, ...application, "dto.go");
+  const sessions = read(project, ...application, "sessions.go");
+  const sessionMetadata = read(project, ...application, "session_metadata.go");
+  const sessionMetadataTest = read(project, ...application, "session_metadata_test.go");
+  const repositoryPorts = read(project, "internal", "app", "user", "ports", "repository.go");
   const contracts = read(project, ...application, "contracts.go");
   const passwordPorts = read(project, "internal", "app", "user", "ports", "password.go");
   const passwordAdapter = read(project, "internal", "app", "user", "adapters", "outbound", "password", "bcrypt.go");
@@ -57,20 +61,27 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   const env = read(project, ".env.example");
   const openapi = read(project, "docs", "openapi.yaml");
 
-  assert.match(handler, /GET\("\/:provider\/login", h\.providerLogin\)/);
-  assert.match(handler, /POST\("\/:provider\/exchange", h\.providerExchange\)/);
-  assert.match(handler, /GET\("\/me\/sessions", h\.sessions\)/);
-  assert.match(handler, /DELETE\("\/me\/sessions\/:id", h\.revokeSession\)/);
+  assert.match(handler, /GET\("\/:provider\/login",[^\n]*h\.providerLogin\)/);
+  assert.match(handler, /POST\("\/me\/reauth", reauthLimit, h\.reauthenticate\)/);
+  assert.match(handler, /POST\("\/me\/password", reauthLimit, recentAuth, h\.changePassword\)/);
+  assert.match(handler, /POST\("\/:provider\/exchange", oauthExchangeLimit, h\.providerExchange\)/);
+  assert.match(handler, /GET\("\/me\/sessions", recentAuth, h\.sessions\)/);
+  assert.match(handler, /DELETE\("\/me", reauthLimit, recentAuth, h\.disableMe\)/);
+  assert.match(handler, /POST\("\/me\/mfa\/recover", mfaRecoveryLimit, h\.recoverMFA\)/);
+  assert.match(handler, /PATCH\("\/:id\/status", h\.authz\.Require\(PermUserManageStatus\), recentAuth, h\.setAccountStatus\)/);
+  assert.match(handler, /DELETE\("\/me\/sessions\/:id",[^\n]*h\.revokeSession\)/);
+  assert.match(handler, /DELETE\("\/:id\/sessions\/:session_id", h\.authz\.Require\(PermUserManageSession\), h\.adminRevokeSession\)/);
   assert.match(identityHandler, /GET\("\/me\/identities", h\.listIdentities\)/);
-  assert.match(identityHandler, /POST\("\/me\/identities\/local", linkLimiter, h\.linkLocalIdentity\)/);
-  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link", linkLimiter, h\.beginIdentityLink\)/);
-  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link\/exchange", linkLimiter, h\.exchangeIdentityLink\)/);
-  assert.match(identityHandler, /DELETE\("\/me\/identities\/:provider", h\.unlinkIdentity\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/local", linkLimiter, recentAuth, h\.linkLocalIdentity\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link", linkLimiter, recentAuth, h\.beginIdentityLink\)/);
+  assert.match(identityHandler, /POST\("\/me\/identities\/:provider\/link\/exchange", linkLimiter, recentAuth, h\.exchangeIdentityLink\)/);
+  assert.match(identityHandler, /DELETE\("\/me\/identities\/:provider", recentAuth, h\.unlinkIdentity\)/);
   assert.match(identities, /func \(s \*Service\) ExchangeIdentityLink\(/);
   assert.match(identities, /func \(s \*Service\) LinkLocalIdentity\(/);
   assert.match(postgresModel, /type UserEmail struct/);
   assert.match(postgresModel, /type PasswordCredential struct/);
   assert.match(postgresModel, /type ExternalIdentity struct/);
+  assert.match(postgresModel, /DisabledAt\s+\*time\.Time/);
   assert.match(postgresModel, /Issuer\s+string[^\n]*type:text/);
   assert.match(postgresModel, /UserID\s+uuid\.UUID[^\n]*uniqueIndex:idx_user_emails_primary,where:is_primary/);
   assert.doesNotMatch(postgresModel, /IsPrimary\s+bool[^\n]*uniqueIndex:idx_user_emails_primary/);
@@ -78,6 +89,7 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(migrations, /_create_user_emails\.up\.sql/);
   assert.match(migrations, /_create_password_credentials\.up\.sql/);
   assert.match(migrations, /_create_external_identities\.up\.sql/);
+  assert.match(migrations, /_add_user_lifecycle\.up\.sql/);
   assert.doesNotMatch(migrations, /_create_identities\.up\.sql/);
   const userEmailsMigration = readFileSync(
     path.join(project, "migrations", migrations.split("\n").find((file) => file.includes("_create_user_emails.up.sql"))),
@@ -101,28 +113,50 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(contracts, /type MFASettings/);
   assert.match(read(project, "internal", "app", "user", "application", "oauth.go"), /type ProviderRegistry struct/);
   assert.match(mfaService, /totpCode/);
+  assert.match(mfaService, /RecoverMFA/);
   assert.match(mfaStore, /ConsumeChallenge/);
+  assert.match(mfaStore, /RecoverEnrollment/);
   assert.match(externalLogin, /validPKCEChallenge\(in\.CodeChallenge\)/);
   assert.match(externalLogin, /in\.CodeChallengeMethod != "S256"/);
   assert.doesNotMatch(externalLogin, /TrimSpace\(in\.(State|Code|CodeVerifier|CodeChallenge)/);
   assert.match(googleProvider, /validPKCEValue\(in\.CodeChallenge\)/);
   assert.match(googleProvider, /validPKCEValue\(in\.CodeVerifier\)/);
+  assert.match(googleProvider, /assuranceOptions/);
+  assert.match(googleProvider, /auth_time/);
+  assert.match(googleProvider, /requiredACR/);
+  assert.match(googleProvider, /requiredAMR/);
   assert.doesNotMatch(googleProvider, /TrimSpace\(in\.(Code|CodeVerifier)/);
   assert.match(composition, /application\.NewProviderRegistry/);
   assert.match(composition, /authprovider\/google/);
   assert.match(composition, /NewHandlerWithOrigins/);
+  assert.match(composition, /activeSessionValidator/);
+  assert.match(composition, /JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN/);
+  assert.match(composition, /splitCSV\(cfg\.GoogleOIDCRequiredAMR\)/);
   assert.match(config, /GOOGLE_OAUTH_REDIRECT_URI/);
+  assert.match(config, /GOOGLE_OIDC_MAX_AGE_SEC/);
+  assert.match(config, /GOOGLE_OIDC_REQUIRED_ACR/);
+  assert.match(config, /GOOGLE_OIDC_REQUIRED_AMR/);
   assert.match(config, /AUTH_BROWSER_TOPOLOGY/);
   assert.match(config, /JWT_REFRESH_MAX_TTL_MIN/);
+  assert.match(config, /JWT_ISSUER/);
+  assert.match(config, /JWT_AUDIENCE/);
   assert.match(config, /OAUTH_STATE_TTL_MIN/);
   assert.match(config, /AUTH_MFA_ENABLED/);
+  assert.match(config, /AuthMaxSessions/);
+  assert.match(config, /AUTH_MAX_SESSIONS/);
   assert.match(env, /^AUTH_MFA_ENABLED=false$/m);
+  assert.match(env, /^AUTH_MAX_SESSIONS=10$/m);
   assert.match(env, /^MFA_TOTP_WINDOW=1$/m);
   assert.doesNotMatch(config, /AUTH_FRONTEND_SUCCESS_URL|AUTH_FRONTEND_ERROR_URL|AuthFrontend|RedirectTarget/);
   assert.doesNotMatch(config, /https:\/\/app\.example\.com/);
   assert.match(env, /^GOOGLE_OAUTH_REDIRECT_URI=$/m);
+  assert.match(env, /^GOOGLE_OIDC_MAX_AGE_SEC=0$/m);
+  assert.match(env, /^GOOGLE_OIDC_REQUIRED_ACR=$/m);
+  assert.match(env, /^GOOGLE_OIDC_REQUIRED_AMR=$/m);
   assert.match(env, /^AUTH_BROWSER_TOPOLOGY=same-site$/m);
   assert.match(env, /^JWT_REFRESH_MAX_TTL_MIN=43200$/m);
+  assert.match(env, /^JWT_ISSUER=go-scaffold$/m);
+  assert.match(env, /^JWT_AUDIENCE=api$/m);
   assert.match(env, /^OAUTH_STATE_TTL_MIN=10$/m);
   assert.doesNotMatch(env, /AUTH_FRONTEND_SUCCESS_URL|AUTH_FRONTEND_ERROR_URL|GOOGLE_REDIRECT_URL/);
   assert.match(openapi, /\/auth\/\{provider\}\/login:/);
@@ -132,16 +166,26 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.match(sessionCookie, /Cache-Control/);
   assert.match(browserPolicy, /requireBrowserOrigin/);
   assert.match(read(project, "docs", "auth", "provider-exchange.yaml"), /providerExchange/);
+  assert.match(read(project, "docs", "auth", "mfa-enroll-setup.yaml"), /setupRequiredMFA/);
+  assert.match(read(project, "docs", "auth", "mfa-enroll-confirm.yaml"), /confirmRequiredMFA/);
+  assert.match(read(project, "docs", "auth", "users-me-mfa-recover.yaml"), /recoverMyMFA/);
   assert.match(read(project, "docs", "auth", "provider-login.yaml"), /minLength: 43/);
   assert.match(read(project, "docs", "auth", "users-me-sessions.yaml"), /listMySessions/);
   assert.match(read(project, "docs", "auth", "users-me-session.yaml"), /revokeMySession/);
+  assert.match(read(project, "docs", "auth", "users-session.yaml"), /revokeUserSession/);
   assert.match(read(project, "docs", "auth", "users-me-identities.yaml"), /listMyIdentities/);
+  assert.match(read(project, "docs", "auth", "users-me.yaml"), /disableMyAccount/);
   assert.match(read(project, "docs", "auth", "users-me-identity-local-link.yaml"), /linkMyLocalIdentity/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link.yaml"), /startIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity-link-exchange.yaml"), /exchangeIdentityLink/);
   assert.match(read(project, "docs", "auth", "users-me-identity.yaml"), /unlinkMyIdentity/);
-  assert.match(read(project, "docs", "auth", "schemas.yaml"), /SessionResponse:/);
+  const schemas = read(project, "docs", "auth", "schemas.yaml");
+  assert.match(schemas, /SessionResponse:/);
+  assert.match(schemas, /device_key:/);
+  assert.doesNotMatch(schemas, /user_agent:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /IdentityResponse:/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /MFAEnrollmentRequiredResponse:/);
+  assert.match(read(project, "docs", "auth", "schemas.yaml"), /MFARecoveryResponse:/);
   assert.match(read(project, "docs", "auth", "schemas.yaml"), /code_verifier:[\s\S]*minLength: 43/);
   assert.equal(existsSync(path.join(project, "docs", "auth", "provider-callback.yaml")), false);
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "oauth.go")));
@@ -150,9 +194,16 @@ test("add auth writes generic provider login and exchange routes", (t) => {
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "application", "identities.go")));
   assert.ok(existsSync(path.join(project, "internal", "app", "user", "ports", "repository.go")));
   assert.ok(existsSync(path.join(project, "internal", "platform", "authprovider", "google", "google.go")));
+  assert.match(sessions, /describeSession/);
+  assert.match(sessionMetadata, /func describeSession\(/);
+  assert.match(sessionMetadataTest, /TestDescribeSessionReturnsSafeStructuredMetadata/);
+  assert.match(repositoryPorts, /IPAddress\s+string/);
+  assert.match(repositoryPorts, /SetDisabled\(context\.Context, uuid\.UUID, \*time\.Time\) error/);
   for (const file of [
     "local_auth.go",
     "sessions.go",
+    "session_metadata.go",
+    "session_metadata_test.go",
     "recovery_service.go",
     "external_login.go",
     "identities.go",
@@ -268,17 +319,18 @@ test("generate method remains usable after auth splits its service and handler f
   execFileSync("go", ["test", "./..."], { cwd: project, stdio: "ignore" });
 
   const handler = read(project, "internal", "app", "user", "adapters", "inbound", "http", "handler.go");
-  const service = read(project, "internal", "app", "user", "application", "service.go");
-  const repository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "repository.go");
+  const listMethod = read(project, "internal", "app", "user", "application", "method_lookup_by_email.go");
+  const lookupMethod = read(project, "internal", "app", "user", "application", "method_find_by_name.go");
+  const repository = read(project, "internal", "app", "user", "adapters", "outbound", "postgres", "method_find_by_name.go");
   const serviceTest = read(project, "internal", "app", "user", "application", "service_test.go");
 
   assert.match(listOutput, /route: GET \/users\/lookup-by-email/);
-  assert.match(listOutput, /next: fill in the TODO in application\/service\.go/);
+  assert.match(listOutput, /next: fill in the TODO in application\/method_lookup_by_email\.go/);
   assert.match(lookupOutput, /route: GET \/users\/name\/\{name\}/);
   assert.match(handler, /usersGroup\.GET\("\/lookup-by-email", h\.lookupByEmail\)/);
   assert.match(handler, /usersGroup\.GET\("\/name\/:name", h\.findByName\)/);
-  assert.match(service, /func \(s \*Service\) LookupByEmail\(/);
-  assert.match(service, /func \(s \*Service\) FindByName\(/);
+  assert.match(listMethod, /func \(s \*Service\) LookupByEmail\(/);
+  assert.match(lookupMethod, /func \(s \*Service\) FindByName\(/);
   assert.match(repository, /func \(r \*Repository\) FindByName\(/);
   assert.match(repository, /r\.toDomainUser\(ctx, &row\)/);
   assert.match(serviceTest, /func \(f \*fakeRepo\) FindByName\(/);

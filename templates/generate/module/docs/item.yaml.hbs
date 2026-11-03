@@ -21,17 +21,12 @@ put:
       application/json:
         schema: { $ref: './schemas.yaml#/{{pascalName}}UpdateInput' }
   responses:
-    "200":
-      description: updated
-      content:
-        application/json:
-          schema: { $ref: './schemas.yaml#/{{pascalName}}Response' }
+    "501": { description: not implemented until the update use case is filled in }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
-    "404": { $ref: '../common/responses.yaml#/NotFoundError' }
 delete:
   summary: Delete {{name}}
-  description: Idempotent — deleting an already-missing resource also returns 204.
   operationId: delete{{pascalName}}
   tags: [{{plural}}]
   responses:
-    "204": { description: deleted or already absent }
+    "501": { description: not implemented until the delete use case is filled in }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }

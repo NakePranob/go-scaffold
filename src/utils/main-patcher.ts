@@ -17,10 +17,14 @@ export interface RoutePatch {
   pascalName: string;
   /** Postgres schema this module's table lives in, e.g. "order_svc" */
   schemaName: string;
-  /** wires middleware.RequireAuth(cfg.JWTSecret) into the module's route group */
+  /** wires issuer/audience-bound auth into the module's route group */
   auth?: boolean;
   /** also wires authz.Require(permission) — requires auth too */
   permission?: string;
+  /** declares the shared active-session validator for protected modules */
+  authSessionValidatorLine?: string;
+  /** a "none" surface module: composed without the database handle */
+  noDatabase?: boolean;
 }
 
 // the exact lines patchMainGo inserts for a module — one source of truth so
@@ -31,13 +35,14 @@ export interface RoutePatch {
 // registers the feature's handler.
 function mainGoLines(patch: RoutePatch) {
   const modelAlias = `${patch.pkg}postgres`; // every domain's persistence adapter is named "postgres"
-  const handlerArgs = ["db"];
+  const handlerArgs = patch.noDatabase ? [] : ["db"];
   const legacyHandlerArgs = [`${patch.pkg}Svc`];
-  if (patch.auth) handlerArgs.push("cfg.JWTSecret");
+  if (patch.auth) handlerArgs.push("cfg.JWTSecret", "cfg.JWTIssuer", "cfg.JWTAudience");
   // RBAC's Authz is owned by role/composition.go. wiring.go registers a
   // permission-gated feature with that public capability; it no longer keeps a
   // standalone root variable named `authz`.
   if (patch.permission) handlerArgs.push("roleComposition.Authz");
+  if (patch.auth) handlerArgs.push("sessionValidator");
   if (patch.auth) legacyHandlerArgs.push("cfg.JWTSecret");
   if (patch.permission) legacyHandlerArgs.push("roleComposition.Authz");
   return {
@@ -65,7 +70,8 @@ function mainGoLines(patch: RoutePatch) {
     // `roleComposition.Authz` only exists in main.go once `add rbac` has run —
     // patch.permission is only ever set once that has been verified by the
     // caller.
-    routeLine: `${patch.pkg}.NewHandlerFromDB(${handlerArgs.join(", ")}).Register(api)`,
+    routeLine: `${patch.pkg}.${patch.noDatabase ? "NewHandler" : "NewHandlerFromDB"}(${handlerArgs.join(", ")}).Register(api)`,
+    authSessionValidatorLine: patch.auth ? patch.authSessionValidatorLine : undefined,
   };
 }
 
@@ -100,7 +106,7 @@ export function assertMainGoPatchable(mainGoPath: string): void {
 // edits markers can't express).
 export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, schemaLines, schemaSentinel, migrateLine, routeLine } =
+  const { importLine, modelImportLine, schemaLines, schemaSentinel, migrateLine, routeLine, authSessionValidatorLine } =
     mainGoLines(patch);
 
   // each guarded by its own sentinel so re-running after only the module
@@ -111,12 +117,15 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
   // it the schema/model markers. A project scaffolded before that still has
   // them, and still wants its tables registered there — so these stay, guarded
   // by the marker's presence rather than deleted. New projects skip them.
-  if (hasMarker(content, MODEL_MARKER)) {
+  if (hasMarker(content, MODEL_MARKER) && !patch.noDatabase) {
     content = insertBeforeMarkerOnce(content, IMPORT_MARKER, modelImportLine, modelImportLine);
     content = insertBeforeMarkerOnce(content, MODEL_MARKER, migrateLine, migrateLine);
   }
-  if (hasMarker(content, SCHEMA_MARKER)) {
+  if (hasMarker(content, SCHEMA_MARKER) && !patch.noDatabase) {
     content = insertBeforeMarkerOnce(content, SCHEMA_MARKER, schemaLines, schemaSentinel);
+  }
+  if (authSessionValidatorLine) {
+    content = insertBeforeMarkerOnce(content, ROUTE_MARKER, authSessionValidatorLine, authSessionValidatorLine);
   }
   content = insertBeforeMarkerOnce(content, ROUTE_MARKER, routeLine, routeLine);
   content = removeLines(content, [UNUSED_API_LINE]);
@@ -129,9 +138,18 @@ export function patchMainGo(mainGoPath: string, patch: RoutePatch): void {
 // main.go still compiles (api would otherwise be declared-and-unused).
 export function unpatchMainGo(mainGoPath: string, patch: RoutePatch): void {
   let content = fs.readFileSync(mainGoPath, "utf8");
-  const { importLine, modelImportLine, schemaLines, migrateLine, legacyServicePrefix, legacyRouteLine, routeLine } = mainGoLines(patch);
+  const { importLine, modelImportLine, schemaLines, migrateLine, legacyServicePrefix, legacyRouteLine, routeLine, authSessionValidatorLine } = mainGoLines(patch);
 
-  content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine, legacyRouteLine]);
+  // Both composition shapes: undo reads the auth flags back out of the
+  // handler, but nothing records whether the module was composed with a DB.
+  const otherRouteLine = mainGoLines({ ...patch, noDatabase: !patch.noDatabase }).routeLine;
+  content = removeLines(content, [importLine, modelImportLine, migrateLine, routeLine, otherRouteLine, legacyRouteLine]);
+  if (authSessionValidatorLine) {
+    const withoutSessionValidator = removeLines(content, [authSessionValidatorLine]);
+    if (!withoutSessionValidator.includes("sessionValidator")) {
+      content = withoutSessionValidator;
+    }
+  }
   // by prefix: remove the named service line from projects generated before
   // composition became feature-local.
   content = removeLinesByPrefix(content, [legacyServicePrefix]);

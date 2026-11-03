@@ -13,13 +13,27 @@ import (
 // transport-neutral inputs from handler mapping code.
 type registerInput struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8,max=72"`
+	Password string `json:"password" binding:"required,min=8,max=256"`
 	Name     string `json:"name" binding:"required"`
 }
 
 type loginInput struct {
 	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,max=72"`
+	Password string `json:"password" binding:"required,max=256"`
+}
+
+type reauthInput struct {
+	Password string `json:"password" binding:"max=256"`
+	Code     string `json:"code" binding:"max=16"`
+}
+
+type reauthResponse struct {
+	Token     string `json:"reauth_token"`
+	ExpiresIn int    `json:"expires_in"`
+}
+
+type changePasswordInput struct {
+	NewPassword string `json:"new_password" binding:"required,min=8,max=256"`
 }
 
 type loginExchangeInput struct {
@@ -52,8 +66,8 @@ func toLoginExchangeInput(in loginExchangeInput) userapp.LoginExchangeInput {
 	return userapp.LoginExchangeInput{Code: in.Code, State: in.State, CodeVerifier: in.CodeVerifier}
 }
 
-func sessionContext(userAgent string) userapp.SessionContext {
-	return userapp.SessionContext{UserAgent: userAgent}
+func sessionContext(userAgent, ipAddress string) userapp.SessionContext {
+	return userapp.SessionContext{UserAgent: userAgent, IPAddress: ipAddress}
 }
 
 type forgotPasswordInput struct {
@@ -62,7 +76,7 @@ type forgotPasswordInput struct {
 
 type resetPasswordInput struct {
 	Token       string `json:"token" binding:"required"`
-	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
+	NewPassword string `json:"new_password" binding:"required,min=8,max=256"`
 }
 
 type verifyEmailInput struct {
@@ -78,6 +92,15 @@ type mfaChallengeInput struct {
 	Code      string `json:"code" binding:"required"`
 }
 
+type mfaEnrollmentSetupInput struct {
+	EnrollmentToken string `json:"enrollment_token" binding:"required"`
+}
+
+type mfaEnrollmentConfirmInput struct {
+	EnrollmentToken string `json:"enrollment_token" binding:"required"`
+	Code            string `json:"code" binding:"required"`
+}
+
 type authCookieResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
@@ -87,6 +110,11 @@ type authCookieResponse struct {
 type mfaChallengeResponse struct {
 	MFARequired bool   `json:"mfa_required"`
 	Challenge   string `json:"challenge"`
+}
+
+type mfaEnrollmentRequiredResponse struct {
+	MFAEnrollmentRequired bool   `json:"mfa_enrollment_required"`
+	EnrollmentToken       string `json:"enrollment_token"`
 }
 
 type mfaStatusResponse struct {
@@ -103,13 +131,32 @@ type mfaConfirmResponse struct {
 	RecoveryCodes []string `json:"recovery_codes"`
 }
 
+type mfaRecoveryResponse struct {
+	MFARecoveryStarted bool   `json:"mfa_recovery_started"`
+	EnrollmentToken    string `json:"enrollment_token"`
+}
+
+type mfaEnrollmentConfirmResponse struct {
+	AccessToken   string   `json:"access_token"`
+	TokenType     string   `json:"token_type"`
+	ExpiresIn     int      `json:"expires_in"`
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
 type sessionResponse struct {
-	ID         uuid.UUID `json:"id"`
-	UserAgent  string    `json:"user_agent"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	Current    bool      `json:"current"`
+	ID             uuid.UUID `json:"id"`
+	DeviceKey      string    `json:"device_key"`
+	DeviceType     string    `json:"device_type"`
+	DeviceName     string    `json:"device_name"`
+	DeviceModel    string    `json:"device_model,omitempty"`
+	BrowserName    string    `json:"browser_name"`
+	BrowserVersion string    `json:"browser_version,omitempty"`
+	OSName         string    `json:"os_name"`
+	OSVersion      string    `json:"os_version,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastUsedAt     time.Time `json:"last_used_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Current        bool      `json:"current"`
 }
 
 type sessionsResponse struct {
@@ -117,7 +164,7 @@ type sessionsResponse struct {
 }
 
 type identityLinkStartInput struct {
-	State               string `json:"state" binding:"required"`
+	State               string `json:"state"`
 	CodeChallenge       string `json:"code_challenge" binding:"required"`
 	CodeChallengeMethod string `json:"code_challenge_method" binding:"required"`
 }
@@ -129,7 +176,7 @@ type identityLinkExchangeInput struct {
 }
 
 type localIdentityLinkInput struct {
-	Password string `json:"password" binding:"required,min=8,max=72"`
+	Password string `json:"password" binding:"required,min=8,max=256"`
 }
 
 type identityLinkStartResponse struct {
@@ -148,8 +195,19 @@ type identitiesResponse struct {
 
 func toSessionResponse(session userapp.Session) sessionResponse {
 	return sessionResponse{
-		ID: session.ID, UserAgent: session.UserAgent, CreatedAt: session.CreatedAt,
-		LastUsedAt: session.LastUsedAt, ExpiresAt: session.ExpiresAt, Current: session.Current,
+		ID:             session.ID,
+		DeviceKey:      session.DeviceKey,
+		DeviceType:     session.DeviceType,
+		DeviceName:     session.DeviceName,
+		DeviceModel:    session.DeviceModel,
+		BrowserName:    session.BrowserName,
+		BrowserVersion: session.BrowserVersion,
+		OSName:         session.OSName,
+		OSVersion:      session.OSVersion,
+		CreatedAt:      session.CreatedAt,
+		LastUsedAt:     session.LastUsedAt,
+		ExpiresAt:      session.ExpiresAt,
+		Current:        session.Current,
 	}
 }
 
@@ -176,6 +234,7 @@ type meResponse struct {
 	AvatarURL     string    `json:"avatar_url"`
 	EmailVerified bool      `json:"email_verified"`
 	Role          string    `json:"role"`
+	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
 	// go-scaffold:user-me-fields
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -189,6 +248,7 @@ func toMeResponse(user *userdomain.User) meResponse {
 		EmailVerified: user.EmailVerified,
 		CreatedAt:     user.CreatedAt,
 		Role:          user.Role,
+		DisabledAt:    user.DisabledAt,
 		// go-scaffold:user-me-values
 	}
 }
@@ -204,6 +264,7 @@ type response struct {
 	AvatarURL     string    `json:"avatar_url"`
 	EmailVerified bool      `json:"email_verified"`
 	Role          string    `json:"role"`
+	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -213,12 +274,17 @@ func toResponse(out userapp.Response) response {
 	return response{
 		ID: out.ID, Email: out.Email, Name: out.Name, AvatarURL: out.AvatarURL,
 		EmailVerified: out.EmailVerified, Role: out.Role, CreatedAt: out.CreatedAt,
+		DisabledAt: out.DisabledAt,
 		UpdatedAt: out.UpdatedAt,
 	}
 }
 
 type setRoleInput struct {
 	Role string `json:"role" binding:"required"`
+}
+
+type setAccountStatusInput struct {
+	Disabled bool `json:"disabled"`
 }
 
 // go-scaffold:dto

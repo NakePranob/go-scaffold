@@ -14,14 +14,19 @@ import (
 // requireBrowserOrigin is the CSRF guard for the cross-site cookie mode. CORS
 // controls whether a caller can read the response; this exact origin check
 // independently controls whether a state-changing request may use an ambient
-// refresh cookie.
+// refresh cookie. Same-site deployments also allow non-browser clients that do
+// not send Origin; browsers with an Origin are still checked against the exact
+// allowlist when one is configured.
 func (h *Handler) requireBrowserOrigin(c *gin.Context) bool {
-	if !strings.EqualFold(strings.TrimSpace(h.cookieSameSite), "none") {
+	if len(h.allowedOrigins) == 0 && !strings.EqualFold(strings.TrimSpace(h.cookieSameSite), "none") {
 		return true
 	}
 
 	origin := strings.TrimSpace(c.GetHeader("Origin"))
 	if origin == "" {
+		if !strings.EqualFold(strings.TrimSpace(h.cookieSameSite), "none") {
+			return true
+		}
 		if referer := strings.TrimSpace(c.GetHeader("Referer")); referer != "" {
 			if parsed, err := url.Parse(referer); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil {
 				origin = parsed.Scheme + "://" + parsed.Host

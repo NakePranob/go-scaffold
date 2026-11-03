@@ -26,7 +26,15 @@ func errInvalidCredentials() error {
 }
 
 func errInvalidPassword() error {
-	return domain.Rule("AUTH_INVALID_PASSWORD", "password must be between 8 and 72 bytes", domain.ErrInvalidPassword)
+	return domain.Rule("AUTH_INVALID_PASSWORD", "password must be between 8 and 256 bytes", domain.ErrInvalidPassword)
+}
+
+func errReauthRequired() error {
+	return domain.Rule("AUTH_REAUTH_REQUIRED", "recent authentication is required", domain.ErrReauthRequired)
+}
+
+func errLocalIdentityRequired() error {
+	return domain.Rule("AUTH_LOCAL_IDENTITY_REQUIRED", "a local password identity is required", domain.ErrLocalIdentityRequired)
 }
 
 func errInvalidToken() error {

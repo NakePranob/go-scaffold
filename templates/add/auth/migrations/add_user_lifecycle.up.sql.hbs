@@ -1,0 +1,7 @@
+-- Account lifecycle is intentionally soft-state. Hard deletion and retention
+-- belong to the generated application's domain because auth cannot know which
+-- user-owned business records must be retained or anonymized.
+ALTER TABLE user_svc.users
+    ADD COLUMN disabled_at TIMESTAMPTZ;
+
+CREATE INDEX idx_users_disabled_at ON user_svc.users (disabled_at);

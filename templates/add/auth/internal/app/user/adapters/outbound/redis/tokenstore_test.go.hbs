@@ -80,9 +80,11 @@ func TestRedisTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	current := testRefreshTokenRecord(userID)
 	current.SessionID = currentID
 	current.UserAgent = "current-device"
+	current.IPAddress = "203.0.113.10"
 	remote := testRefreshTokenRecord(userID)
 	remote.SessionID = remoteID
 	remote.UserAgent = "remote-device"
+	remote.IPAddress = "203.0.113.11"
 	currentHash := "real-redis-session-current-" + uuid.NewString()
 	remoteHash := "real-redis-session-remote-" + uuid.NewString()
 	if err := store.SetRefreshToken(ctx, currentHash, current); err != nil {
@@ -97,12 +99,82 @@ func TestRedisTokenStore_ListAndRevokeRefreshSessions(t *testing.T) {
 	if err != nil || len(sessions) != 2 {
 		t.Fatalf("list sessions = %+v, err=%v", sessions, err)
 	}
+	for _, session := range sessions {
+		if session.ID == currentID && session.IPAddress != current.IPAddress {
+			t.Fatalf("current session IP = %q, want %q", session.IPAddress, current.IPAddress)
+		}
+	}
+	active, err := store.IsSessionActive(ctx, userID, currentID)
+	if err != nil || !active {
+		t.Fatalf("current session should be active: active=%t err=%v", active, err)
+	}
+	active, err = store.IsSessionActive(ctx, userID, remoteID)
+	if err != nil || !active {
+		t.Fatalf("remote session should be active: active=%t err=%v", active, err)
+	}
 	if err := store.RevokeRefreshSession(ctx, userID, remoteID); err != nil {
 		t.Fatalf("revoke session: %v", err)
 	}
 	sessions, err = store.ListRefreshSessions(ctx, userID)
 	if err != nil || len(sessions) != 1 || sessions[0].ID != currentID {
 		t.Fatalf("sessions after revoke = %+v, err=%v", sessions, err)
+	}
+	active, err = store.IsSessionActive(ctx, userID, remoteID)
+	if err != nil || active {
+		t.Fatalf("revoked remote session should be inactive: active=%t err=%v", active, err)
+	}
+	active, err = store.IsSessionActive(ctx, userID, currentID)
+	if err != nil || !active {
+		t.Fatalf("current session should remain active: active=%t err=%v", active, err)
+	}
+}
+
+func TestRedisTokenStore_SetRefreshTokenWithLimitEvictsOldestAtomically(t *testing.T) {
+	client := redisClientForTest(t)
+	store := NewRedisTokenStore(client, nil)
+	ctx := context.Background()
+	userID := uuid.New()
+	oldestID := uuid.New()
+	newerID := uuid.New()
+	newID := uuid.New()
+	now := time.Now()
+	oldest := testRefreshTokenRecord(userID)
+	oldest.SessionID = oldestID
+	oldest.CreatedAt = now.Add(-2 * time.Hour)
+	oldest.LastUsedAt = oldest.CreatedAt
+	newer := testRefreshTokenRecord(userID)
+	newer.SessionID = newerID
+	newer.CreatedAt = now.Add(-time.Hour)
+	newer.LastUsedAt = newer.CreatedAt
+	newSession := testRefreshTokenRecord(userID)
+	newSession.SessionID = newID
+	newSession.CreatedAt = now
+	newSession.LastUsedAt = now
+	hashes := []string{
+		"real-redis-session-limit-oldest-" + uuid.NewString(),
+		"real-redis-session-limit-newer-" + uuid.NewString(),
+		"real-redis-session-limit-new-" + uuid.NewString(),
+	}
+	if err := store.SetRefreshToken(ctx, hashes[0], oldest); err != nil {
+		t.Fatalf("seed oldest session: %v", err)
+	}
+	if err := store.SetRefreshToken(ctx, hashes[1], newer); err != nil {
+		t.Fatalf("seed newer session: %v", err)
+	}
+	t.Cleanup(func() { _ = store.RevokeAllRefreshTokens(ctx, userID) })
+
+	if err := store.SetRefreshTokenWithLimit(ctx, hashes[2], newSession, 2); err != nil {
+		t.Fatalf("insert limited session: %v", err)
+	}
+	active, err := store.IsSessionActive(ctx, userID, oldestID)
+	if err != nil || active {
+		t.Fatalf("oldest session should be evicted: active=%t err=%v", active, err)
+	}
+	for _, sessionID := range []uuid.UUID{newerID, newID} {
+		active, err := store.IsSessionActive(ctx, userID, sessionID)
+		if err != nil || !active {
+			t.Fatalf("session %s should remain active: active=%t err=%v", sessionID, active, err)
+		}
 	}
 }
 

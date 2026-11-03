@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // LoginProvider is the outbound port for an external authorization-code
@@ -46,6 +47,12 @@ type ExternalIdentity struct {
 	EmailVerified bool
 	Name          string
 	AvatarURL     string
+	// Authentication context comes from the verified OIDC ID token. It is
+	// intentionally kept in the application contract so a product can make a
+	// step-up decision without parsing provider-specific JWT claims.
+	AuthTime time.Time
+	ACR      string
+	AMR      []string
 }
 
 // ProviderRegistry is an immutable-by-convention lookup boundary. It is

@@ -1,35 +1,110 @@
 package password
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
 	userports "{{goModule}}/internal/app/user/ports"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// BCryptHasher is the production password adapter. Keeping bcrypt here means
-// register, login, reset, and seed all share one algorithm boundary.
-type BCryptHasher struct {
-	cost int
+const (
+	argonMemory      = 19 * 1024
+	argonIterations  = 2
+	argonParallelism = 1
+	argonSaltBytes   = 16
+	argonKeyBytes    = 32
+)
+
+// Argon2idHasher is the production password adapter. Compare retains bcrypt
+// compatibility so existing generated applications can migrate hashes after a
+// successful login, while every newly stored password uses Argon2id.
+type Argon2idHasher struct{}
+
+func NewArgon2idHasher() *Argon2idHasher {
+	return &Argon2idHasher{}
 }
 
-func NewBCryptHasher() *BCryptHasher {
-	return &BCryptHasher{cost: bcrypt.DefaultCost}
-}
-
-func (h *BCryptHasher) Hash(password string) (string, error) {
-	cost := h.cost
-	if cost <= 0 {
-		cost = bcrypt.DefaultCost
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), cost)
-	if err != nil {
+func (*Argon2idHasher) Hash(password string) (string, error) {
+	salt := make([]byte, argonSaltBytes)
+	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	return string(hash), nil
+	key := argon2.IDKey([]byte(password), salt, argonIterations, argonMemory, argonParallelism, argonKeyBytes)
+	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
+		argonMemory,
+		argonIterations,
+		argonParallelism,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(key),
+	), nil
 }
 
-func (*BCryptHasher) Compare(hash, password string) error {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+func (*Argon2idHasher) Compare(hash, password string) error {
+	if strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$") || strings.HasPrefix(hash, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	}
+
+	memory, iterations, parallelism, salt, expected, err := parseArgonHash(hash)
+	if err != nil {
+		return err
+	}
+	actual := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expected)))
+	if subtle.ConstantTimeCompare(actual, expected) != 1 {
+		return errors.New("password does not match")
+	}
+	return nil
 }
 
-var _ userports.PasswordHasher = (*BCryptHasher)(nil)
+func (*Argon2idHasher) NeedsRehash(hash string) bool {
+	if !strings.HasPrefix(hash, "$argon2id$") {
+		return true
+	}
+	memory, iterations, parallelism, salt, expected, err := parseArgonHash(hash)
+	return err != nil ||
+		memory != argonMemory ||
+		iterations != argonIterations ||
+		parallelism != argonParallelism ||
+		len(salt) != argonSaltBytes ||
+		len(expected) != argonKeyBytes
+}
+
+func parseArgonHash(raw string) (uint32, uint32, uint8, []byte, []byte, error) {
+	parts := strings.Split(raw, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" {
+		return 0, 0, 0, nil, nil, errors.New("invalid password hash")
+	}
+	params := map[string]uint64{}
+	for _, item := range strings.Split(parts[3], ",") {
+		pair := strings.SplitN(item, "=", 2)
+		if len(pair) != 2 {
+			return 0, 0, 0, nil, nil, errors.New("invalid password hash parameters")
+		}
+		value, err := strconv.ParseUint(pair[1], 10, 32)
+		if err != nil {
+			return 0, 0, 0, nil, nil, errors.New("invalid password hash parameters")
+		}
+		params[pair[0]] = value
+	}
+	if params["m"] == 0 || params["t"] == 0 || params["p"] == 0 || params["p"] > 255 {
+		return 0, 0, 0, nil, nil, errors.New("invalid password hash parameters")
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil || len(salt) < 8 {
+		return 0, 0, 0, nil, nil, errors.New("invalid password hash salt")
+	}
+	expected, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil || len(expected) == 0 {
+		return 0, 0, 0, nil, nil, errors.New("invalid password hash value")
+	}
+	return uint32(params["m"]), uint32(params["t"]), uint8(params["p"]), salt, expected, nil
+}
+
+var _ userports.PasswordHasher = (*Argon2idHasher)(nil)

@@ -8,11 +8,7 @@ post:
       application/json:
         schema: { $ref: './schemas.yaml#/{{pascalName}}CreateInput' }
   responses:
-    "201":
-      description: created
-      content:
-        application/json:
-          schema: { $ref: './schemas.yaml#/{{pascalName}}Response' }
+    "501": { description: not implemented until the create use case is filled in }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
 get:
   summary: List {{plural}}

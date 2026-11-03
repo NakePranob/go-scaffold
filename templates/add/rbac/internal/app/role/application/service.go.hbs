@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"{{goModule}}/internal/app/role/domain"
 	"{{goModule}}/internal/app/role/ports"
@@ -39,6 +40,14 @@ func (s *Service) PermissionsOf(ctx context.Context, roleCode string) (map[strin
 		set[code] = struct{}{}
 	}
 	return set, nil
+}
+
+// PermissionVersion is the durable cache validator used by every API
+// replica. The role row is updated in the same transaction as its grants, so
+// a version change cannot be observed without the corresponding permission
+// replacement being committed.
+func (s *Service) PermissionVersion(ctx context.Context, roleCode string) (time.Time, error) {
+	return s.repo.PermissionVersion(ctx, roleCode)
 }
 
 func (s *Service) CodeExists(ctx context.Context, code string) (bool, error) {

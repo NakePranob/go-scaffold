@@ -37,6 +37,7 @@ type fakeTokenStore struct {
 	reset        map[string]uuid.UUID
 	verify       map[string]uuid.UUID
 	revokeAllErr error
+	getRefreshErr error
 }
 
 func newFakeTokenStore() *fakeTokenStore {
@@ -53,16 +54,55 @@ func newFakeTokenStore() *fakeTokenStore {
 func (f *fakeTokenStore) SetRefreshToken(_ context.Context, hash string, token RefreshTokenRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.setRefreshTokenLocked(hash, token)
+	return nil
+}
+
+func (f *fakeTokenStore) setRefreshTokenLocked(hash string, token RefreshTokenRecord) {
 	f.active[hash] = token
 	if f.sessions[token.UserID] == nil {
 		f.sessions[token.UserID] = map[string]struct{}{}
 	}
 	f.sessions[token.UserID][hash] = struct{}{}
+}
+
+func (f *fakeTokenStore) SetRefreshTokenWithLimit(_ context.Context, hash string, token RefreshTokenRecord, maxSessions int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if maxSessions <= 0 {
+		f.setRefreshTokenLocked(hash, token)
+		return nil
+	}
+	for {
+		count := 0
+		victimHash := ""
+		var victim RefreshTokenRecord
+		for candidateHash, candidate := range f.active {
+			if candidate.UserID != token.UserID || !candidate.ExpiresAt.After(time.Now()) {
+				continue
+			}
+			count++
+			if victimHash == "" || candidate.LastUsedAt.Before(victim.LastUsedAt) ||
+				(candidate.LastUsedAt.Equal(victim.LastUsedAt) && candidate.CreatedAt.Before(victim.CreatedAt)) {
+				victimHash = candidateHash
+				victim = candidate
+			}
+		}
+		if count < maxSessions {
+			break
+		}
+		delete(f.active, victimHash)
+		delete(f.sessions[token.UserID], victimHash)
+	}
+	f.setRefreshTokenLocked(hash, token)
 	return nil
 }
 func (f *fakeTokenStore) GetRefreshToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getRefreshErr != nil {
+		return uuid.Nil, false, f.getRefreshErr
+	}
 	token, ok := f.active[hash]
 	if !ok || !token.ExpiresAt.After(time.Now()) {
 		return uuid.Nil, false, nil
@@ -92,16 +132,17 @@ func (f *fakeTokenStore) DeleteRefreshToken(_ context.Context, hash string, user
 }
 func (f *fakeTokenStore) RevokeAllRefreshTokens(_ context.Context, userID uuid.UUID) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.revokeAllErr != nil {
 		err := f.revokeAllErr
 		f.revokeAllErr = nil
+		f.mu.Unlock()
 		return err
 	}
 	for h := range f.sessions[userID] {
 		delete(f.active, h)
 	}
 	delete(f.sessions, userID)
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeTokenStore) ListRefreshSessions(_ context.Context, userID uuid.UUID) ([]RefreshSession, error) {
@@ -119,6 +160,17 @@ func (f *fakeTokenStore) ListRefreshSessions(_ context.Context, userID uuid.UUID
 	}
 	return out, nil
 }
+func (f *fakeTokenStore) IsSessionActive(_ context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, token := range f.active {
+		if token.UserID == userID && token.SessionID == sessionID && token.ExpiresAt.After(time.Now()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeTokenStore) RevokeRefreshSession(_ context.Context, userID, sessionID uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -222,6 +274,17 @@ func (f *fakeTokenStore) SetPasswordResetToken(_ context.Context, hash string, u
 	f.reset[hash] = userID
 	return nil
 }
+func (f *fakeTokenStore) ReplacePasswordResetToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for existingHash, existingUserID := range f.reset {
+		if existingUserID == userID {
+			delete(f.reset, existingHash)
+		}
+	}
+	f.reset[hash] = userID
+	return nil
+}
 func (f *fakeTokenStore) ConsumePasswordResetToken(_ context.Context, hash string) (uuid.UUID, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -230,6 +293,16 @@ func (f *fakeTokenStore) ConsumePasswordResetToken(_ context.Context, hash strin
 		delete(f.reset, hash)
 	}
 	return id, ok, nil
+}
+func (f *fakeTokenStore) RevokePasswordResetTokens(_ context.Context, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for hash, id := range f.reset {
+		if id == userID {
+			delete(f.reset, hash)
+		}
+	}
+	return nil
 }
 func (f *fakeTokenStore) SetEmailVerifyToken(_ context.Context, hash string, userID uuid.UUID, _ time.Duration) error {
 	f.mu.Lock()
@@ -301,11 +374,45 @@ func (f *fakeMFAStore) Disable(_ context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+func (f *fakeMFAStore) HasRecoveryCode(_ context.Context, userID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.recovery[userID][hash]
+	return ok, nil
+}
+
+func (f *fakeMFAStore) RecoverEnrollment(_ context.Context, userID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	codes := f.recovery[userID]
+	if _, ok := codes[hash]; !ok {
+		return false, nil
+	}
+	delete(f.enrollments, userID)
+	delete(f.recovery, userID)
+	for challengeHash, challenge := range f.challenges {
+		if challenge.UserID == userID {
+			delete(f.challenges, challengeHash)
+		}
+	}
+	return true, nil
+}
+
 func (f *fakeMFAStore) CreateChallenge(_ context.Context, hash string, challenge MFAChallenge) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.challenges[hash] = challenge
 	return nil
+}
+
+func (f *fakeMFAStore) GetChallenge(_ context.Context, hash string) (MFAChallenge, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	challenge, ok := f.challenges[hash]
+	if !ok || !challenge.ExpiresAt.After(time.Now()) {
+		return MFAChallenge{}, false, nil
+	}
+	return challenge, true, nil
 }
 
 func (f *fakeMFAStore) ConsumeChallenge(_ context.Context, hash string) (MFAChallenge, bool, error) {
@@ -335,6 +442,7 @@ func (f *fakeMFAStore) ConsumeRecoveryCode(_ context.Context, userID uuid.UUID, 
 // token), the rest just satisfy the interface.
 type fakeRepo struct {
 	user              *domain.User
+	emailUser         *domain.User
 	identity          *domain.Identity
 	identities        []domain.Identity
 	updateIdentityErr error
@@ -342,6 +450,8 @@ type fakeRepo struct {
 	failures          map[string]int
 	lastAttempt       map[string]string
 	lockedUntil       map[string]time.Time
+	loginLockedUntilErr error
+	recordLoginFailureErr error
 	// go-scaffold:repository-stub-fields
 }
 
@@ -350,6 +460,9 @@ type fakeRepo struct {
 // and a time — because what the tests care about is when Service decides to
 // stop asking bcrypt anything.
 func (f *fakeRepo) LoginLockedUntil(_ context.Context, key string) (time.Time, error) {
+	if f.loginLockedUntilErr != nil {
+		return time.Time{}, f.loginLockedUntilErr
+	}
 	return f.lockedUntil[key], nil
 }
 
@@ -360,11 +473,17 @@ func (f *fakeRepo) LoginLockedUntil(_ context.Context, key string) (time.Time, e
 {{/if}}
 {{#if fixedLockout}}func (f *fakeRepo) RecordLoginFailure(_ context.Context, key, attempt string, maxAttempts int, lockFor, _ time.Duration) error {
 {{else}}func (f *fakeRepo) RecordLoginFailure(_ context.Context, key, attempt string, freeAttempts int, maxLock time.Duration) error {
-{{/if}}	if f.lockedUntil == nil {
+{{/if}}	if f.recordLoginFailureErr != nil {
+		return f.recordLoginFailureErr
+	}
+	if f.lockedUntil == nil {
 		f.lockedUntil = map[string]time.Time{}
 	}
 	if f.lastAttempt == nil {
 		f.lastAttempt = map[string]string{}
+	}
+	if f.failures == nil {
+		f.failures = map[string]int{}
 	}
 	// same rule as the SQL: a repeat of the fingerprint already on the row
 	// changes nothing, and "" is never a repeat
@@ -395,7 +514,11 @@ func (f *fakeRepo) ClearLoginFailures(_ context.Context, key string) error {
 	return nil
 }
 
-func (f *fakeRepo) FindByEmail(context.Context, string) (*domain.User, error) {
+
+func (f *fakeRepo) FindByEmail(_ context.Context, email string) (*domain.User, error) {
+	if f.emailUser != nil && f.emailUser.Email == email {
+		return f.emailUser, nil
+	}
 	return nil, domain.ErrNotFound
 }
 func (f *fakeRepo) FindByID(_ context.Context, id uuid.UUID) (*domain.User, error) {
@@ -409,6 +532,13 @@ func (f *fakeRepo) UpdateUser(_ context.Context, u *domain.User) error {
 		return f.updateUserErr
 	}
 	f.user = u
+	return nil
+}
+func (f *fakeRepo) SetDisabled(_ context.Context, id uuid.UUID, disabledAt *time.Time) error {
+	if f.user == nil || f.user.ID != id {
+		return domain.ErrNotFound
+	}
+	f.user.DisabledAt = disabledAt
 	return nil
 }
 func (f *fakeRepo) FindAll(context.Context, ports.ListFilter) ([]domain.User, int64, error) {
@@ -556,6 +686,45 @@ func newTestService(repo repository, tokens testTokenStore) *Service {
 	})
 }
 
+func TestService_SetRoleRevokesSessionsBeforeChangingRole(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	if err := seedRefreshToken(ctx, tokens, "role-refresh", userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "admin@example.com", Role: "admin"}}
+	svc := newTestService(repo, tokens)
+
+	if _, err := svc.SetRole(ctx, userID, "staff"); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	if repo.user.Role != "staff" {
+		t.Fatalf("role = %q, want staff", repo.user.Role)
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, uuid.Nil); err != nil {
+		t.Fatalf("check session: %v", err)
+	} else if active {
+		t.Fatal("role change left the old refresh session active")
+	}
+}
+
+func TestService_SetRoleDoesNotChangeRoleWhenSessionRevocationFails(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	tokens.revokeAllErr = errors.New("session store unavailable")
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "admin@example.com", Role: "admin"}}
+	svc := newTestService(repo, tokens)
+
+	if _, err := svc.SetRole(ctx, userID, "staff"); err == nil {
+		t.Fatal("expected role change to fail when sessions cannot be revoked")
+	}
+	if repo.user.Role != "admin" {
+		t.Fatalf("role = %q, want admin after failed revocation", repo.user.Role)
+	}
+}
+
 func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, userID uuid.UUID, ttl time.Duration) error {
 	now := time.Now()
 	return tokens.SetRefreshToken(ctx, hashToken(raw), RefreshTokenRecord{
@@ -563,6 +732,144 @@ func seedRefreshToken(ctx context.Context, tokens *fakeTokenStore, raw string, u
 		ExpiresAt:         now.Add(ttl),
 		AbsoluteExpiresAt: now.Add(24 * time.Hour),
 	})
+}
+
+func TestService_Register_UsesMFAEnrollmentGate(t *testing.T) {
+	svc := newTestService(&fakeRepo{}, newFakeTokenStore())
+	svc.config.MFA = MFASettings{
+		Enabled:           true,
+		RequireForLogin:   true,
+		EncryptionKey:     testMFAEncryptionKey,
+		ChallengeTTL:      5 * time.Minute,
+		TOTPWindow:        1,
+		RecoveryCodeCount: 10,
+	}
+
+	result, err := svc.Register(context.Background(), RegisterInput{
+		Email:    "new@example.com",
+		Password: "a sufficiently long unique password",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if result == nil || result.MFAEnrollmentToken == "" {
+		t.Fatalf("registration must require MFA enrollment before issuing an application session: %+v", result)
+	}
+	if result.AuthResponse != nil {
+		t.Fatal("registration must not issue access/refresh tokens before MFA enrollment")
+	}
+}
+
+func seedRefreshSession(ctx context.Context, tokens *fakeTokenStore, raw string, userID, sessionID uuid.UUID, createdAt, lastUsedAt time.Time) error {
+	return tokens.SetRefreshToken(ctx, hashToken(raw), RefreshTokenRecord{
+		UserID:            userID,
+		SessionID:         sessionID,
+		CreatedAt:         createdAt,
+		LastUsedAt:        lastUsedAt,
+		ExpiresAt:         createdAt.Add(24 * time.Hour),
+		AbsoluteExpiresAt: createdAt.Add(48 * time.Hour),
+	})
+}
+
+func TestService_NewLoginEvictsLeastRecentlyUsedSession(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	userID := uuid.New()
+	oldestSession := uuid.New()
+	newerSession := uuid.New()
+	tokens := newFakeTokenStore()
+	if err := seedRefreshSession(ctx, tokens, "oldest", userID, oldestSession, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("seed oldest session: %v", err)
+	}
+	if err := seedRefreshSession(ctx, tokens, "newer", userID, newerSession, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed newer session: %v", err)
+	}
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "a@example.com"}}, tokens)
+	svc.config.MaxSessions = 2
+	svc.now = func() time.Time { return now }
+
+	if _, err := svc.issueTokens(ctx, &domain.User{ID: userID, Email: "a@example.com"}, SessionContext{IsNew: true}); err != nil {
+		t.Fatalf("issue new login tokens: %v", err)
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, oldestSession); err != nil {
+		t.Fatalf("check oldest session: %v", err)
+	} else if active {
+		t.Fatal("expected the least recently used session to be evicted")
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, newerSession); err != nil {
+		t.Fatalf("check newer session: %v", err)
+	} else if !active {
+		t.Fatal("expected the newer session to remain active")
+	}
+	items, err := tokens.ListRefreshSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("active session count = %d, want 2", len(items))
+	}
+}
+
+func TestService_DisableAccountRevokesSessionsBeforeMarkingDisabled(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	sessionID := uuid.New()
+	now := time.Now().UTC()
+	tokens := newFakeTokenStore()
+	if err := seedRefreshSession(ctx, tokens, "disable-me", userID, sessionID, now.Add(-time.Hour), now.Add(-time.Minute)); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	repo := &fakeRepo{user: &domain.User{ID: userID, Email: "disable@example.com"}}
+	svc := newTestService(repo, tokens)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.DisableAccount(ctx, userID); err != nil {
+		t.Fatalf("disable account: %v", err)
+	}
+	if repo.user.DisabledAt == nil || !repo.user.DisabledAt.Equal(now) {
+		t.Fatalf("disabled_at = %v, want %s", repo.user.DisabledAt, now)
+	}
+	if active, err := tokens.IsSessionActive(ctx, userID, sessionID); err != nil {
+		t.Fatalf("check revoked session: %v", err)
+	} else if active {
+		t.Fatal("disabling an account left its refresh session active")
+	}
+	if _, err := svc.issueTokens(ctx, repo.user, SessionContext{IsNew: true}); code(err) != "AUTH_INVALID_TOKEN" {
+		t.Fatalf("disabled account received new tokens: %v", err)
+	}
+}
+
+func TestService_ListSessionsKeepsCurrentSessionWhenCapped(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	userID := uuid.New()
+	currentSession := uuid.New()
+	tokens := newFakeTokenStore()
+	for i, sessionID := range []uuid.UUID{currentSession, uuid.New(), uuid.New()} {
+		lastUsedAt := now.Add(-time.Duration(3-i) * time.Hour)
+		if err := seedRefreshSession(ctx, tokens, fmt.Sprintf("session-%d", i), userID, sessionID, lastUsedAt, lastUsedAt); err != nil {
+			t.Fatalf("seed session %d: %v", i, err)
+		}
+	}
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "a@example.com"}}, tokens)
+	svc.config.MaxSessions = 2
+
+	items, err := svc.ListSessions(ctx, userID, currentSession)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("session count = %d, want 2", len(items))
+	}
+	foundCurrent := false
+	for _, item := range items {
+		if item.ID == currentSession {
+			foundCurrent = item.Current
+		}
+	}
+	if !foundCurrent {
+		t.Fatal("expected the current session to remain visible when the list is capped")
+	}
 }
 
 func status(t *testing.T, err error) int {
@@ -779,6 +1086,46 @@ func TestService_LogoutAll_RevokesEverySessionButLeavesOthersAlone(t *testing.T)
 	}
 }
 
+func TestService_Logout_StoreReadFailureIsReturned(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	tokens := newFakeTokenStore()
+	raw := "logout-token"
+	if err := seedRefreshToken(ctx, tokens, raw, userID, time.Hour); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tokens.getRefreshErr = errors.New("session store unavailable")
+	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID}}, tokens)
+
+	if err := svc.Logout(ctx, raw); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("expected a 500 while the session store is unavailable, got %v", err)
+	}
+	tokens.getRefreshErr = nil
+	if _, ok, _ := tokens.GetRefreshToken(ctx, hashToken(raw)); !ok {
+		t.Fatal("logout store failure must not remove the session or report success")
+	}
+}
+
+func TestService_ChangePassword_RevocationFailureLeavesPasswordUnchanged(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	oldHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &domain.User{ID: userID},
+		identity: &domain.Identity{ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &oldHash},
+	}
+	tokens := newFakeTokenStore()
+	tokens.revokeAllErr = errors.New("session store unavailable")
+	svc := newTestService(repo, tokens)
+
+	if err := svc.ChangePassword(ctx, userID, "new-password"); status(t, err) != http.StatusInternalServerError {
+		t.Fatalf("expected a 500 while revocation is unavailable, got %v", err)
+	}
+	if repo.identity == nil || repo.identity.PasswordHash == nil || *repo.identity.PasswordHash != oldHash {
+		t.Fatalf("password changed even though session revocation failed: %+v", repo.identity)
+	}
+}
+
 func TestService_ResetPassword_DBFailureAllowsRetry(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
@@ -804,7 +1151,43 @@ func TestService_ResetPassword_DBFailureAllowsRetry(t *testing.T) {
 	}
 }
 
-func TestService_ResetPassword_SessionRevokeFailureRestoresTokenForRetry(t *testing.T) {
+func TestService_ForgotPassword_ReplacesOlderToken(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	user := &domain.User{ID: userID, Email: "reset@example.com"}
+	passwordHash := "old-hash"
+	repo := &fakeRepo{
+		user:      user,
+		emailUser: user,
+		identity:  &domain.Identity{ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &passwordHash},
+		failures:  map[string]int{},
+	}
+	tokens := newFakeTokenStore()
+	svc := newTestService(repo, tokens)
+
+	if err := svc.ForgotPassword(ctx, user.Email); err != nil {
+		t.Fatalf("first forgot-password request: %v", err)
+	}
+	if len(tokens.reset) != 1 {
+		t.Fatalf("first request stored %d reset tokens, want 1", len(tokens.reset))
+	}
+	var firstHash string
+	for hash := range tokens.reset {
+		firstHash = hash
+	}
+
+	if err := svc.ForgotPassword(ctx, user.Email); err != nil {
+		t.Fatalf("second forgot-password request: %v", err)
+	}
+	if len(tokens.reset) != 1 {
+		t.Fatalf("second request stored %d reset tokens, want exactly 1", len(tokens.reset))
+	}
+	if _, ok := tokens.reset[firstHash]; ok {
+		t.Fatal("the older password-reset token remained usable after a newer request")
+	}
+}
+
+func TestService_ResetPassword_SessionRevokeFailureRollsBackForRetry(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 	passwordHash := "old-hash"
@@ -824,7 +1207,7 @@ func TestService_ResetPassword_SessionRevokeFailureRestoresTokenForRetry(t *test
 		t.Fatalf("expected a 500 while the session store is unavailable, got %v", err)
 	}
 	if _, ok := tokens.reset[hashToken(raw)]; !ok {
-		t.Fatal("expected the reset token to be restored so the caller can retry")
+		t.Fatal("the reset transaction must leave the one-time token available for retry")
 	}
 	if err := svc.ResetPassword(ctx, raw, "new-password"); err != nil {
 		t.Fatalf("retry should complete the password reset and session revoke: %v", err)
@@ -876,6 +1259,32 @@ func TestService_ResetPassword_DuplicateTokenIsRejected(t *testing.T) {
 	}
 	if err := svc.ResetPassword(ctx, raw, "another-password"); code(err) != "AUTH_INVALID_TOKEN" {
 		t.Fatalf("second use should be rejected as invalid, got %v", err)
+	}
+}
+
+func TestService_ResetPassword_RevokesOtherOutstandingTokens(t *testing.T) {
+	ctx := context.Background()
+	userID := uuid.New()
+	passwordHash := "old-hash"
+	repo := &fakeRepo{
+		user:     &domain.User{ID: userID},
+		identity: &domain.Identity{ID: uuid.New(), UserID: userID, Provider: domain.ProviderLocal, PasswordHash: &passwordHash},
+	}
+	tokens := newFakeTokenStore()
+	first, second := "first-reset-token", "second-reset-token"
+	if err := tokens.SetPasswordResetToken(ctx, hashToken(first), userID, time.Hour); err != nil {
+		t.Fatalf("seed first: %v", err)
+	}
+	if err := tokens.SetPasswordResetToken(ctx, hashToken(second), userID, time.Hour); err != nil {
+		t.Fatalf("seed second: %v", err)
+	}
+	svc := newTestService(repo, tokens)
+
+	if err := svc.ResetPassword(ctx, first, "new-password"); err != nil {
+		t.Fatalf("first reset: %v", err)
+	}
+	if err := svc.ResetPassword(ctx, second, "another-password"); code(err) != "AUTH_INVALID_TOKEN" {
+		t.Fatalf("an older outstanding reset token should be invalidated, got %v", err)
 	}
 }
 
@@ -1031,6 +1440,24 @@ func TestService_Login_CountsOneWrongPasswordOnce(t *testing.T) {
 	}
 	if _, err := svc.Login(context.Background(), saved); code(err) != "AUTH_TOO_MANY_ATTEMPTS" {
 		t.Fatalf("expected the lock once real guesses arrived, got %s", code(err))
+	}
+}
+
+func TestService_Login_ThrottleReadFailureFailsClosed(t *testing.T) {
+	repo := &fakeRepo{loginLockedUntilErr: errors.New("database unavailable")}
+	svc := newTestService(repo, newFakeTokenStore())
+
+	if _, err := svc.Login(context.Background(), LoginInput{Email: "a@example.com", Password: "guess"}); code(err) != "AUTH_TOO_MANY_ATTEMPTS" {
+		t.Fatalf("throttle read failure must fail closed, got %s", code(err))
+	}
+}
+
+func TestService_Login_FailureCounterWriteFailureFailsClosed(t *testing.T) {
+	repo := &fakeRepo{recordLoginFailureErr: errors.New("database unavailable")}
+	svc := newTestService(repo, newFakeTokenStore())
+
+	if _, err := svc.Login(context.Background(), LoginInput{Email: "a@example.com", Password: "guess"}); code(err) != "AUTH_TOO_MANY_ATTEMPTS" {
+		t.Fatalf("failure counter write failure must fail closed, got %s", code(err))
 	}
 }
 

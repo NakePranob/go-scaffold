@@ -16,15 +16,16 @@ import {
 
 const CONFIG_FILE = "go-scaffold.config.json";
 export const CONFIG_SCHEMA_VERSION = 2;
+const MODULE_SURFACES: readonly ModuleSurface[] = ["minimal", "crud", "none"];
 
 export function configPath(projectDir: string): string {
   return path.join(projectDir, CONFIG_FILE);
 }
 
-export function parseModuleSurface(value: string | undefined): ModuleSurface | undefined {
+export function parseModuleSurface(value: string | undefined, flag = "--module-surface"): ModuleSurface | undefined {
   if (value === undefined) return undefined;
   const normalized = value.trim().toLowerCase();
-  assertOneOf(normalized, "--module-surface", ["minimal", "crud"]);
+  assertOneOf(normalized, flag, MODULE_SURFACES);
   return normalized as ModuleSurface;
 }
 
@@ -57,6 +58,8 @@ export function writeConfig(projectDir: string, config: ProjectConfig): void {
 // CLI reported success over a project that no longer builds), while
 // `undo module user` read a missing `auth` key as "not auth's" and deleted the
 // whole auth domain. The tree always knew the answer; this stops the guessing.
+// Auth mail wiring is deliberately independent of the queue backend, so a
+// missing queue key cannot cause auth to construct an enqueuer either.
 //
 // The file still wins wherever it has a value — an explicit `false` is an
 // answer, not a hole.
@@ -119,10 +122,19 @@ function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string)
     goModule,
     apiPrefix,
     features: features as ProjectFeatures,
+    ...(raw.asvs !== undefined ? { asvs: normalizeAsvsProfile(raw.asvs, features.auth) } : {}),
     architecture,
     modules,
     ...(raw.scaffoldVersion ? { scaffoldVersion: raw.scaffoldVersion } : {}),
   };
+}
+
+function normalizeAsvsProfile(raw: unknown, auth: boolean | undefined): ProjectConfig["asvs"] {
+  if (!isRecord(raw) || raw.version !== "5.0.0" || ![1, 2, 3].includes(raw.level)) {
+    throw new Error(`${CONFIG_FILE}.asvs must contain version "5.0.0" and level 1, 2, or 3`);
+  }
+  if (!auth) throw new Error(`${CONFIG_FILE}.asvs requires features.auth=true`);
+  return { version: "5.0.0", level: raw.level as 1 | 2 | 3 };
 }
 
 function normalizeArchitecture(raw: unknown): ArchitectureConfig {
@@ -139,7 +151,7 @@ function normalizeArchitecture(raw: unknown): ArchitectureConfig {
   assertOneOf(architecture.style, "architecture.style", ["modular-monolith"]);
   assertOneOf(architecture.boundary, "architecture.boundary", ["hexagonal"]);
   assertOneOf(architecture.packageLayout, "architecture.packageLayout", ["split"]);
-  assertOneOf(architecture.defaultModuleSurface, "architecture.defaultModuleSurface", ["minimal", "crud"]);
+  assertOneOf(architecture.defaultModuleSurface, "architecture.defaultModuleSurface", MODULE_SURFACES);
   assertOneOf(architecture.defaultApplicationStyle, "architecture.defaultApplicationStyle", ["service", "cqrs"]);
 
   return {
@@ -164,7 +176,7 @@ function normalizeModules(raw: unknown): Record<string, ModuleConfig> {
 
     const boundary = entry.boundary ?? DEFAULT_ARCHITECTURE_CONFIG.boundary;
     const packageLayout = entry.packageLayout ?? DEFAULT_ARCHITECTURE_CONFIG.packageLayout;
-    assertOneOf(entry.surface, `modules.${name}.surface`, ["minimal", "crud"]);
+    assertOneOf(entry.surface, `modules.${name}.surface`, MODULE_SURFACES);
     assertOneOf(entry.applicationStyle, `modules.${name}.applicationStyle`, ["service", "cqrs"]);
     assertOneOf(boundary, `modules.${name}.boundary`, ["hexagonal"]);
     assertOneOf(packageLayout, `modules.${name}.packageLayout`, ["split"]);
@@ -189,6 +201,10 @@ function validateFeatures(features: Partial<ProjectFeatures>): void {
     throw new Error(`${CONFIG_FILE}.features.auth must be true or false`);
   }
   if (features.authStore !== undefined) assertOneOf(features.authStore, "features.authStore", ["postgres", "redis"]);
+  if (features.authBrowserTopology !== undefined) {
+    assertOneOf(features.authBrowserTopology, "features.authBrowserTopology", ["same-origin", "same-site", "cross-site"]);
+  }
+  if (features.authLockout !== undefined) assertOneOf(features.authLockout, "features.authLockout", ["progressive", "fixed"]);
   if (features.rbac !== undefined && typeof features.rbac !== "boolean") {
     throw new Error(`${CONFIG_FILE}.features.rbac must be true or false`);
   }

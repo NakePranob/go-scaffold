@@ -35,3 +35,10 @@ SetRoleInput:
   required: [role]
   properties:
     role: { type: string, description: "must be an existing role code" }
+
+SetAccountStatusInput:
+  type: object
+  required: [disabled]
+  additionalProperties: false
+  properties:
+    disabled: { type: boolean, description: "true soft-disables the account and revokes its active sessions" }

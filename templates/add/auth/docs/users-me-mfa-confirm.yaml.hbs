@@ -3,6 +3,11 @@ post:
   operationId: confirmMyMFA
   tags: [users]
   security: [{ bearerAuth: [] }]
+  parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
   requestBody:
     required: true
     content:
@@ -16,4 +21,5 @@ post:
           schema: { $ref: './schemas.yaml#/MFAConfirmResponse' }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "409": { $ref: '../common/responses.yaml#/ConflictError' }

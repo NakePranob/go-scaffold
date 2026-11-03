@@ -4,7 +4,9 @@ import (
 	"context"
 
 	"{{goModule}}/internal/app/{{modulePath}}/domain"
+{{#unless noDatabase}}
 	"{{goModule}}/internal/app/{{modulePath}}/ports"
+{{/unless}}
 )
 
 // ServicePort is the inbound application port used by the HTTP adapter.
@@ -13,6 +15,15 @@ type ServicePort interface {
 }
 
 // Service orchestrates {{pkg}} use cases and depends only on ports.
+{{#if noDatabase}}
+// Service has no repository: this module owns no table. Declare what it
+// needs as an interface in ports/ and take it here when it is earned.
+type Service struct{}
+
+func NewService() *Service {
+	return &Service{}
+}
+{{else}}
 type Service struct {
 	repo ports.Repository
 }
@@ -20,9 +31,14 @@ type Service struct {
 func NewService(repo ports.Repository) *Service {
 	return &Service{repo: repo}
 }
+{{/if}}
 
+{{#if noDatabase}}
+// Keep these imports visible until the first use case needs them.
+{{else}}
 // Keep these imports and the port visible in a lean module before its first
 // method is generated. Methods are added to this file by `generate method`.
+{{/if}}
 var _ context.Context
 var _ *domain.{{pascalName}}
 

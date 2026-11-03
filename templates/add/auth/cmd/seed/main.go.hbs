@@ -8,6 +8,12 @@ import (
 
 	"{{goModule}}/internal/app/user"
 	userpassword "{{goModule}}/internal/app/user/adapters/outbound/password"
+	{{#unless redis}}
+	userpostgres "{{goModule}}/internal/app/user/adapters/outbound/postgres"
+	{{/unless}}
+	{{#if redis}}
+	"{{goModule}}/internal/platform/cache"
+	{{/if}}
 	"{{goModule}}/internal/platform/database"
 	"{{goModule}}/internal/shared/config"
 	// go-scaffold:seed-imports
@@ -15,8 +21,9 @@ import (
 
 // cmd/seed is a one-off operational task, like `migrate` — not part of the
 // API server's runtime, so it's a separate binary rather than a flag on
-// cmd/api. tokens/mailer are nil: EnsureUser never touches them (no login
-// or email flow runs during seeding).
+// cmd/api. The token store is still composed because RBAC promotion revokes
+// existing sessions before changing the user's role; the mailer stays nil
+// because EnsureUser never sends email.
 func main() {
 	withFixtures := flag.Bool("fixtures", false, "also seed sample dev users — do not use against a real environment")
 	flag.Parse()
@@ -30,13 +37,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	{{#if redis}}
+	rdb, err := cache.Open(cfg)
+	if err != nil {
+		logger.Error("open redis", "error", err)
+		os.Exit(1)
+	}
+	defer rdb.Close()
+	tokens := user.NewRedisTokenStore(rdb, db)
+	{{else}}
+	tokens := userpostgres.NewPgTokenStore(db)
+	{{/if}}
+
 	// go-scaffold:seed-services
 	svc := user.NewService(user.Dependencies{
 		Repository: user.NewRepository(db),
-		Passwords:  userpassword.NewBCryptHasher(),
+		Passwords:  userpassword.NewArgon2idHasher(),
+		RefreshTokens:     tokens,
+		OAuthTransactions: tokens,
+		RecoveryTokens:    tokens,
 		// go-scaffold:seed-user-service-args
 	}, user.AuthConfig{
 		JWTSecret:        cfg.JWTSecret,
+		MetadataKey:      cfg.AuthMetadataKey,
+		JWTIssuer:        cfg.JWTIssuer,
+		JWTAudience:      cfg.JWTAudience,
 		JWTAccessTTL:     cfg.JWTAccessTTL,
 		JWTRefreshTTL:    cfg.JWTRefreshTTL,
 		JWTRefreshMaxTTL: cfg.JWTRefreshMaxTTL,
@@ -45,6 +70,7 @@ func main() {
 		PasswordResetURL: cfg.PasswordResetURL,
 		EmailVerifyTTL:   cfg.EmailVerifyTTL,
 		EmailVerifyURL:   cfg.EmailVerifyURL,
+		MaxSessions:      cfg.AuthMaxSessions,
 	})
 	ctx := context.Background()
 

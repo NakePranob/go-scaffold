@@ -15,7 +15,7 @@ import (
 // Refresh rotates a refresh token. A replayed, already-used token revokes
 // every session for that user; an intentionally logged-out token is rejected
 // without triggering reuse detection.
-func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*AuthResponse, error) {
+func (s *Service) Refresh(ctx context.Context, rawRefreshToken string, ipAddress ...string) (*AuthResponse, error) {
 	hash := hashToken(rawRefreshToken)
 	token, ok, err := s.refreshTokens.ConsumeRefreshToken(ctx, hash)
 	if err != nil {
@@ -38,20 +38,28 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*AuthRes
 	if err != nil {
 		return nil, errInvalidToken()
 	}
+	address := token.IPAddress
+	if len(ipAddress) > 0 {
+		address = ipAddress[0]
+	}
 	return s.issueTokens(ctx, u, SessionContext{
-		ID: token.SessionID, UserAgent: token.UserAgent, CreatedAt: token.CreatedAt,
+		ID: token.SessionID, UserAgent: token.UserAgent, IPAddress: address, CreatedAt: token.CreatedAt,
 	}, token.AbsoluteExpiresAt)
 }
 
 // Logout is intentional, not reuse: a missing or already-gone token still
-// succeeds and leaves no tombstone.
+// succeeds and leaves no tombstone. Store failures are returned so callers do
+// not report a revocation that the server could not confirm.
 func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
 	if rawRefreshToken == "" {
 		return nil
 	}
 	hash := hashToken(rawRefreshToken)
 	userID, ok, err := s.refreshTokens.GetRefreshToken(ctx, hash)
-	if err != nil || !ok {
+	if err != nil {
+		return fmt.Errorf("read refresh token for logout: %w", err)
+	}
+	if !ok {
 		return nil
 	}
 	return s.refreshTokens.DeleteRefreshToken(ctx, hash, userID)
@@ -67,17 +75,47 @@ func (s *Service) ListSessions(ctx context.Context, userID, currentSessionID uui
 	if err != nil {
 		return nil, fmt.Errorf("list refresh sessions: %w", err)
 	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].LastUsedAt.Equal(items[j].LastUsedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].LastUsedAt.After(items[j].LastUsedAt)
+	})
+	if s.config.MaxSessions > 0 && len(items) > s.config.MaxSessions {
+		current := -1
+		for i := range items {
+			if items[i].ID == currentSessionID {
+				current = i
+				break
+			}
+		}
+		if current >= s.config.MaxSessions {
+			currentItem := items[current]
+			items = items[:s.config.MaxSessions]
+			items[s.config.MaxSessions-1] = currentItem
+		} else {
+			items = items[:s.config.MaxSessions]
+		}
+	}
 	out := make([]Session, 0, len(items))
 	for _, item := range items {
+		metadata := describeSession(s.metadataKey(), item.UserAgent, item.IPAddress)
 		out = append(out, Session{
-			ID: item.ID, UserAgent: item.UserAgent, CreatedAt: item.CreatedAt,
-			LastUsedAt: item.LastUsedAt, ExpiresAt: item.ExpiresAt,
-			Current: item.ID == currentSessionID,
+			ID:             item.ID,
+			DeviceKey:      metadata.DeviceKey,
+			DeviceType:     metadata.DeviceType,
+			DeviceName:     metadata.DeviceName,
+			DeviceModel:    metadata.DeviceModel,
+			BrowserName:    metadata.BrowserName,
+			BrowserVersion: metadata.BrowserVersion,
+			OSName:         metadata.OSName,
+			OSVersion:      metadata.OSVersion,
+			CreatedAt:      item.CreatedAt,
+			LastUsedAt:     item.LastUsedAt,
+			ExpiresAt:      item.ExpiresAt,
+			Current:        item.ID == currentSessionID,
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].LastUsedAt.After(out[j].LastUsedAt)
-	})
 	return out, nil
 }
 
@@ -89,12 +127,16 @@ func (s *Service) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID
 }
 
 func (s *Service) issueTokens(ctx context.Context, u *domain.User, session SessionContext, absoluteExpiresAt ...time.Time) (*AuthResponse, error) {
+	if u == nil || u.IsDisabled() {
+		return nil, errInvalidToken()
+	}
 	clock := s.now
 	if clock == nil {
 		clock = time.Now
 	}
 	now := clock()
 	if session.ID == uuid.Nil {
+		session.IsNew = true
 		session.ID = uuid.New()
 	}
 	if session.CreatedAt.IsZero() {
@@ -103,6 +145,7 @@ func (s *Service) issueTokens(ctx context.Context, u *domain.User, session Sessi
 	if session.UserAgent = normalizeUserAgent(session.UserAgent); session.UserAgent == "" {
 		session.UserAgent = "unknown"
 	}
+	session.IPAddress = normalizeIPAddress(session.IPAddress)
 	access, err := s.issueAccessToken(
 		u.ID,
 		u.Role,
@@ -127,12 +170,20 @@ func (s *Service) issueTokens(ctx context.Context, u *domain.User, session Sessi
 	if !expiresAt.After(now) || !abs.After(now) {
 		return nil, fmt.Errorf("refresh token lifetime is exhausted")
 	}
-	if err := s.refreshTokens.SetRefreshToken(ctx, hashToken(refresh), RefreshTokenRecord{
+	record := RefreshTokenRecord{
 		UserID: u.ID, SessionID: session.ID, UserAgent: session.UserAgent,
+		IPAddress: session.IPAddress,
 		CreatedAt: session.CreatedAt, LastUsedAt: now, ExpiresAt: expiresAt,
 		AbsoluteExpiresAt: abs,
-	}); err != nil {
-		return nil, fmt.Errorf("store refresh token: %w", err)
+	}
+	var storeErr error
+	if session.IsNew && s.config.MaxSessions > 0 {
+		storeErr = s.refreshTokens.SetRefreshTokenWithLimit(ctx, hashToken(refresh), record, s.config.MaxSessions)
+	} else {
+		storeErr = s.refreshTokens.SetRefreshToken(ctx, hashToken(refresh), record)
+	}
+	if storeErr != nil {
+		return nil, fmt.Errorf("store refresh token: %w", storeErr)
 	}
 	return &AuthResponse{
 		AccessToken:  access,

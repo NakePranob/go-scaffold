@@ -21,21 +21,24 @@ import (
 type Handler struct {
 	svc       application.ServicePort
 	jwtSecret string
-	authz     *middleware.Authz
+	jwtIssuer string
+	jwtAudience string
+	authz             *middleware.Authz
+	sessionValidators []middleware.SessionValidator
 }
 
-func NewHandler(svc application.ServicePort, jwtSecret string, authz *middleware.Authz) *Handler {
-	return &Handler{svc: svc, jwtSecret: jwtSecret, authz: authz}
+func NewHandler(svc application.ServicePort, jwtSecret string, jwtIssuer string, jwtAudience string, authz *middleware.Authz, sessionValidators ...middleware.SessionValidator) *Handler {
+	return &Handler{svc: svc, jwtSecret: jwtSecret, jwtIssuer: jwtIssuer, jwtAudience: jwtAudience, authz: authz, sessionValidators: sessionValidators}
 }
 
 func (h *Handler) Register(rg gin.IRouter) {
-	roles := rg.Group("/roles", middleware.RequireAuth(h.jwtSecret), h.authz.Require(application.PermRoleManage))
+	roles := rg.Group("/roles", middleware.RequireAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience, h.sessionValidators...), h.authz.Require(application.PermRoleManage))
 	roles.GET("", h.list)
 	roles.POST("", h.create)
 	roles.PATCH("/:code/permissions", h.setPermissions)
 	roles.DELETE("/:code", h.delete)
 
-	perms := rg.Group("/permissions", middleware.RequireAuth(h.jwtSecret), h.authz.Require(application.PermRoleManage))
+	perms := rg.Group("/permissions", middleware.RequireAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience, h.sessionValidators...), h.authz.Require(application.PermRoleManage))
 	perms.GET("", h.listPermissions)
 }
 

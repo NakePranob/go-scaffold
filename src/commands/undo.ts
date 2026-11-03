@@ -124,6 +124,9 @@ export async function undoModule(
     schemaName: naming.schemaName,
     auth,
     permission,
+    authSessionValidatorLine: auth
+      ? "sessionValidator := user.NewSessionValidatorFromDB(db, cfg" + (config.features.authStore === "redis" ? ", rdb" : "") + ")"
+      : undefined,
   });
 
   unpatchGolangciForModule(path.join(projectDir, ".golangci.yml"), modulePath);
@@ -177,13 +180,16 @@ export async function undoModule(
       )
     );
   }
-  console.log(
-    pc.dim(
-      `\nnothing was dropped from any database — if you had already run these migrations locally,\n` +
-        `the ${naming.tableName} table is still there. \`make db-drop && make db-create && make migrate-up\` is the\n` +
-        `quickest way back to a clean dev database.`
-    )
-  );
+  // A module with no migration (a "none" surface) never had a table.
+  if (migrations.length) {
+    console.log(
+      pc.dim(
+        `\nnothing was dropped from any database — if you had already run these migrations locally,\n` +
+          `the ${naming.tableName} table is still there. \`make db-drop && make db-create && make migrate-up\` is the\n` +
+          `quickest way back to a clean dev database.`
+      )
+    );
+  }
 }
 
 // moduleMigrations lists every migration file this module caused: the create
