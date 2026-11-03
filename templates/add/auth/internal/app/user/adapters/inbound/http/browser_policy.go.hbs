@@ -28,8 +28,8 @@ func (h *Handler) requireBrowserOrigin(c *gin.Context) bool {
 			return true
 		}
 		if referer := strings.TrimSpace(c.GetHeader("Referer")); referer != "" {
-			if parsed, err := url.Parse(referer); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil {
-				origin = parsed.Scheme + "://" + parsed.Host
+				if parsed, err := url.Parse(referer); err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) && parsed.Host != "" && parsed.User == nil {
+					origin = strings.ToLower(parsed.Scheme) + "://" + parsed.Host
 			}
 		}
 	}
@@ -42,13 +42,13 @@ func (h *Handler) requireBrowserOrigin(c *gin.Context) bool {
 }
 
 func browserOriginAllowed(origin string, allowed []string) bool {
-	origin = strings.TrimSpace(origin)
-	if _, ok := canonicalBrowserOrigin(origin); !ok {
+	canonicalOrigin, ok := canonicalBrowserOrigin(origin)
+	if !ok {
 		return false
 	}
 	for _, candidate := range allowed {
-		candidate = strings.TrimSpace(candidate)
-		if _, candidateOK := canonicalBrowserOrigin(candidate); candidateOK && candidate == origin {
+		canonicalCandidate, candidateOK := canonicalBrowserOrigin(candidate)
+		if candidateOK && canonicalCandidate == canonicalOrigin {
 			return true
 		}
 	}
@@ -57,13 +57,26 @@ func browserOriginAllowed(origin string, allowed []string) bool {
 
 func canonicalBrowserOrigin(value string) (string, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || parsed.User != nil || parsed.Opaque != "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.User != nil || parsed.Opaque != "" || parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", false
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
 		return "", false
 	}
-	return parsed.Scheme + "://" + parsed.Host, true
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	authority := host
+	if port != "" {
+		authority += ":" + port
+	}
+	return scheme + "://" + authority, true
 }
 
 // ValidateBrowserCookiePolicy ties deployment topology to the attributes used

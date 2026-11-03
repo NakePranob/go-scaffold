@@ -1,0 +1,58 @@
+package middleware
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+func TestRedisLimiterCreatesExpiryWithCounter(t *testing.T) {
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("Redis limiter test skipped: set TEST_REDIS_URL to a reachable Redis database")
+	}
+	options, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Fatalf("parse TEST_REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(options)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	key := fmt.Sprintf("limiter-ttl-%d", time.Now().UnixNano())
+	redisKey := "ratelimit:" + key
+	t.Cleanup(func() { _ = client.Del(ctx, redisKey).Err() })
+
+	limiter := NewRedisLimiter(client)
+	allowed, err := limiter.Allow(ctx, key, 2, time.Minute)
+	if err != nil || !allowed {
+		t.Fatalf("first request: allowed=%t err=%v", allowed, err)
+	}
+	ttl, err := client.PTTL(ctx, redisKey).Result()
+	if err != nil {
+		t.Fatalf("read limiter TTL: %v", err)
+	}
+	if ttl <= 0 || ttl > time.Minute {
+		t.Fatalf("limiter counter must carry a bounded TTL, got %s", ttl)
+	}
+
+	// A key left without TTL by an older limiter implementation must heal on
+	// its next request instead of becoming a permanent lockout.
+	if err := client.Set(ctx, redisKey, "1", 0).Err(); err != nil {
+		t.Fatalf("seed legacy limiter key: %v", err)
+	}
+	if allowed, err := limiter.Allow(ctx, key, 2, time.Minute); err != nil || !allowed {
+		t.Fatalf("legacy key request: allowed=%t err=%v", allowed, err)
+	}
+	ttl, err = client.PTTL(ctx, redisKey).Result()
+	if err != nil {
+		t.Fatalf("read healed limiter TTL: %v", err)
+	}
+	if ttl <= 0 || ttl > time.Minute {
+		t.Fatalf("legacy limiter counter was not given a bounded TTL, got %s", ttl)
+	}
+}

@@ -45,7 +45,11 @@ func (s *PostgresMFAStore) GetEnrollment(ctx context.Context, userID uuid.UUID) 
 	if err != nil {
 		return ports.MFAEnrollment{}, false, err
 	}
-	return ports.MFAEnrollment{EncryptedSecret: row.EncryptedSecret, Enabled: row.Enabled}, true, nil
+	return ports.MFAEnrollment{
+		EncryptedSecret: row.EncryptedSecret,
+		Enabled:         row.Enabled,
+		LastTOTPStep:    row.LastTOTPStep,
+	}, true, nil
 }
 
 func (s *PostgresMFAStore) PutPendingEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string) error {
@@ -55,12 +59,12 @@ func (s *PostgresMFAStore) PutPendingEnrollment(ctx context.Context, userID uuid
 	row := MFAEnrollment{UserID: userID, EncryptedSecret: encryptedSecret, Enabled: false}
 	return tx.From(ctx, s.db).WithContext(ctx).
 		Where("user_id = ? AND enabled = ?", userID, false).
-		Assign(map[string]any{"encrypted_secret": encryptedSecret, "enabled": false, "updated_at": time.Now()}).
+		Assign(map[string]any{"encrypted_secret": encryptedSecret, "enabled": false, "last_totp_step": 0, "updated_at": time.Now()}).
 		FirstOrCreate(&row).Error
 }
 
-func (s *PostgresMFAStore) ConfirmEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string, recoveryCodeHashes []string) error {
-	if userID == uuid.Nil || encryptedSecret == "" || len(recoveryCodeHashes) == 0 {
+func (s *PostgresMFAStore) ConfirmEnrollment(ctx context.Context, userID uuid.UUID, encryptedSecret string, recoveryCodeHashes []string, lastTOTPStep int64) error {
+	if userID == uuid.Nil || encryptedSecret == "" || len(recoveryCodeHashes) == 0 || lastTOTPStep <= 0 {
 		return errors.New("MFA enrollment confirmation is incomplete")
 	}
 	return tx.From(ctx, s.db).WithContext(ctx).Transaction(func(db *gorm.DB) error {
@@ -74,6 +78,7 @@ func (s *PostgresMFAStore) ConfirmEnrollment(ctx context.Context, userID uuid.UU
 		if err := db.Model(&enrollment).Updates(map[string]any{
 			"encrypted_secret": encryptedSecret,
 			"enabled":          true,
+			"last_totp_step":   lastTOTPStep,
 			"updated_at":       time.Now(),
 		}).Error; err != nil {
 			return err
@@ -87,6 +92,23 @@ func (s *PostgresMFAStore) ConfirmEnrollment(ctx context.Context, userID uuid.UU
 		}
 		return db.Create(&rows).Error
 	})
+}
+
+// AcceptTOTPStep consumes a matched TOTP time-step for one enrollment. The
+// conditional UPDATE is the replay boundary: two concurrent requests carrying
+// the same code can only move last_totp_step forward once.
+func (s *PostgresMFAStore) AcceptTOTPStep(ctx context.Context, userID uuid.UUID, step int64) (bool, error) {
+	if userID == uuid.Nil || step <= 0 {
+		return false, nil
+	}
+	result := tx.From(ctx, s.db).WithContext(ctx).
+		Model(&MFAEnrollment{}).
+		Where("user_id = ? AND enabled = true AND last_totp_step < ?", userID, step).
+		Updates(map[string]any{"last_totp_step": step, "updated_at": time.Now()})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 func (s *PostgresMFAStore) Disable(ctx context.Context, userID uuid.UUID) error {

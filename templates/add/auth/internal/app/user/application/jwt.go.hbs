@@ -159,7 +159,11 @@ func (s *Service) Reauthenticate(ctx context.Context, userID uuid.UUID, password
 			if decryptErr != nil {
 				return "", errMFAConfig()
 			}
-			if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+			accepted, acceptErr := s.consumeTOTPStep(ctx, userID, secret, code, settings)
+			if acceptErr != nil {
+				return "", acceptErr
+			}
+			if !accepted {
 				return "", s.recordMFAFailure(ctx, key)
 			}
 			if settings.RequireForReauth && !passwordVerified {
