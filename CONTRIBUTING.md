@@ -25,6 +25,18 @@ or rebase merges for these branches.
   open the PR as `release/vX.Y.Z` when the main policy applies, then merge the
   result back into `develop`.
 
+## External contributors
+
+Do not give helper accounts write access. An external contributor should fork
+the repository, create a branch in that fork, and open a PR from the fork into
+`develop`. The repository owner reviews and merges. This keeps merge authority
+with the owner and prevents a contributor from merging their own PR without
+the owner's involvement.
+
+External contributors do not need a branch in this repository and should not
+be added as `write` collaborators. Use `triage`, or no repository permission
+at all, for issue and PR participation.
+
 ## Normal flow
 
 1. `git fetch origin`
@@ -46,6 +58,7 @@ workflow rejects a branch that is not `develop` or `release/*` and requires
 
 - Keep one concern per PR. A template fix, a CLI refactor, and a release bump
   are separate PRs.
+- Fork PRs are welcome. Only the repository owner merges them.
 - Do not force-push a shared branch. Update your own branch with a normal
   merge or rebase.
 - Include an upgrade or migration note whenever generated projects need a
@@ -76,6 +89,8 @@ Configure these in GitHub repository settings; they cannot be enforced by a
 file in the repository:
 
 - Require a pull request before merging on `main` and `develop`.
+- Keep repository write access restricted to the owner; external helpers use
+  forks.
 - Require `verify` and `packaged-artifact`; require `main-merge-policy` on
   `main`.
 - Dismiss stale approvals after new commits.
