@@ -37,6 +37,12 @@ export function assertAgentSkillAvailable(projectDir: string, name: string, cont
   const repoRoot = findRepoRoot(projectDir);
   const skillFile = path.join(repoRoot, ".agents", "skills", name, "SKILL.md");
   if (!fs.existsSync(skillFile)) return;
+  if (!fs.statSync(skillFile).isFile()) {
+    throw new Error(
+      `agent skill "${name}" path exists at ${toPosix(path.relative(projectDir, skillFile))} but is not a file — ` +
+        `remove it, then run create again`
+    );
+  }
   if (fs.readFileSync(skillFile, "utf8") === content) return;
   throw new Error(
     `agent skill "${name}" already exists at ${toPosix(path.relative(projectDir, skillFile))} with different content — ` +
@@ -71,7 +77,14 @@ export function writeAgentSkill(
     if (path.resolve(path.dirname(link), current) === path.resolve(skillDir)) {
       return { files: written, link, note: `${toPosix(path.relative(projectDir, link))} -> ${linkTarget}` };
     }
-    fs.unlinkSync(link);
+    // A link the user pointed somewhere else is not ours to replace. The
+    // authoritative skill is already written; report the mismatch instead of
+    // silently redirecting their tooling.
+    return {
+      files: written,
+      link,
+      note: `${toPosix(path.relative(projectDir, link))} points at ${current}; left untouched (expected ${linkTarget})`,
+    };
   } else if (existing) {
     if (!existing.isDirectory()) {
       return {

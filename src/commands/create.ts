@@ -44,7 +44,6 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   // Agent tooling loads skills from the repository root, not from a package
   // folder in a monorepo. Keep AGENTS.md/CLAUDE.md package-specific, but put
   // one generic skill at the git root for every generated package.
-  const skillName = AGENT_SKILL_NAME;
 
   let features: ProjectFeatures;
   let apiPrefix: string;
@@ -103,11 +102,11 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   const skillContent = renderString(skillTemplate, context);
   // Check before writing any project files: a skill-name collision must not
   // leave a half-created package behind.
-  assertAgentSkillAvailable(projectDir, skillName, skillContent);
+  assertAgentSkillAvailable(projectDir, AGENT_SKILL_NAME, skillContent);
 
   await fs.ensureDir(projectDir);
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
-  const agentSkill = writeAgentSkill(projectDir, skillName, { "SKILL.md": skillContent });
+  const agentSkill = writeAgentSkill(projectDir, AGENT_SKILL_NAME, { "SKILL.md": skillContent });
   gofmtTree(projectDir);
   writeConfig(projectDir, {
     schemaVersion: CONFIG_SCHEMA_VERSION,
