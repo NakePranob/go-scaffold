@@ -712,6 +712,18 @@ The module name orders produces the Go package order, REST collection /orders,
 plural table names such as order_items, and a module-owned schema such as
 order_svc.
 
+## Agent guidance in monorepos
+
+`create` writes the real skill at the repository root:
+`.agents/skills/<package-scoped-name>/SKILL.md`, with
+`.claude/skills/<package-scoped-name>` as the Claude Code symlink. `AGENTS.md`
+and `CLAUDE.md` remain in the generated package, and the skill points at those
+package-specific paths.
+
+If an older generated project still has
+`<package>/.claude/skills/go-scaffold/SKILL.md`, remove that legacy nested copy
+after adopting the root skill; otherwise two copies can be discovered.
+
 ## Useful commands after scaffolding
 
 Run these from the generated project directory:

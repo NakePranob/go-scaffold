@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs-extra";
 import pc from "picocolors";
-import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
+import { applyTemplateEntries, getTemplatesRoot, gofmtTree, renderString } from "../utils/template-renderer";
 import { CREATE_MANIFEST } from "../templates/create-manifest";
 import { parseApplicationStyle, parseModuleProfile, parseModuleSurface, writeConfig } from "../utils/config";
 import { assertValidGoModulePath, normalizeApiPrefix, toDbName, validateApiPrefix } from "../utils/naming";
@@ -11,6 +11,13 @@ import { ArchitectureConfig, DEFAULT_ARCHITECTURE_CONFIG, ProjectFeatures } from
 import { CONFIG_SCHEMA_VERSION } from "../utils/config";
 import { addObservability } from "./observability";
 import { architectureForModuleProfile } from "../utils/module-profile";
+import {
+  agentSkillName,
+  assertAgentSkillAvailable,
+  findRepoRoot,
+  toPosix,
+  writeAgentSkill,
+} from "../utils/agent-guidance";
 
 export interface CreateOptions {
   defaults?: boolean;
@@ -35,6 +42,19 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   if (fs.existsSync(projectDir) && fs.readdirSync(projectDir).length > 0) {
     throw new Error(`${projectDir} already exists and is not empty`);
   }
+
+  // Agent tooling loads skills from the repository root, not from a package
+  // folder in a monorepo. Keep AGENTS.md/CLAUDE.md package-specific, but put
+  // the generated skill at the git root with a package-scoped name.
+  const repoRoot = findRepoRoot(projectDir);
+  const packagePath = toPosix(path.relative(repoRoot, projectDir)) || ".";
+  const skillName = agentSkillName(projectDir, repoRoot);
+  const skillDir = path.join(repoRoot, ".agents", "skills", skillName);
+  const agentsPath = toPosix(path.relative(skillDir, path.join(projectDir, "AGENTS.md")));
+  const docsPath = toPosix(path.relative(skillDir, path.join(projectDir, "docs", "architect")));
+  const packageLabel = packagePath === "." ? "repository root" : `\`${packagePath}\` package`;
+  const runFrom = packagePath === "." ? "the repository root" : `the \`${packagePath}\` package root`;
+  const configPath = packagePath === "." ? "go-scaffold.config.json" : `${packagePath}/go-scaffold.config.json`;
 
   let features: ProjectFeatures;
   let apiPrefix: string;
@@ -84,10 +104,27 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     apiPrefix,
     ...architecture,
     ...features,
+    skillName,
+    packagePath,
+    packageLabel,
+    runFrom,
+    agentsPath,
+    docsPath,
+    configPath,
   };
+
+  const skillTemplate = await fs.readFile(
+    path.join(getTemplatesRoot(), "create/base/.claude/skills/go-scaffold/SKILL.md.hbs"),
+    "utf8"
+  );
+  const skillContent = renderString(skillTemplate, context);
+  // Check before writing any project files: a skill-name collision must not
+  // leave a half-created package behind.
+  assertAgentSkillAvailable(projectDir, skillName, skillContent);
 
   await fs.ensureDir(projectDir);
   await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
+  const agentSkill = writeAgentSkill(projectDir, skillName, { "SKILL.md": skillContent });
   gofmtTree(projectDir);
   writeConfig(projectDir, {
     schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -110,6 +147,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
 
   console.log(pc.green(`\ncreated ${projectName}/`));
   console.log(`\ncd ${projectName}`);
+  console.log(pc.dim(`agent skill: ${path.relative(process.cwd(), agentSkill.link)}${agentSkill.note ? ` (${agentSkill.note})` : ""}`));
   if (features.docker) console.log(`make docker-up`);
   console.log(`make db-create`);
   console.log(`go mod tidy`);
