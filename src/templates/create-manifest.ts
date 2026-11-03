@@ -14,10 +14,6 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
   { template: "create/base/README.md.hbs", output: "README.md" },
   { template: "create/base/AGENTS.md.hbs", output: "AGENTS.md" },
   { template: "create/base/CLAUDE.md.hbs", output: "CLAUDE.md" },
-  {
-    template: "create/base/.claude/skills/go-scaffold/SKILL.md.hbs",
-    output: ".claude/skills/go-scaffold/SKILL.md",
-  },
   { template: "create/base/cmd/api/main.go.hbs", output: "cmd/api/main.go" },
   { template: "create/base/cmd/api/wiring.go.hbs", output: "cmd/api/wiring.go" },
   {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -27,7 +27,7 @@ test("generated AI guidance documents the current architecture and safety contra
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
     const agents = read(project, "AGENTS.md");
-    const skill = read(project, ".claude/skills/go-scaffold/SKILL.md");
+    const skill = read(project, ".agents/skills/go-scaffold/SKILL.md");
     const architecture = read(project, "docs/architect/architecture.md");
 
     assert.match(agents, /modular\s+monolith/);
@@ -96,6 +96,34 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.doesNotMatch(skill, /finds the record by id, TODO before saving/);
 
     assert.equal(read(project, "CLAUDE.md").trim(), "@AGENTS.md");
+    const skillLink = path.join(project, ".claude/skills/go-scaffold");
+    assert.ok(lstatSync(skillLink).isSymbolicLink());
+    assert.equal(readlinkSync(skillLink), "../../.agents/skills/go-scaffold");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create places a package-scoped skill at the monorepo root", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-monorepo-guidance-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const services = path.join(scratch, "services");
+    mkdirSync(services, { recursive: true });
+    runCLI(services, "create", "api", "--defaults", "--no-docker");
+
+    const project = path.join(services, "api");
+    const skillPath = path.join(scratch, ".agents/skills/go-scaffold-services-api/SKILL.md");
+    const skillLink = path.join(scratch, ".claude/skills/go-scaffold-services-api");
+
+    assert.ok(existsSync(skillPath), "skill should live at the repository root");
+    assert.ok(lstatSync(skillLink).isSymbolicLink(), "Claude should receive a symlink");
+    assert.equal(readlinkSync(skillLink), "../../.agents/skills/go-scaffold-services-api");
+    assert.ok(existsSync(path.join(project, "AGENTS.md")));
+    assert.ok(existsSync(path.join(project, "CLAUDE.md")));
+    assert.equal(read(project, "CLAUDE.md").trim(), "@AGENTS.md");
+    assert.ok(!existsSync(path.join(project, ".claude/skills")), "skill must not be nested in the package");
+    assert.match(readFileSync(skillPath, "utf8"), /services\/api\/AGENTS\.md/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
