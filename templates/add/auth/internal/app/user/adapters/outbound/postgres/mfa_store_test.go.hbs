@@ -90,6 +90,50 @@ func TestPostgresMFAStore_ConsumesChallengesAndRecoveryCodesOnce(t *testing.T) {
 	}
 }
 
+func TestPostgresMFAStore_RecoversEnrollmentAtomically(t *testing.T) {
+	db := mfaStoreDBForTest(t)
+	store := NewPostgresMFAStore(db)
+	ctx := context.Background()
+	userID := uuid.New()
+	if err := db.Create(&User{ID: userID}).Error; err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Delete(&User{}, "id = ?", userID).Error })
+
+	if err := store.PutPendingEnrollment(ctx, userID, "encrypted-secret-recovery"); err != nil {
+		t.Fatalf("put pending enrollment: %v", err)
+	}
+	const recoveryHash = "recovery-hash-atomic"
+	if err := store.ConfirmEnrollment(ctx, userID, "encrypted-secret-recovery", []string{recoveryHash, "recovery-hash-unused"}); err != nil {
+		t.Fatalf("confirm enrollment: %v", err)
+	}
+	challengeHash := "challenge-hash-recovery-" + uuid.NewString()
+	if err := store.CreateChallenge(ctx, challengeHash, ports.MFAChallenge{UserID: userID, ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	found, err := store.HasRecoveryCode(ctx, userID, recoveryHash)
+	if err != nil || !found {
+		t.Fatalf("expected recovery code before replacement: found=%t err=%v", found, err)
+	}
+	recovered, err := store.RecoverEnrollment(ctx, userID, recoveryHash)
+	if err != nil || !recovered {
+		t.Fatalf("recover enrollment: recovered=%t err=%v", recovered, err)
+	}
+	if recovered, err := store.RecoverEnrollment(ctx, userID, recoveryHash); err != nil || recovered {
+		t.Fatalf("recovery code must be one-use: recovered=%t err=%v", recovered, err)
+	}
+	if _, found, err := store.GetEnrollment(ctx, userID); err != nil || found {
+		t.Fatalf("old enrollment remained after recovery: found=%t err=%v", found, err)
+	}
+	if _, found, err := store.GetChallenge(ctx, challengeHash); err != nil || found {
+		t.Fatalf("old MFA challenge remained after recovery: found=%t err=%v", found, err)
+	}
+	if found, err := store.HasRecoveryCode(ctx, userID, "recovery-hash-unused"); err != nil || found {
+		t.Fatalf("remaining recovery codes must be removed: found=%t err=%v", found, err)
+	}
+}
+
 func consumeChallengeConcurrently(t *testing.T, store *PostgresMFAStore, hash string, wantUser uuid.UUID) {
 	t.Helper()
 	const callers = 16

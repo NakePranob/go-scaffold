@@ -35,7 +35,7 @@ func NewMemoryLimiter() *MemoryLimiter {
 	return &MemoryLimiter{windows: map[string]*rateWindow{}, lastSweep: time.Now()}
 }
 
-func (m *MemoryLimiter) Allow(_ context.Context, key string, limit int, window time.Duration) bool {
+func (m *MemoryLimiter) Allow(_ context.Context, key string, limit int, window time.Duration) (bool, error) {
 	now := time.Now()
 
 	m.mu.Lock()
@@ -56,8 +56,8 @@ func (m *MemoryLimiter) Allow(_ context.Context, key string, limit int, window t
 	w, ok := m.windows[key]
 	if !ok || now.After(w.resetAt) {
 		m.windows[key] = &rateWindow{count: 1, resetAt: now.Add(window)}
-		return true
+		return true, nil
 	}
 	w.count++
-	return w.count <= limit
+	return w.count <= limit, nil
 }

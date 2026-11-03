@@ -26,17 +26,25 @@ type Handler struct {
 {{/if}}
 {{#if auth}}
 	jwtSecret string
+	jwtIssuer string
+	jwtAudience string
 {{/if}}
 {{#if permission}}
 	authz *middleware.Authz
 {{/if}}
+{{#if auth}}
+	sessionValidators []middleware.SessionValidator
+{{/if}}
 }
 
 {{#if cqrs}}
-func NewHandler(commands application.CommandPort, queries application.QueryPort{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+func NewHandler(commands application.CommandPort, queries application.QueryPort{{#if auth}}, jwtSecret string, jwtIssuer string, jwtAudience string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}{{#if auth}}, sessionValidators ...middleware.SessionValidator{{/if}}) *Handler {
 	h := &Handler{commands: commands, queries: queries}
 {{#if auth}}
 	h.jwtSecret = jwtSecret
+	h.jwtIssuer = jwtIssuer
+	h.jwtAudience = jwtAudience
+	h.sessionValidators = sessionValidators
 {{/if}}
 {{#if permission}}
 	h.authz = authz
@@ -44,10 +52,13 @@ func NewHandler(commands application.CommandPort, queries application.QueryPort{
 	return h
 }
 {{else}}
-func NewHandler(svc application.ServicePort{{#if auth}}, jwtSecret string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}) *Handler {
+func NewHandler(svc application.ServicePort{{#if auth}}, jwtSecret string, jwtIssuer string, jwtAudience string{{/if}}{{#if permission}}, authz *middleware.Authz{{/if}}{{#if auth}}, sessionValidators ...middleware.SessionValidator{{/if}}) *Handler {
 	h := &Handler{svc: svc}
 {{#if auth}}
 	h.jwtSecret = jwtSecret
+	h.jwtIssuer = jwtIssuer
+	h.jwtAudience = jwtAudience
+	h.sessionValidators = sessionValidators
 {{/if}}
 {{#if permission}}
 	h.authz = authz
@@ -57,7 +68,7 @@ func NewHandler(svc application.ServicePort{{#if auth}}, jwtSecret string{{/if}}
 {{/if}}
 
 func (h *Handler) Register(rg gin.IRouter) {
-	g := rg.Group("/{{plural}}"{{#if auth}}, middleware.RequireAuth(h.jwtSecret){{/if}}{{#if permission}}, h.authz.Require("{{permission}}"){{/if}})
+	g := rg.Group("/{{plural}}"{{#if auth}}, middleware.RequireAuthWithIssuer(h.jwtSecret, h.jwtIssuer, h.jwtAudience, h.sessionValidators...){{/if}}{{#if permission}}, h.authz.Require("{{permission}}"){{/if}})
 	g.POST("", h.create)
 	g.GET("", h.list)
 	g.GET("/:id", h.get)

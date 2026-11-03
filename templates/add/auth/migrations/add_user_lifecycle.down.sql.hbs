@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS user_svc.idx_users_disabled_at;
+
+ALTER TABLE user_svc.users
+    DROP COLUMN IF EXISTS disabled_at;

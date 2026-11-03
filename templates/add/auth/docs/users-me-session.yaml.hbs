@@ -4,6 +4,10 @@ delete:
   tags: [users]
   security: [{ bearerAuth: [] }]
   parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
     - name: id
       in: path
       required: true
@@ -12,3 +16,4 @@ delete:
     "204": { description: session revoked }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }

@@ -3,6 +3,11 @@ post:
   operationId: setupMyMFA
   tags: [users]
   security: [{ bearerAuth: [] }]
+  parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
   responses:
     "200":
       description: secret and otpauth URI; enrollment remains disabled until confirmed
@@ -10,5 +15,6 @@ post:
         application/json:
           schema: { $ref: './schemas.yaml#/MFASetupResponse' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "409": { $ref: '../common/responses.yaml#/ConflictError' }
     "503": { description: MFA is disabled by the operator }

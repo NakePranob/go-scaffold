@@ -33,24 +33,24 @@ function runGeneratedChecks(project) {
   const cqrsTest = read(project, "internal/app/order/application/cqrs_test.go");
   const handler = read(project, "internal/app/order/adapters/inbound/http/handler.go");
 
-  assert.match(commands, /func \(h \*CommandHandler\) Approve\(/);
+  assert.match(read(project, "internal/app/order/application/method_approve.go"), /func \(h \*CommandHandler\) Approve\(/);
   assert.match(commands, /func \(h \*CommandHandler\) Create\(/);
   assert.match(commands, /func \(h \*CommandHandler\) Delete\(/);
-  assert.match(queries, /func \(h \*QueryHandler\) FindByStatus\(/);
-  assert.match(queries, /func \(h \*QueryHandler\) FindOverdue\(/);
+  assert.match(read(project, "internal/app/order/application/method_find_by_status.go"), /func \(h \*QueryHandler\) FindByStatus\(/);
+  assert.match(read(project, "internal/app/order/application/method_find_overdue.go"), /func \(h \*QueryHandler\) FindOverdue\(/);
   assert.match(queries, /func \(h \*QueryHandler\) List\(/);
   assert.equal(existsSync(servicePath), false, "CQRS must not emit an application/service.go facade");
   assert.equal(existsSync(serviceTestPath), false, "CQRS must not emit an application/service_test.go seam");
   assert.match(cqrsTest, /type repositoryStub struct/);
   assert.match(cqrsTest, /TestCQRSHandlersCompose/);
-  assert.match(handler, /h\.commands\.Approve\(/);
-  assert.match(handler, /h\.queries\.FindByStatus\(/);
+  assert.match(read(project, "internal/app/order/adapters/inbound/http/method_approve.go"), /h\.commands\.Approve\(/);
+  assert.match(read(project, "internal/app/order/adapters/inbound/http/method_find_by_status.go"), /h\.queries\.FindByStatus\(/);
   assert.match(handler, /func NewHandler\(commands application\.CommandPort, queries application\.QueryPort/);
   assert.doesNotMatch(handler, /func NewHandler\(svc service/);
   assert.doesNotMatch(handler, /type service interface/);
   assert.match(read(project, "internal/app/order/composition.go"), /NewCommandHandler\(repo\)/);
   assert.match(read(project, "internal/app/order/composition.go"), /NewQueryHandler\(repo\)/);
-  assert.match(read(project, "internal/app/order/adapters/outbound/postgres/repository.go"), /func \(r \*Repository\) FindByStatus\(/);
+  assert.match(read(project, "internal/app/order/adapters/outbound/postgres/method_find_by_status.go"), /func \(r \*Repository\) FindByStatus\(/);
 }
 
 test("generate module --cqrs creates separate command/query handlers and patches each side", () => {
@@ -83,9 +83,9 @@ test("generate module --cqrs also works for minimal modules and command/query me
     runCLI(project, "generate", "method", "ticket", "findByStatus", "--type", "get", "--get-mode", "one", "--field", "status");
     runCLI(project, "generate", "method", "ticket", "archive", "--type", "delete");
 
-    assert.match(read(project, "internal/app/ticket/application/commands.go"), /func \(h \*CommandHandler\) Create\(/);
-    assert.match(read(project, "internal/app/ticket/application/commands.go"), /func \(h \*CommandHandler\) Archive\(/);
-    assert.match(read(project, "internal/app/ticket/application/queries.go"), /func \(h \*QueryHandler\) FindByStatus\(/);
+    assert.match(read(project, "internal/app/ticket/application/method_create.go"), /func \(h \*CommandHandler\) Create\(/);
+    assert.match(read(project, "internal/app/ticket/application/method_archive.go"), /func \(h \*CommandHandler\) Archive\(/);
+    assert.match(read(project, "internal/app/ticket/application/method_find_by_status.go"), /func \(h \*QueryHandler\) FindByStatus\(/);
     assert.equal(existsSync(path.join(project, "internal/app/ticket/application/service.go")), false);
 
     execFileSync("go", ["mod", "tidy"], { cwd: project, stdio: "ignore" });

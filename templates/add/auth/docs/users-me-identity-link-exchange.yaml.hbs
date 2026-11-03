@@ -5,6 +5,10 @@ post:
   tags: [users]
   security: [{ bearerAuth: [] }]
   parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
     - name: provider
       in: path
       required: true
@@ -22,5 +26,6 @@ post:
           schema: { $ref: './schemas.yaml#/IdentityResponse' }
     "400": { description: invalid OAuth state or provider response }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "409": { description: provider identity is already linked or owned by another user }
     "503": { description: provider unavailable }

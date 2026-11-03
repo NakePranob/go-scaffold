@@ -1,0 +1,38 @@
+package middleware
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+type failingLimiter struct{}
+
+func (failingLimiter) Allow(context.Context, string, int, time.Duration) (bool, error) {
+	return false, errors.New("rate-limit store unavailable")
+}
+
+func TestRateLimitFailsClosedWhenStoreIsUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(Error(false))
+	router.GET("/login", RateLimit(failingLimiter{}, "login", 10, time.Minute), func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if response.Header().Get("Retry-After") != "5" {
+		t.Fatalf("Retry-After = %q, want 5", response.Header().Get("Retry-After"))
+	}
+}

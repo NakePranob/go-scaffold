@@ -39,7 +39,7 @@ func Handle(c *Client) queue.Handler {
 		if p.Text == "" && p.HTML == "" {
 			p.Text = p.Body
 		}
-		return c.Send(p.To, p.Message)
+			return c.SendContext(ctx, p.To, p.Message)
 	}
 }
 

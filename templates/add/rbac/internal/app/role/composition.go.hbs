@@ -37,12 +37,12 @@ func NewServiceFromDB(db *gorm.DB) *Service {
 	return application.NewService(postgres.NewRepository(db))
 }
 
-func NewCompositionFromDB(db *gorm.DB, jwtSecret string, cacheTTL time.Duration) *Composition {
+func NewCompositionFromDB(db *gorm.DB, jwtSecret string, jwtIssuer string, jwtAudience string, cacheTTL time.Duration, sessionValidators ...middleware.SessionValidator) *Composition {
 	service := NewServiceFromDB(db)
-	authz := middleware.NewAuthz(service.PermissionsOf, cacheTTL)
+	authz := middleware.NewVersionedAuthz(service.PermissionsOf, service.PermissionVersion, cacheTTL)
 	return &Composition{
 		Service: service,
 		Authz:   authz,
-		Handler: httpadapter.NewHandler(service, jwtSecret, authz),
+		Handler: httpadapter.NewHandler(service, jwtSecret, jwtIssuer, jwtAudience, authz, sessionValidators...),
 	}
 }

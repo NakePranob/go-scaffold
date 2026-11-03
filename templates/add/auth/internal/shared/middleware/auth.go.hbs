@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,13 @@ const SessionIDKey = "session_id"
 
 // go-scaffold:middleware-auth-keys
 
+// SessionValidator is the application-owned boundary used to make access JWT
+// revocation effective immediately. A missing or unavailable session store is
+// treated as unauthenticated by RequireAuth.
+type SessionValidator interface {
+	IsSessionActive(context.Context, uuid.UUID, uuid.UUID) (bool, error)
+}
+
 // accessClaims mirrors internal/app/user's own claims shape — duplicated
 // rather than imported, since shared/ can never import a domain package.
 // The two are kept in sync by convention: sub = user id, typ = "access", and
@@ -31,7 +39,18 @@ type accessClaims struct {
 // RequireAuth validates a Bearer access token and puts the caller's user id
 // in context. Rejects a refresh token presented as an access token via the
 // typ claim — the two are structurally identical JWTs otherwise.
-func RequireAuth(secret string) gin.HandlerFunc {
+func RequireAuth(secret string, validators ...SessionValidator) gin.HandlerFunc {
+	return RequireAuthWithIssuer(secret, "", "", validators...)
+}
+
+// RequireAuthWithIssuer is the production constructor. Issuer and audience
+// bind this JWT to the intended application/resource server; the legacy
+// RequireAuth wrapper remains for older generated projects and focused tests.
+func RequireAuthWithIssuer(secret, issuer, audience string, validators ...SessionValidator) gin.HandlerFunc {
+	return requireAuth(secret, issuer, audience, validators...)
+}
+
+func requireAuth(secret, issuer, audience string, validators ...SessionValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		raw, ok := strings.CutPrefix(header, "Bearer ")
@@ -41,9 +60,16 @@ func RequireAuth(secret string) gin.HandlerFunc {
 		}
 
 		var claims accessClaims
+		options := []jwt.ParserOption{jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name})}
+		if issuer != "" {
+			options = append(options, jwt.WithIssuer(issuer))
+		}
+		if audience != "" {
+			options = append(options, jwt.WithAudience(audience))
+		}
 		_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) {
 			return []byte(secret), nil
-		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}))
+		}, options...)
 		if err != nil || claims.Typ != "access" {
 			unauthorized(c)
 			return
@@ -53,6 +79,17 @@ func RequireAuth(secret string) gin.HandlerFunc {
 		if err != nil {
 			unauthorized(c)
 			return
+		}
+		if len(validators) > 0 {
+			if claims.SessionID == uuid.Nil {
+				unauthorized(c)
+				return
+			}
+			active, validateErr := validators[0].IsSessionActive(c.Request.Context(), userID, claims.SessionID)
+			if validateErr != nil || !active {
+				unauthorized(c)
+				return
+			}
 		}
 
 		c.Set(UserIDKey, userID)
@@ -66,5 +103,62 @@ func RequireAuth(secret string) gin.HandlerFunc {
 
 func unauthorized(c *gin.Context) {
 	c.Error(apperror.New(http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid access token"))
+	c.Abort()
+}
+
+const ReauthTokenHeader = "X-Reauth-Token"
+
+type reauthClaims struct {
+	Typ string `json:"typ"`
+	jwt.RegisteredClaims
+}
+
+// RequireRecentAuth accepts only the short-lived proof issued by the auth
+// application's reauthentication use case and binds it to the bearer caller.
+func RequireRecentAuth(secret string) gin.HandlerFunc {
+	return RequireRecentAuthWithIssuer(secret, "", "")
+}
+
+// RequireRecentAuthWithIssuer validates the short-lived proof against the
+// same issuer and audience contract as access tokens.
+func RequireRecentAuthWithIssuer(secret, issuer, audience string) gin.HandlerFunc {
+	return requireRecentAuth(secret, issuer, audience)
+}
+
+func requireRecentAuth(secret, issuer, audience string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, ok := c.Get(UserIDKey)
+		if !ok {
+			reauthRequired(c)
+			return
+		}
+		caller, ok := userID.(uuid.UUID)
+		if !ok || caller == uuid.Nil {
+			reauthRequired(c)
+			return
+		}
+
+		raw := strings.TrimSpace(c.GetHeader(ReauthTokenHeader))
+		var claims reauthClaims
+		options := []jwt.ParserOption{jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name})}
+		if issuer != "" {
+			options = append(options, jwt.WithIssuer(issuer))
+		}
+		if audience != "" {
+			options = append(options, jwt.WithAudience(audience))
+		}
+		_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) {
+			return []byte(secret), nil
+		}, options...)
+		if err != nil || claims.Typ != "reauth" || claims.Subject != caller.String() {
+			reauthRequired(c)
+			return
+		}
+		c.Next()
+	}
+}
+
+func reauthRequired(c *gin.Context) {
+	c.Error(apperror.New(http.StatusForbidden, "AUTH_REAUTH_REQUIRED", "recent authentication required"))
 	c.Abort()
 }

@@ -35,6 +35,7 @@ const RBAC_OPENAPI_PATHS: { urlPath: string; file: string }[] = [
   { urlPath: "/users", file: "./rbac/users.yaml" },
   { urlPath: "/users/{id}", file: "./rbac/user.yaml" },
   { urlPath: "/users/{id}/set-role", file: "./rbac/user-set-role.yaml" },
+  { urlPath: "/users/{id}/status", file: "./rbac/user-status.yaml" },
 ];
 
 // addRbac layers role-based access control on top of `add auth`: a role
@@ -145,12 +146,9 @@ export async function addRbac(projectDir: string = process.cwd()): Promise<void>
   if (staleDocs.length) console.log(pc.yellow(docsRefreshWarning(staleDocs, "add rbac")));
   console.log(
     pc.yellow(
-      "\n⚠ The development table bootstrap does NOT seed role/permission data — it only creates the\n" +
-        "  tables from the Go structs. The \"staff\"/\"admin\" roles and their permissions live\n" +
-        "  in the migration's SQL (INSERT statements), which table creation never runs. Without\n" +
-        "  applying it for real, `make seed` fails with \"unknown role code\" and nobody can be\n" +
-        "  granted anything. Apply it before relying on RBAC, even in dev:\n" +
-        "    migrate -path migrations -database \"$DB_DSN\" up   (or: make migrate-up)"
+      "\n⚠ Roles and permissions are seeded by versioned SQL migrations, not by the API.\n" +
+        "  Run `make migrate-up` before `make seed` in every environment; otherwise\n" +
+        "  seeding fails with \"unknown role code\" and authorization has no roles."
     )
   );
   console.log(pc.dim("\nnext: go mod tidy, then SEED_ADMIN_EMAIL=... SEED_ADMIN_PASSWORD=... make seed to get an admin"));

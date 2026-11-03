@@ -6,5 +6,6 @@ dist/
 *.tgz
 
 # working notes only — architecture decisions, comparisons, explainers.
-# never part of the published package or the repo history.
-/docs/
+# Keep the auth security checklist in the repo; other docs remain working notes.
+/docs/*
+!/docs/auth-security-checklist.md

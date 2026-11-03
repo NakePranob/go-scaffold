@@ -1,0 +1,9 @@
+package application
+
+import "testing"
+
+func TestCQRSHandlersCompose(t *testing.T) {
+	if NewCommandHandler() == nil || NewQueryHandler() == nil {
+		t.Fatal("expected command and query handlers")
+	}
+}

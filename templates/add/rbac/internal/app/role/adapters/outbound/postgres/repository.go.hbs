@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"{{goModule}}/internal/app/role/domain"
 	"{{goModule}}/internal/app/role/ports"
@@ -26,6 +27,15 @@ func (r *Repository) PermissionCodes(ctx context.Context, roleCode string) ([]st
 	err := tx.From(ctx, r.db).WithContext(ctx).
 		Model(&RolePermission{}).Where("role_code = ?", roleCode).Pluck("permission_code", &codes).Error
 	return codes, mapDatabaseError(err)
+}
+
+func (r *Repository) PermissionVersion(ctx context.Context, roleCode string) (time.Time, error) {
+	var row Role
+	err := tx.From(ctx, r.db).WithContext(ctx).Select("updated_at").First(&row, "code = ?", roleCode).Error
+	if err != nil {
+		return time.Time{}, mapDatabaseError(err)
+	}
+	return row.UpdatedAt, nil
 }
 
 // FindAll answers one page of the filter and how many roles it matched
@@ -73,6 +83,13 @@ func (r *Repository) Create(ctx context.Context, role *domain.Role) error {
 func (r *Repository) SetPermissions(ctx context.Context, roleCode string, permissionCodes []string) error {
 	return tx.Do(ctx, r.db, func(txctx context.Context) error {
 		db := tx.From(txctx, r.db).WithContext(txctx)
+		result := db.Model(&Role{}).Where("code = ?", roleCode).UpdateColumn("updated_at", gorm.Expr("clock_timestamp()"))
+		if result.Error != nil {
+			return mapDatabaseError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return domain.ErrNotFound
+		}
 		if err := db.Where("role_code = ?", roleCode).Delete(&RolePermission{}).Error; err != nil {
 			return mapDatabaseError(err)
 		}

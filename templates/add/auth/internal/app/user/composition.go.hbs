@@ -1,7 +1,9 @@
 package user
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	httpadapter "{{goModule}}/internal/app/user/adapters/inbound/http"
@@ -11,9 +13,6 @@ import (
 	"{{goModule}}/internal/app/user/ports"
 	googleprovider "{{goModule}}/internal/platform/authprovider/google"
 	"{{goModule}}/internal/platform/mail"
-{{#if worker}}
-	"{{goModule}}/internal/platform/queue"
-{{/if}}
 	"{{goModule}}/internal/shared/config"
 	"{{goModule}}/internal/shared/middleware"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 {{/if}}
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -34,9 +34,6 @@ func NewHandlerFromDB(
 {{#if redis}}
 	rdb *redis.Client,
 {{/if}}
-{{#if worker}}
-	q queue.Enqueuer,
-{{/if}}
 	roleChecker RoleChecker,
 	authz Authorizer,
 ) *httpadapter.Handler {
@@ -46,11 +43,10 @@ func NewHandlerFromDB(
 	tokens := userpostgres.NewPgTokenStore(db)
 {{/if}}
 
-{{#if worker}}
-	mailer := mail.NewAsyncClient(q)
-{{else}}
+	// Recovery and verification messages contain bearer tokens. Keep auth mail
+	// out of the generic job queue so queue rows/payloads never persist a raw
+	// reset or verification link. The worker remains available for other jobs.
 	mailer := mail.NewSyncClient(mail.Open(cfg))
-{{/if}}
 
 	providers := make([]application.LoginProvider, 0, 1)
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleOAuthRedirectURI != "" {
@@ -58,22 +54,59 @@ func NewHandlerFromDB(
 			ClientID:     cfg.GoogleClientID,
 			ClientSecret: cfg.GoogleClientSecret,
 			RedirectURL:  cfg.GoogleOAuthRedirectURI,
+			MaxAuthAge:   time.Duration(cfg.GoogleOIDCMaxAuthAgeSec) * time.Second,
+			RequiredACR:  cfg.GoogleOIDCRequiredACR,
+			RequiredAMR:  splitCSV(cfg.GoogleOIDCRequiredAMR),
 		}))
 	}
 	providerRegistry := application.NewProviderRegistry(providers...)
 	if err := httpadapter.ValidateBrowserCookiePolicy(cfg.AuthBrowserTopology, cfg.CookieSameSite, cfg.CookieSecure, cfg.IsProd()); err != nil {
 		panic(err)
 	}
-	if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 {
-		panic(fmt.Errorf("JWT refresh token lifetimes must be positive"))
+	if cfg.JWTRefreshTTL <= 0 || cfg.JWTRefreshMaxTTL <= 0 || cfg.JWTRefreshMaxTTL < cfg.JWTRefreshTTL {
+		panic(fmt.Errorf("JWT_REFRESH_MAX_TTL_MIN must be greater than or equal to JWT_REFRESH_TTL_MIN"))
 	}
 	if cfg.OAuthStateTTL <= 0 {
 		panic(fmt.Errorf("OAUTH_STATE_TTL_MIN must be positive"))
 	}
+	profile := application.GeneratedSecurityProfile()
+	if err := profile.ValidateRuntime(
+		cfg.IsProd(),
+		cfg.AuthMFAEnabled,
+		strings.TrimSpace(cfg.AuthCommonPasswordsFile) != "",
+		strings.TrimSpace(cfg.AuthContextPasswordsFile) != "",
+		strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "",
+		cfg.AuthMFARequiredForLogin,
+	); err != nil {
+		panic(err)
+	}
+	passwordPolicy := application.NewCommonPasswordPolicy()
+	if strings.TrimSpace(cfg.AuthCommonPasswordsFile) != "" {
+		commonPolicy, err := userpassword.NewCommonPasswordFilePolicy(cfg.AuthCommonPasswordsFile)
+		if err != nil {
+			panic(fmt.Errorf("load AUTH_COMMON_PASSWORDS_FILE: %w", err))
+		}
+		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, commonPolicy)
+	}
+	if profile.ContextPasswordScreening && strings.TrimSpace(cfg.AuthContextPasswordsFile) != "" {
+		contextPolicy, err := userpassword.NewContextPasswordFilePolicy(cfg.AuthContextPasswordsFile)
+		if err != nil {
+			panic(fmt.Errorf("load AUTH_CONTEXT_PASSWORDS_FILE: %w", err))
+		}
+		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, contextPolicy)
+	}
+	if profile.BreachedPasswordScreening && strings.TrimSpace(cfg.AuthBreachedPasswordsFile) != "" {
+		breachedPolicy, err := userpassword.NewFilePasswordPolicy(cfg.AuthBreachedPasswordsFile)
+		if err != nil {
+			panic(fmt.Errorf("load AUTH_BREACHED_PASSWORDS_FILE: %w", err))
+		}
+		passwordPolicy = application.NewCompositePasswordPolicy(passwordPolicy, breachedPolicy)
+	}
 
 	service := application.NewService(application.Dependencies{
 		Repository:        userpostgres.NewRepository(db),
-		Passwords:         userpassword.NewBCryptHasher(),
+		Passwords:         userpassword.NewArgon2idHasher(),
+		PasswordPolicy:    passwordPolicy,
 		RefreshTokens:     tokens,
 		OAuthTransactions: tokens,
 		RecoveryTokens:    tokens,
@@ -84,6 +117,9 @@ func NewHandlerFromDB(
 		Clock:             time.Now,
 	}, application.AuthConfig{
 		JWTSecret:        cfg.JWTSecret,
+		MetadataKey:      cfg.AuthMetadataKey,
+		JWTIssuer:        cfg.JWTIssuer,
+		JWTAudience:      cfg.JWTAudience,
 		JWTAccessTTL:     cfg.JWTAccessTTL,
 		JWTRefreshTTL:    cfg.JWTRefreshTTL,
 		JWTRefreshMaxTTL: cfg.JWTRefreshMaxTTL,
@@ -92,8 +128,12 @@ func NewHandlerFromDB(
 		PasswordResetURL: cfg.PasswordResetURL,
 		EmailVerifyTTL:   cfg.EmailVerifyTTL,
 		EmailVerifyURL:   cfg.EmailVerifyURL,
+		MaxSessions:      cfg.AuthMaxSessions,
+		SecurityProfile:  profile,
 		MFA: application.MFASettings{
 			Enabled:           cfg.AuthMFAEnabled,
+			RequireForReauth:  profile.RequireMFAForSensitiveActions && cfg.AuthMFAEnabled,
+			RequireForLogin:   profile.RequireMFAForApplicationAccess && cfg.AuthMFARequiredForLogin,
 			Issuer:            cfg.MFAIssuer,
 			EncryptionKey:     cfg.MFAEncryptionKey,
 			ChallengeTTL:      cfg.MFAChallengeTTL,
@@ -106,16 +146,75 @@ func NewHandlerFromDB(
 {{else}}
 	limiter := middleware.NewMemoryLimiter()
 {{/if}}
-	return httpadapter.NewHandlerWithOrigins(
+	return httpadapter.NewHandlerWithOriginsAndOAuthTTLAndJWT(
 		service,
 		cfg.JWTSecret,
+		cfg.JWTIssuer,
+		cfg.JWTAudience,
 		cfg.JWTRefreshTTL,
 		cfg.CookieSecure,
 		cfg.CookieSameSite,
 		cfg.CORSAllowedOrigins,
+		cfg.OAuthStateTTL,
 		limiter,
 		authz,
 	)
+}
+
+func splitCSV(raw string) []string {
+	values := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// NewSessionValidatorFromDB lets the process root give every protected feature
+// the same session-revocation boundary as the user routes. It intentionally
+// returns the narrow shared contract, not the concrete token-store adapter.
+func NewSessionValidatorFromDB(
+	db *gorm.DB,
+	cfg config.Config,
+{{#if redis}}	rdb *redis.Client,
+{{/if}}
+) middleware.SessionValidator {
+{{#if redis}}	var tokens ports.RefreshTokenStore = userredis.NewRedisTokenStore(rdb, db)
+{{else}}	var tokens ports.RefreshTokenStore = userpostgres.NewPgTokenStore(db)
+{{/if}}	return &activeSessionValidator{tokens: tokens, users: userpostgres.NewRepository(db)}
+}
+
+// activeSessionValidator keeps account lifecycle state in the same protected
+// request boundary as refresh-session state. A disabled account therefore
+// loses both refresh and already-issued access-token use immediately.
+type activeSessionValidator struct {
+	tokens ports.RefreshTokenStore
+	users  ports.UserRepository
+}
+
+func (v *activeSessionValidator) IsSessionActive(ctx context.Context, userID, sessionID uuid.UUID) (bool, error) {
+	u, err := v.users.FindByID(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if u.IsDisabled() {
+		return false, nil
+	}
+	return v.tokens.IsSessionActive(ctx, userID, sessionID)
+}
+
+// NewAuthCleanupFromDB exposes the maintenance composition without leaking
+// the selected token adapter into cmd/auth-cleanup.
+func NewAuthCleanupFromDB(
+	db *gorm.DB,
+{{#if redis}}	rdb *redis.Client,
+{{/if}}
+) *application.AuthCleanup {
+{{#if redis}}	tokens := userredis.NewRedisTokenStore(rdb, db)
+{{else}}	tokens := userpostgres.NewPgTokenStore(db)
+{{/if}}
+	return application.NewAuthCleanup(tokens, userpostgres.NewPostgresMFAStore(db))
 }
 
 // Public aliases keep the composition surface small for cmd/seed and for

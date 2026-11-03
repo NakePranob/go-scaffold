@@ -1,0 +1,37 @@
+package application
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/user/ports"
+)
+
+// CleanupResult reports rows and index members removed by one maintenance run.
+// It is deliberately a value returned to the command, so applications can
+// attach their own metrics or structured audit event without coupling the auth
+// package to a scheduler or logging backend.
+type CleanupResult struct {
+	TokenRows      int64
+	MFAStateRows   int64
+}
+
+type AuthCleanup struct {
+	tokens ports.ExpiredAuthStateStore
+	mfa    ports.ExpiredAuthStateStore
+}
+
+func NewAuthCleanup(tokens, mfa ports.ExpiredAuthStateStore) *AuthCleanup {
+	return &AuthCleanup{tokens: tokens, mfa: mfa}
+}
+
+func (c *AuthCleanup) Run(ctx context.Context) (CleanupResult, error) {
+	tokens, err := c.tokens.DeleteExpired(ctx)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	mfa, err := c.mfa.DeleteExpired(ctx)
+	if err != nil {
+		return CleanupResult{TokenRows: tokens}, err
+	}
+	return CleanupResult{TokenRows: tokens, MFAStateRows: mfa}, nil
+}

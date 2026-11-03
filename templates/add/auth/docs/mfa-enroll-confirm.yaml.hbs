@@ -1,0 +1,20 @@
+post:
+  summary: Confirm required MFA enrollment
+  description: Confirms the first TOTP code for a required MFA enrollment, returns recovery codes once, and creates the normal application session.
+  operationId: confirmRequiredMFA
+  tags: [auth]
+  security: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema: { $ref: './schemas.yaml#/MFAEnrollmentConfirmInput' }
+  responses:
+    "200":
+      description: MFA enabled; refresh token is set as an HttpOnly cookie and recovery codes are returned once
+      content:
+        application/json:
+          schema: { $ref: './schemas.yaml#/MFAEnrollmentConfirmResponse' }
+    "400": { $ref: '../common/responses.yaml#/ValidationError' }
+    "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "409": { $ref: '../common/responses.yaml#/ConflictError' }

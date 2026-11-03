@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,12 @@ type Config struct {
 	Issuer       string
 	JWKSURL      string
 	HTTPClient   *http.Client
+	// Assurance fields are optional because providers do not share the same
+	// acr/amr vocabulary. When configured, the provider requests the claims
+	// and the adapter rejects an ID token that does not satisfy them.
+	MaxAuthAge  time.Duration
+	RequiredACR string
+	RequiredAMR []string
 }
 
 type Provider struct {
@@ -49,6 +56,9 @@ type Provider struct {
 	issuer      string
 	jwksURL     string
 	httpClient  *http.Client
+	maxAuthAge  time.Duration
+	requiredACR string
+	requiredAMR []string
 	keysMu      sync.RWMutex
 	keysFetched time.Time
 	keys        map[string]crypto.PublicKey
@@ -75,6 +85,12 @@ func New(cfg Config) *Provider {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	requiredAMR := make([]string, 0, len(cfg.RequiredAMR))
+	for _, method := range cfg.RequiredAMR {
+		if method = strings.TrimSpace(method); method != "" {
+			requiredAMR = append(requiredAMR, method)
+		}
+	}
 	return &Provider{
 		oauth: &oauth2.Config{
 			ClientID:     cfg.ClientID,
@@ -87,6 +103,9 @@ func New(cfg Config) *Provider {
 		issuer:      issuer,
 		jwksURL:     jwksURL,
 		httpClient:  httpClient,
+		maxAuthAge:  cfg.MaxAuthAge,
+		requiredACR: strings.TrimSpace(cfg.RequiredACR),
+		requiredAMR: requiredAMR,
 		keys:        make(map[string]crypto.PublicKey),
 	}
 }
@@ -100,13 +119,16 @@ func (p *Provider) Begin(_ context.Context, in application.LoginStartInput) (app
 	if !validOAuthValue(in.State) || !validPKCEValue(in.CodeChallenge) || in.CodeChallengeMethod != "S256" || !validOAuthValue(in.Nonce) {
 		return application.Authorization{}, application.NewProviderFailure(fmt.Errorf("invalid oauth state or PKCE parameters"))
 	}
+	options, err := p.assuranceOptions()
+	if err != nil {
+		return application.Authorization{}, application.NewProviderFailure(err)
+	}
 	return application.Authorization{
-		URL: p.oauth.AuthCodeURL(
-			in.State,
+		URL: p.oauth.AuthCodeURL(in.State, append(options,
 			oauth2.SetAuthURLParam("code_challenge", in.CodeChallenge),
 			oauth2.SetAuthURLParam("code_challenge_method", in.CodeChallengeMethod),
 			oauth2.SetAuthURLParam("nonce", in.Nonce),
-		),
+		)...),
 	}, nil
 }
 
@@ -121,6 +143,9 @@ type userInfo struct {
 type idTokenClaims struct {
 	Nonce           string `json:"nonce"`
 	AuthorizedParty string `json:"azp"`
+	AuthTime        *jwt.NumericDate `json:"auth_time"`
+	ACR             string           `json:"acr"`
+	AMR             []string         `json:"amr"`
 	Email           string `json:"email"`
 	EmailVerified   bool   `json:"email_verified"`
 	Name            string `json:"name"`
@@ -223,7 +248,48 @@ func (p *Provider) Complete(ctx context.Context, in application.LoginCompleteInp
 		EmailVerified: info.EmailVerified || claims.EmailVerified,
 		Name:          name,
 		AvatarURL:     picture,
+		AuthTime:      oidcAuthTime(claims.AuthTime),
+		ACR:           claims.ACR,
+		AMR:           append([]string(nil), claims.AMR...),
 	}, nil
+}
+
+func oidcAuthTime(value *jwt.NumericDate) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.Time
+}
+
+func (p *Provider) assuranceOptions() ([]oauth2.AuthCodeOption, error) {
+	if p.maxAuthAge < 0 {
+		return nil, fmt.Errorf("google oidc max authentication age cannot be negative")
+	}
+	options := make([]oauth2.AuthCodeOption, 0, 3)
+	idTokenClaims := make(map[string]any)
+	if p.maxAuthAge > 0 {
+		seconds := int64(p.maxAuthAge / time.Second)
+		if seconds < 1 {
+			return nil, fmt.Errorf("google oidc max authentication age must be at least one second")
+		}
+		options = append(options, oauth2.SetAuthURLParam("max_age", strconv.FormatInt(seconds, 10)))
+		idTokenClaims["auth_time"] = map[string]any{"essential": true}
+	}
+	if p.requiredACR != "" {
+		options = append(options, oauth2.SetAuthURLParam("acr_values", p.requiredACR))
+		idTokenClaims["acr"] = map[string]any{"essential": true, "value": p.requiredACR}
+	}
+	if len(p.requiredAMR) > 0 {
+		idTokenClaims["amr"] = map[string]any{"essential": true}
+	}
+	if len(idTokenClaims) > 0 {
+		claims, err := json.Marshal(map[string]any{"id_token": idTokenClaims})
+		if err != nil {
+			return nil, fmt.Errorf("encode google oidc assurance claims: %w", err)
+		}
+		options = append(options, oauth2.SetAuthURLParam("claims", string(claims)))
+	}
+	return options, nil
 }
 
 // OAuth state and authorization codes are opaque RFC 6749 VSCHAR values. The
@@ -293,7 +359,36 @@ func (p *Provider) validateIDToken(ctx context.Context, raw, expectedNonce strin
 	if subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1 {
 		return idTokenClaims{}, fmt.Errorf("google id token nonce does not match")
 	}
+	if p.maxAuthAge < 0 {
+		return idTokenClaims{}, fmt.Errorf("google oidc max authentication age cannot be negative")
+	}
+	if p.maxAuthAge > 0 {
+		if claims.AuthTime == nil {
+			return idTokenClaims{}, fmt.Errorf("google id token is missing auth_time required by max_age")
+		}
+		age := time.Since(claims.AuthTime.Time)
+		if age < -time.Minute || age > p.maxAuthAge+time.Minute {
+			return idTokenClaims{}, fmt.Errorf("google id token auth_time is outside the configured maximum authentication age")
+		}
+	}
+	if p.requiredACR != "" && claims.ACR != p.requiredACR {
+		return idTokenClaims{}, fmt.Errorf("google id token acr does not satisfy the configured assurance policy")
+	}
+	for _, required := range p.requiredAMR {
+		if !containsString(claims.AMR, required) {
+			return idTokenClaims{}, fmt.Errorf("google id token amr does not satisfy the configured assurance policy")
+		}
+	}
 	return claims, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) publicKey(ctx context.Context, kid string) (crypto.PublicKey, error) {

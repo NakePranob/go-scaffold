@@ -25,6 +25,7 @@ import {
   HexagonalMethodPatchPaths,
   assertHexagonalMethodAbsent,
   hexagonalMarkersPresent,
+  methodFileName,
   patchHexagonalMethod,
 } from "../utils/hexagonal-method-patcher";
 
@@ -105,13 +106,14 @@ function methodOpenapiDocument(
     );
   }
 
-  const status = type === "delete" ? "204" : type === "post" ? "201" : type === "put" || type === "patch" ? "501" : "200";
+  const implementedLookup = type === "get" && getMode === "one";
+  const status = implementedLookup ? "200" : "501";
   operation.push(
     "  responses:",
     `    \"${status}\":`,
-    `      description: ${type === "delete" ? "completed or already absent" : type === "put" || type === "patch" ? "not implemented" : "TODO define response"}`
+    `      description: ${implementedLookup ? "TODO define response" : "not implemented until the application use case is filled in"}`
   );
-  if (type !== "delete" && type !== "put" && type !== "patch") {
+  if (implementedLookup) {
     operation.push(
       "      content:",
       "        application/json:",
@@ -121,7 +123,7 @@ function methodOpenapiDocument(
     );
   }
   operation.push("    \"400\": { $ref: '../../common/responses.yaml#/ValidationError' }");
-  if (type === "get") {
+  if (implementedLookup) {
     operation.push("    \"404\": { $ref: '../../common/responses.yaml#/NotFoundError' }");
   }
 
@@ -145,6 +147,12 @@ async function generateHexagonalMethod(
   const moduleConfig = config.modules[naming.pkg];
   if (!moduleConfig) {
     throw new Error("module " + naming.pkg + " has no split-layout metadata in go-scaffold.config.json; run go-scaffold check first");
+  }
+  if (moduleConfig.surface === "none") {
+    throw new Error(
+      "module " + naming.pkg + " has no database (surface none), and `generate method` writes a repository method and DTOs. " +
+        "Add the endpoint by hand: a route in internal/app/" + naming.pkg + "/adapters/inbound/http/handler.go and a use case in its application package.",
+    );
   }
   const cqrs = moduleConfig.applicationStyle === "cqrs";
   const authModule = naming.pkg === "user" && fs.existsSync(path.join(moduleDir, "application", "contracts.go"));
@@ -268,8 +276,11 @@ async function generateHexagonalMethod(
   console.log(pc.green("\nadded \"" + method.name + "\" to internal/app/" + naming.pkg + "/"));
   console.log("route: " + routeHint(naming, method, type, config.apiPrefix, getMode, field));
   if (docsRelativePath) console.log(pc.green("docs: docs/" + docsRelativePath + " (wired into docs/openapi.yaml)"));
-  const implementationFile = cqrs ? "application/" + (type === "get" ? "queries.go" : "commands.go") : "application/service.go";
-  console.log(pc.dim("\nnext: fill in the TODO in " + implementationFile + ", then go build ./... / go test ./..."));
+  const implementationFile = "application/" + methodFileName(method);
+  const next = type === "get" && getMode === "one"
+    ? "review the generated lookup column type and populate it before using this route, then go test ./..."
+    : "fill in the TODO in " + implementationFile + ", then go build ./... / go test ./...";
+  console.log(pc.dim("\nnext: " + next));
 }
 
 export async function generateMethod(

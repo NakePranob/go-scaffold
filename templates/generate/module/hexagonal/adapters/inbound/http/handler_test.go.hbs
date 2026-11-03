@@ -22,9 +22,9 @@ func TestHandler_Register(t *testing.T) {
 	}, time.Minute)
 	{{/if}}
 {{#if cqrs}}
-	h := NewHandler(nil, nil{{#if auth}}, "test-secret"{{/if}}{{#if permission}}, authz{{/if}})
+	h := NewHandler(nil, nil{{#if auth}}, "test-secret", "test-issuer", "test-audience"{{/if}}{{#if permission}}, authz{{/if}})
 {{else}}
-	h := NewHandler(nil{{#if auth}}, "test-secret"{{/if}}{{#if permission}}, authz{{/if}})
+	h := NewHandler(nil{{#if auth}}, "test-secret", "test-issuer", "test-audience"{{/if}}{{#if permission}}, authz{{/if}})
 {{/if}}
 	h.Register(r)
 }

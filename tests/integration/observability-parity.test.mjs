@@ -121,14 +121,7 @@ test("add observability still refreshes docs checked out with CRLF endings", (t)
   );
 });
 
-// `add observability` instruments cmd/api and nothing else. database.Open is
-// shared, so a River-backed cmd/worker does raise GORM spans — but
-// telemetry.Init, the only caller of otel.SetTracerProvider, runs in cmd/api
-// alone, so those spans reach a no-op provider and vanish, and the worker
-// serves no /metrics. The command used to say "every request and GORM query
-// now gets a trace span", which reads as project-wide. Asserted on the output
-// rather than on the docs' wording, which would rot on the first rewrite.
-test("add observability says the worker is not instrumented, when there is one", (t) => {
+test("add observability instruments an existing worker process", (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-obs-worker-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("node", [CLI, "create", "app", "--defaults", "--no-docker"], { cwd: dir, stdio: "ignore" });
@@ -136,11 +129,23 @@ test("add observability says the worker is not instrumented, when there is one",
   execFileSync("node", [CLI, "add", "worker", "--defaults"], { cwd: app, stdio: "ignore" });
 
   const out = execFileSync("node", [CLI, "add", "observability", "--yes"], { cwd: app, encoding: "utf8" });
-  assert.match(out, /cmd\/worker is not instrumented/);
+  assert.match(out, /cmd\/worker initializes its own tracer/);
+  const worker = readFileSync(path.join(app, "cmd/worker/main.go"), "utf8");
+  assert.match(worker, /telemetry\.Init\(context\.Background\(\), "app-worker"/);
+  assert.match(worker, /telemetry\.TraceJob\(mail\.KindSendEmail/);
+  assert.match(readFileSync(path.join(app, "internal/platform/telemetry/tracing.go"), "utf8"), /func TraceJob\(/);
+});
 
-  // and the claim stays true — if the worker ever does get telemetry, this
-  // test should fail so the message goes with it
-  assert.doesNotMatch(readFileSync(path.join(app, "cmd/worker/main.go"), "utf8"), /telemetry|otel/);
+test("add worker after observability gets the same tracing setup", (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "go-scaffold-worker-obs-first-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cli(dir, "create", "app", "--defaults", "--observability", "--no-docker");
+  const app = path.join(dir, "app");
+  const out = execFileSync("node", [CLI, "add", "worker", "--defaults"], { cwd: app, encoding: "utf8" });
+  assert.match(out, /cmd\/worker initializes its own tracer/);
+  const worker = readFileSync(path.join(app, "cmd/worker/main.go"), "utf8");
+  assert.match(worker, /telemetry\.Init\(context\.Background\(\), "app-worker"/);
+  assert.match(worker, /telemetry\.TraceJob\(mail\.KindSendEmail/);
 });
 
 test("add observability stays quiet about the worker when there isn't one", (t) => {

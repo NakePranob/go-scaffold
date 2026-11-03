@@ -5,6 +5,10 @@ post:
   tags: [users]
   security: [{ bearerAuth: [] }]
   parameters:
+    - name: X-Reauth-Token
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
     - name: provider
       in: path
       required: true
@@ -22,4 +26,5 @@ post:
           schema: { $ref: './schemas.yaml#/IdentityLinkStartResponse' }
     "400": { $ref: '../common/responses.yaml#/ValidationError' }
     "401": { $ref: '../common/responses.yaml#/UnauthorizedError' }
+    "403": { $ref: '../common/responses.yaml#/ForbiddenError' }
     "503": { description: provider unavailable }

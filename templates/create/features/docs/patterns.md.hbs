@@ -194,7 +194,7 @@ Process-level adapters for cross-feature capabilities live in
 the root passes only the role feature's public capabilities:
 
 ```go
-roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.AuthzCacheTTL)
+roleComposition := role.NewCompositionFromDB(db, cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.AuthzCacheTTL)
 user.NewHandlerFromDB(
     db, cfg, roleComposition.Service, roleComposition.Authz,
 ).Register(api)
