@@ -1,16 +1,17 @@
 ---
-name: {{skillName}}
+name: go-scaffold
 description: >
   Use whenever the user asks to add, create, scaffold, wire up, or generate a
-  new domain/feature/resource OR a new endpoint/method in THIS project —
-  including indirect requests such as "add products", "let admins approve
-  orders", "add an endpoint for X", or "look up a user by email". This project
-  was scaffolded by go-scaffold and has {{configPath}};
-  check for that file before assuming this applies. Use the generated
-  modular/Hexagonal boundaries and runtime safety contract described below.
-  Do NOT use for business logic inside an existing method, model/DTO field
-  edits, foreign keys/relations, bug fixes, refactors, or a project without
-  {{configPath}}.
+  new domain/feature/resource OR a new endpoint/method in any package of THIS
+  repository that has a go-scaffold.config.json — including indirect requests
+  such as "add products", "let admins approve orders", "add an endpoint for
+  X", or "look up a user by email". This skill is repository-wide; locate the
+  target package and read its AGENTS.md, docs/architect/, and
+  go-scaffold.config.json before acting. Use the generated modular/Hexagonal
+  boundaries and runtime safety contract described below. Do NOT use it for
+  business logic inside an existing method, model/DTO field edits, foreign
+  keys/relations, bug fixes, refactors, or a package without
+  go-scaffold.config.json.
 ---
 
 # go-scaffold
@@ -21,11 +22,24 @@ application seams, test stubs, OpenAPI TODOs, and migration markers remain
 consistent. After generation, the product's business logic and domain rules
 are still the engineer's responsibility.
 
-This skill applies to the {{packageLabel}}. Run commands from {{runFrom}}; the
-skill file itself lives at the repository root. The real file is
-`.agents/skills/{{skillName}}/SKILL.md`; `.claude/skills/{{skillName}}` is the
-symlink Claude Code reads. Agents that do not load skills should follow
-`{{agentsPath}}`, which carries the same project-wide safety contract.
+This skill is repository-wide. It applies to any package in this repository
+that has a `go-scaffold.config.json`; the package's own `AGENTS.md` and
+`docs/architect/` hold the exact module layout and product-specific rules.
+The real skill file is `.agents/skills/go-scaffold/SKILL.md` at the repository
+root; `.claude/skills/go-scaffold` is the symlink Claude Code reads. Agents
+that do not load skills should follow the target package's `AGENTS.md`, which
+carries the same project-wide safety contract.
+
+## Find the target package first
+
+1. Locate the nearest `go-scaffold.config.json` from the directory the user
+   means. If the repository has several package configs, do not guess: name
+   the candidates and ask which package the change belongs to.
+2. Read that config, including the module profile and feature flags, and the
+   target package's `AGENTS.md` and `docs/architect/` notes.
+3. Run every command from the target package's root, not from the repository
+   root. If the package docs disagree with this skill, the package docs are
+   the source of truth for that package.
 
 ## When to use this skill
 
@@ -48,15 +62,15 @@ Examples that all use this skill:
 - Editing model fields, DTO validation, or existing method behavior
 - Adding a foreign key or relation between domains
 - Bug fixes, refactors, or architecture work unrelated to generated surface
-- Any project without `{{configPath}}`
+- Any package without `go-scaffold.config.json`
 
-Those tasks still follow `{{agentsPath}}` and `{{docsPath}}`/; this skill does
+Those tasks still follow the target package's `AGENTS.md` and `docs/architect/` notes; this skill does
 not authorize schema, auth/security, dependency, architecture, or deployment
 changes without the project's required owner approval.
 
 ## Before running the CLI
 
-1. Read `{{agentsPath}}`, the relevant `{{docsPath}}` notes, and the target
+1. Read the target package's `AGENTS.md`, the relevant `docs/architect/` notes, and the target
    module's existing handler/service/repository.
 2. Run git status --short --branch and confirm the work is on a dedicated,
    non-protected branch. Preserve unrelated local changes.
@@ -72,7 +86,7 @@ changes without the project's required owner approval.
 
 ## Commands
 
-Run from {{runFrom}} and pass every value as a flag:
+Run from the target package's root and pass every value as a flag:
 
 ~~~bash
 go-scaffold generate module <name> [--profile <lean|crud|cqrs> | --surface <minimal|crud|none> [--cqrs]] [--defaults] [--auth] [--permission <code>]

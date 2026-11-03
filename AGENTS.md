@@ -20,6 +20,15 @@ template, the CLI that writes or patches it, and a test that proves the fresh
 and incremental paths agree. Do not fix only a generated checkout and call the
 generator fixed.
 
+## Agent guidance contract
+
+Every generated package writes the same repository-wide skill at
+`.agents/skills/go-scaffold/SKILL.md`, symlinked from
+`.claude/skills/go-scaffold`. The skill must locate the target package's
+`go-scaffold.config.json`, `AGENTS.md`, and `docs/architect/` instead of
+hardcoding one package's paths, and `create` must fail before writing any
+project file when the existing skill differs.
+
 ## Architecture contract emitted by this CLI
 
 Generated projects use a modular monolith with a hexagonal split inside every

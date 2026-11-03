@@ -12,10 +12,8 @@ import { CONFIG_SCHEMA_VERSION } from "../utils/config";
 import { addObservability } from "./observability";
 import { architectureForModuleProfile } from "../utils/module-profile";
 import {
-  agentSkillName,
+  AGENT_SKILL_NAME,
   assertAgentSkillAvailable,
-  findRepoRoot,
-  toPosix,
   writeAgentSkill,
 } from "../utils/agent-guidance";
 
@@ -45,16 +43,8 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
 
   // Agent tooling loads skills from the repository root, not from a package
   // folder in a monorepo. Keep AGENTS.md/CLAUDE.md package-specific, but put
-  // the generated skill at the git root with a package-scoped name.
-  const repoRoot = findRepoRoot(projectDir);
-  const packagePath = toPosix(path.relative(repoRoot, projectDir)) || ".";
-  const skillName = agentSkillName(projectDir, repoRoot);
-  const skillDir = path.join(repoRoot, ".agents", "skills", skillName);
-  const agentsPath = toPosix(path.relative(skillDir, path.join(projectDir, "AGENTS.md")));
-  const docsPath = toPosix(path.relative(skillDir, path.join(projectDir, "docs", "architect")));
-  const packageLabel = packagePath === "." ? "repository root" : `\`${packagePath}\` package`;
-  const runFrom = packagePath === "." ? "the repository root" : `the \`${packagePath}\` package root`;
-  const configPath = packagePath === "." ? "go-scaffold.config.json" : `${packagePath}/go-scaffold.config.json`;
+  // one generic skill at the git root for every generated package.
+  const skillName = AGENT_SKILL_NAME;
 
   let features: ProjectFeatures;
   let apiPrefix: string;
@@ -104,13 +94,6 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     apiPrefix,
     ...architecture,
     ...features,
-    skillName,
-    packagePath,
-    packageLabel,
-    runFrom,
-    agentsPath,
-    docsPath,
-    configPath,
   };
 
   const skillTemplate = await fs.readFile(

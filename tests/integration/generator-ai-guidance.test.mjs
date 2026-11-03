@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -104,7 +114,7 @@ test("generated AI guidance documents the current architecture and safety contra
   }
 });
 
-test("create places a package-scoped skill at the monorepo root", () => {
+test("create places one repository-wide skill at the monorepo root", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-monorepo-guidance-"));
   try {
     execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
@@ -113,38 +123,62 @@ test("create places a package-scoped skill at the monorepo root", () => {
     runCLI(services, "create", "api", "--defaults", "--no-docker");
 
     const project = path.join(services, "api");
-    const skillPath = path.join(scratch, ".agents/skills/go-scaffold-services-api/SKILL.md");
-    const skillLink = path.join(scratch, ".claude/skills/go-scaffold-services-api");
+    const skillPath = path.join(scratch, ".agents/skills/go-scaffold/SKILL.md");
+    const skillLink = path.join(scratch, ".claude/skills/go-scaffold");
 
     assert.ok(existsSync(skillPath), "skill should live at the repository root");
     assert.ok(lstatSync(skillLink).isSymbolicLink(), "Claude should receive a symlink");
-    assert.equal(readlinkSync(skillLink), "../../.agents/skills/go-scaffold-services-api");
+    assert.equal(readlinkSync(skillLink), "../../.agents/skills/go-scaffold");
     assert.ok(existsSync(path.join(project, "AGENTS.md")));
     assert.ok(existsSync(path.join(project, "CLAUDE.md")));
     assert.equal(read(project, "CLAUDE.md").trim(), "@AGENTS.md");
     assert.ok(!existsSync(path.join(project, ".claude/skills")), "skill must not be nested in the package");
-    assert.match(readFileSync(skillPath, "utf8"), /services\/api\/AGENTS\.md/);
+    const skill = readFileSync(skillPath, "utf8");
+    assert.match(skill, /repository-wide/);
+    assert.match(skill, /target package's `AGENTS\.md`/);
+    assert.doesNotMatch(skill, /services\/api\/AGENTS\.md/);
+    assert.doesNotMatch(skill, /go-scaffold-services-api/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
 
-test("create rejects a package-path skill-name collision before writing the project", () => {
-  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-monorepo-collision-"));
+test("two packages share one repository-wide skill", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-shared-guidance-"));
   try {
     execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
     const services = path.join(scratch, "services");
     mkdirSync(services, { recursive: true });
     runCLI(services, "create", "api", "--defaults", "--no-docker");
+    runCLI(services, "create", "web", "--defaults", "--no-docker");
+
+    assert.deepEqual(readdirSync(path.join(scratch, ".agents/skills")), ["go-scaffold"]);
+    assert.ok(existsSync(path.join(services, "api", "AGENTS.md")));
+    assert.ok(existsSync(path.join(services, "web", "AGENTS.md")));
+    assert.ok(!existsSync(path.join(scratch, ".agents/skills/go-scaffold-services-web")));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create refuses to overwrite a different repository-wide skill before writing the project", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-skill-conflict-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const skillPath = path.join(scratch, ".agents/skills/go-scaffold/SKILL.md");
+    mkdirSync(path.dirname(skillPath), { recursive: true });
+    writeFileSync(skillPath, "hand-edited skill\n");
 
     let error = "";
     try {
-      runCLI(scratch, "create", "services-api", "--defaults", "--no-docker");
+      runCLI(scratch, "create", "api", "--defaults", "--no-docker");
     } catch (err) {
       error = `${err.stdout ?? ""}${err.stderr ?? ""}${err.message}`;
     }
-    assert.match(error, /agent skill "go-scaffold-services-api" already exists/);
-    assert.ok(!existsSync(path.join(scratch, "services-api")), "collision must not leave a partial project");
+    assert.match(error, /agent skill "go-scaffold" already exists/);
+    assert.match(error, /different content/);
+    assert.ok(!existsSync(path.join(scratch, "api")), "conflict must not leave a partial project");
+    assert.equal(readFileSync(skillPath, "utf8"), "hand-edited skill\n");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
