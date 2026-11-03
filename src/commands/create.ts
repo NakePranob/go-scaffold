@@ -11,7 +11,13 @@ import { ArchitectureConfig, DEFAULT_ARCHITECTURE_CONFIG, ProjectFeatures } from
 import { CONFIG_SCHEMA_VERSION } from "../utils/config";
 import { addObservability } from "./observability";
 import { architectureForModuleProfile } from "../utils/module-profile";
-import { agentSkillName, findRepoRoot, toPosix, writeAgentSkill } from "../utils/agent-guidance";
+import {
+  agentSkillName,
+  assertAgentSkillAvailable,
+  findRepoRoot,
+  toPosix,
+  writeAgentSkill,
+} from "../utils/agent-guidance";
 
 export interface CreateOptions {
   defaults?: boolean;
@@ -107,13 +113,18 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     configPath,
   };
 
-  await fs.ensureDir(projectDir);
-  await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
   const skillTemplate = await fs.readFile(
     path.join(getTemplatesRoot(), "create/base/.claude/skills/go-scaffold/SKILL.md.hbs"),
     "utf8"
   );
-  writeAgentSkill(projectDir, skillName, { "SKILL.md": renderString(skillTemplate, context) });
+  const skillContent = renderString(skillTemplate, context);
+  // Check before writing any project files: a skill-name collision must not
+  // leave a half-created package behind.
+  assertAgentSkillAvailable(projectDir, skillName, skillContent);
+
+  await fs.ensureDir(projectDir);
+  await applyTemplateEntries(projectDir, CREATE_MANIFEST, context);
+  const agentSkill = writeAgentSkill(projectDir, skillName, { "SKILL.md": skillContent });
   gofmtTree(projectDir);
   writeConfig(projectDir, {
     schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -136,6 +147,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
 
   console.log(pc.green(`\ncreated ${projectName}/`));
   console.log(`\ncd ${projectName}`);
+  console.log(pc.dim(`agent skill: ${path.relative(process.cwd(), agentSkill.link)}${agentSkill.note ? ` (${agentSkill.note})` : ""}`));
   if (features.docker) console.log(`make docker-up`);
   console.log(`make db-create`);
   console.log(`go mod tidy`);

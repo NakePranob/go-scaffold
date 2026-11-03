@@ -39,6 +39,22 @@ export interface AgentSkillResult {
 }
 
 /**
+ * Refuse to silently replace a different skill with the same name. Two
+ * package paths can slug to the same value (`services/api` and
+ * `services-api`), and a generated skill is not disposable user content.
+ */
+export function assertAgentSkillAvailable(projectDir: string, name: string, content: string): void {
+  const repoRoot = findRepoRoot(projectDir);
+  const skillFile = path.join(repoRoot, ".agents", "skills", name, "SKILL.md");
+  if (!fs.existsSync(skillFile)) return;
+  if (fs.readFileSync(skillFile, "utf8") === content) return;
+  throw new Error(
+    `agent skill "${name}" already exists at ${toPosix(path.relative(projectDir, skillFile))} with different content — ` +
+      `two package paths map to the same skill name; rename the package or remove that skill first`
+  );
+}
+
+/**
  * Write the real skill under `<repo-root>/.agents/skills/<name>/` and expose it
  * to Claude Code through `.claude/skills/<name>`. Agent tooling reads these
  * directories from the repository root, not from a monorepo package folder.
@@ -51,13 +67,10 @@ export function writeAgentSkill(
   const repoRoot = findRepoRoot(projectDir);
   const skillDir = path.join(repoRoot, ".agents", "skills", name);
   const written: string[] = [];
+  const skillContent = files["SKILL.md"];
 
-  for (const [relativePath, contents] of Object.entries(files)) {
-    const target = path.join(skillDir, ...relativePath.split("/"));
-    fs.ensureDirSync(path.dirname(target));
-    fs.writeFileSync(target, contents);
-    written.push(toPosix(path.relative(projectDir, target)) || ".");
-  }
+  if (skillContent !== undefined) assertAgentSkillAvailable(projectDir, name, skillContent);
+  writeFiles(projectDir, skillDir, files, written);
 
   const link = path.join(repoRoot, ".claude", "skills", name);
   const linkTarget = path.join("..", "..", ".agents", "skills", name);
@@ -70,10 +83,20 @@ export function writeAgentSkill(
     }
     fs.unlinkSync(link);
   } else if (existing) {
+    if (!existing.isDirectory()) {
+      return {
+        files: written,
+        link,
+        note: `${toPosix(path.relative(projectDir, link))} already exists and is not a directory; left untouched`,
+      };
+    }
+    // Windows can leave a real copy from an earlier run. Refresh it from the
+    // authoritative .agents tree instead of returning a silently stale skill.
+    writeFiles(projectDir, link, files, written);
     return {
       files: written,
       link,
-      note: `${toPosix(path.relative(projectDir, link))} already exists; left untouched`,
+      note: `${toPosix(path.relative(projectDir, link))} refreshed real copy (symlink unavailable earlier)`,
     };
   }
 
@@ -84,13 +107,22 @@ export function writeAgentSkill(
   } catch {
     // Windows can refuse directory symlinks without developer mode. Keep the
     // portable .agents copy authoritative and give Claude Code a real copy.
-    for (const [relativePath, contents] of Object.entries(files)) {
-      const target = path.join(link, ...relativePath.split("/"));
-      fs.ensureDirSync(path.dirname(target));
-      fs.writeFileSync(target, contents);
-      written.push(toPosix(path.relative(projectDir, target)) || ".");
-    }
+    writeFiles(projectDir, link, files, written);
     return { files: written, link, note: `${toPosix(path.relative(projectDir, link))} (copied; symlink unavailable)` };
+  }
+}
+
+function writeFiles(
+  projectDir: string,
+  destination: string,
+  files: Record<string, string>,
+  written: string[]
+): void {
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const target = path.join(destination, ...relativePath.split("/"));
+    fs.ensureDirSync(path.dirname(target));
+    fs.writeFileSync(target, contents);
+    written.push(toPosix(path.relative(projectDir, target)) || ".");
   }
 }
 

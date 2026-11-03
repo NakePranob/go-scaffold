@@ -128,3 +128,24 @@ test("create places a package-scoped skill at the monorepo root", () => {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("create rejects a package-path skill-name collision before writing the project", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-monorepo-collision-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const services = path.join(scratch, "services");
+    mkdirSync(services, { recursive: true });
+    runCLI(services, "create", "api", "--defaults", "--no-docker");
+
+    let error = "";
+    try {
+      runCLI(scratch, "create", "services-api", "--defaults", "--no-docker");
+    } catch (err) {
+      error = `${err.stdout ?? ""}${err.stderr ?? ""}${err.message}`;
+    }
+    assert.match(error, /agent skill "go-scaffold-services-api" already exists/);
+    assert.ok(!existsSync(path.join(scratch, "services-api")), "collision must not leave a partial project");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
