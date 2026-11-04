@@ -48,10 +48,13 @@ export type ArchitectureStyle = "modular-monolith";
 export type ArchitectureBoundary = "hexagonal";
 export type PackageLayout = "split";
 /**
+ * "read" is a read-only module: it owns a table and a repository, but the
+ * repository exposes only FindAll/FindByID. `generate method` accepts list
+ * reads only.
  * "none" is a module that owns no table: no repository port, persistence
  * adapter, DTO seams, or migration. `generate method` does not apply to it.
  */
-export type ModuleSurface = "minimal" | "crud" | "none";
+export type ModuleSurface = "minimal" | "read" | "crud" | "none";
 export type ApplicationStyle = "service" | "cqrs";
 /**
  * Named module presets exposed by the wizard. "advanced" is intentionally

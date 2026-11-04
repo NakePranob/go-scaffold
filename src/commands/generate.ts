@@ -8,6 +8,7 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import {
   MODULE_FILES,
   MODULE_FILES_CQRS,
+  MODULE_FILES_READ,
   MODULE_FILES_MINIMAL,
   MODULE_FILES_MINIMAL_CQRS,
   MODULE_FILES_NONE,
@@ -38,6 +39,7 @@ export async function generateModule(
   const config = readConfig(projectDir);
   const surface = opts.surface ?? "minimal";
   const full = surface === "crud";
+  const readOnly = surface === "read";
   const noDatabase = surface === "none";
 
   // --permission implies --auth (authz.Require must run after RequireAuth) —
@@ -56,6 +58,9 @@ export async function generateModule(
     if (!PERMISSION_CODE_PATTERN.test(opts.permission)) {
       throw new Error(`invalid permission code "${opts.permission}" — must start with a lowercase letter and contain only lowercase letters, digits, ':', '_', or '-'`);
     }
+  }
+  if (readOnly && opts.cqrs) {
+    throw new Error("--surface read currently supports the service application style only; use --surface minimal with --cqrs for a read-heavy CQRS module");
   }
 
   const naming = resolveProjectModuleNaming(projectDir, rawName ?? (await promptModuleName()));
@@ -84,6 +89,7 @@ export async function generateModule(
     auth: opts.auth,
     permission: opts.permission,
     full,
+    readOnly,
     noDatabase,
     cqrs: opts.cqrs,
     moduleSurface: surface,
@@ -92,6 +98,7 @@ export async function generateModule(
 
   const moduleFiles = {
     minimal: opts.cqrs ? MODULE_FILES_MINIMAL_CQRS : MODULE_FILES_MINIMAL,
+    read: MODULE_FILES_READ,
     crud: opts.cqrs ? MODULE_FILES_CQRS : MODULE_FILES,
     none: opts.cqrs ? MODULE_FILES_NONE_CQRS : MODULE_FILES_NONE,
   }[surface];

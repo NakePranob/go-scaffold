@@ -154,6 +154,12 @@ async function generateHexagonalMethod(
         "Add the endpoint by hand: a route in internal/app/" + naming.pkg + "/adapters/inbound/http/handler.go and a use case in its application package.",
     );
   }
+  if (moduleConfig.surface === "read" && (opts.type !== "get" || opts.getMode !== "all")) {
+    throw new Error(
+      "module " + naming.pkg + " is read-only (surface read). " +
+        "`generate method` accepts only `--type get --get-mode all`; add write endpoints by changing the module surface deliberately.",
+    );
+  }
   const cqrs = moduleConfig.applicationStyle === "cqrs";
   const authModule = naming.pkg === "user" && fs.existsSync(path.join(moduleDir, "application", "contracts.go"));
   // `add rbac`'s role module, not a module someone generated and named "role":

@@ -86,7 +86,7 @@ program
   .option("--observability", "include Prometheus /metrics and OpenTelemetry tracing; off unless this flag is passed")
   .option("--api-prefix <prefix>", 'group every API route under a prefix such as "v1" or "api/v1"; omit for no prefix')
   .option("--module-profile <profile>", "default profile for future modules: lean, crud, or cqrs; replaces the two profile questions")
-  .option("--module-surface <surface>", "legacy axis flag for future modules: minimal, crud, or none (no database); wizard asks when omitted")
+  .option("--module-surface <surface>", "legacy axis flag for future modules: minimal, read, crud, or none (no database); wizard asks when omitted")
   .option("--application-style <style>", "legacy axis flag for future modules: service or cqrs; wizard asks when omitted")
   .action(async (name, opts) => {
     try {
@@ -269,7 +269,7 @@ generate
   )
   .option(
     "--surface <surface>",
-    "module surface: minimal, crud, or none (no database: no repository, Postgres adapter, DTOs, or migration); combine with --cqrs"
+    "module surface: minimal, read (list/get only), crud, or none (no database: no repository, Postgres adapter, DTOs, or migration); combine with --cqrs"
   )
   // kept working for muscle memory, hidden from help: minimal is already the
   // default, so advertising a flag that asks for it is pure noise.

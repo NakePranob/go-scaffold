@@ -94,6 +94,11 @@ export async function promptModuleSurface(defaultValue: ModuleSurface = "minimal
         description: "the safe default; add endpoints one at a time with `generate method`",
       },
       {
+        name: "Read-only — list/get only, no writes",
+        value: "read",
+        description: "owns a table, but the repository exposes only FindAll/FindByID; `generate method` accepts list reads only",
+      },
+      {
         name: "CRUD skeleton — list/get/create/update/delete",
         value: "crud",
         description: "five routes wired; writes return 501 until fields and business rules are implemented",

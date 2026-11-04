@@ -16,7 +16,7 @@ import {
 
 const CONFIG_FILE = "go-scaffold.config.json";
 export const CONFIG_SCHEMA_VERSION = 2;
-const MODULE_SURFACES: readonly ModuleSurface[] = ["minimal", "crud", "none"];
+const MODULE_SURFACES: readonly ModuleSurface[] = ["minimal", "read", "crud", "none"];
 
 export function configPath(projectDir: string): string {
   return path.join(projectDir, CONFIG_FILE);

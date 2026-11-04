@@ -1,0 +1,29 @@
+// Package ports declares the dependencies owned by the {{pkg}} application.
+// This module is read-only: the port exposes list/get and no writes.
+package ports
+
+import (
+	"context"
+
+	"{{goModule}}/internal/app/{{modulePath}}/domain"
+
+	"github.com/google/uuid"
+)
+
+// ListFilter is the whole question the list endpoint asks. The zero value is
+// "the first page of everything", so a caller only sets what it narrows by.
+type ListFilter struct {
+	Search string
+	Sort   string
+	Desc   bool
+	Limit  int
+	Offset int
+}
+
+// Repository is the read-only persistence port for this module.
+type Repository interface {
+	// FindAll answers one page and the total the filter matched.
+	FindAll(context.Context, ListFilter) ([]domain.{{pascalName}}, int64, error)
+	FindByID(context.Context, uuid.UUID) (*domain.{{pascalName}}, error)
+	// go-scaffold:repository-interface
+}
