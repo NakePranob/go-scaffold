@@ -173,6 +173,15 @@ function totpCode(secret, now = Date.now()) {
   return String(value).padStart(6, "0");
 }
 
+// The generated MFA flow records an accepted TOTP time-step so a code cannot
+// be replayed. Enrollment confirmation consumes the current step, so the
+// subsequent login must use the next step rather than the setup code again.
+function nextTOTPCode(secret) {
+  const secondsIntoStep = Math.floor(Date.now() / 1000) % 30;
+  execFileSync("sleep", [String(30 - secondsIntoStep + 1)]);
+  return totpCode(secret);
+}
+
 // Set by the "add worker" step once it patches fullApp's readyz to also ping
 // Redis — every later step in this file that boots fullApp's cmd/api shares
 // that same project, so it needs a reachable Redis from that point on too,
@@ -1398,10 +1407,16 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
   }
   const mfaChallenge = field(mfaLogin, "challenge");
   if (!mfaChallenge) throw new Error(`expected an opaque MFA challenge, got:\n${mfaLogin}`);
-  const mfaVerified = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: mfaChallenge, code: totpCode(mfaSetupBody.secret) })]);
+  const mfaLoginCode = nextTOTPCode(mfaSetupBody.secret);
+  const mfaVerified = run("curl", ["-s", "-i", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: mfaChallenge, code: mfaLoginCode })]);
   if (!/^HTTP\/1\.1 200/.test(mfaVerified) || !cookie(mfaVerified) || !field(mfaVerified, "access_token")) throw new Error(`expected MFA verification to issue the normal session, got:\n${mfaVerified}`);
   const mfaReplay = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: mfaChallenge, code: mfaCode })]);
   if (status(mfaReplay) !== "401" || !mfaReplay.includes("AUTH_MFA_INVALID")) throw new Error(`expected one-use MFA challenge replay to fail, got:\n${mfaReplay}`);
+  const mfaFreshLogin = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
+  const mfaFreshLoginBody = jsonBody(mfaFreshLogin);
+  if (status(mfaFreshLogin) !== "200" || !mfaFreshLoginBody.mfa_required) throw new Error(`expected a fresh MFA challenge for replay testing, got:\n${mfaFreshLogin}`);
+  const mfaFreshReplay = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/mfa/verify`, ...jsonHeader, "-d", JSON.stringify({ challenge: mfaFreshLoginBody.challenge, code: mfaLoginCode })]);
+  if (status(mfaFreshReplay) !== "401" || !mfaFreshReplay.includes("AUTH_MFA_INVALID")) throw new Error(`expected the consumed TOTP step to fail on a fresh challenge, got:\n${mfaFreshReplay}`);
 
   const recoveryLogin = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/auth/login`, ...jsonHeader, "-d", '{"email":"alice@example.com","password":"brandnewpassword123"}']);
   const recoveryLoginBody = jsonBody(recoveryLogin);
@@ -1441,11 +1456,13 @@ step(hasDocker ? "add auth: register/login/refresh rotation+reuse-detection/logo
     throw new Error(`expected the replacement MFA enrollment to be enabled, got:\n${mfaRecoveredStatus}`);
   }
 
-  const mfaDisableReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ password: "brandnewpassword123", code: replacementCode })]);
+  const mfaDisableReauthCode = nextTOTPCode(replacementSetupBody.secret);
+  const mfaDisableReauth = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/reauth`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-d", JSON.stringify({ password: "brandnewpassword123", code: mfaDisableReauthCode })]);
   if (status(mfaDisableReauth) !== "200") throw new Error(`expected password plus TOTP reauthentication before disabling MFA, got:\n${mfaDisableReauth}`);
   const mfaDisableReauthToken = field(mfaDisableReauth, "reauth_token");
   if (!mfaDisableReauthToken) throw new Error(`expected a short-lived reauth token before disabling MFA, got:\n${mfaDisableReauth}`);
-  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaDisableReauthToken}`, "-d", JSON.stringify({ code: replacementCode })]);
+  const mfaDisableCode = nextTOTPCode(replacementSetupBody.secret);
+  const mfaDisable = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", "-X", "POST", `${B}/users/me/mfa/disable`, ...jsonHeader, "-H", `Authorization: Bearer ${access}`, "-H", `X-Reauth-Token: ${mfaDisableReauthToken}`, "-d", JSON.stringify({ code: mfaDisableCode })]);
   if (status(mfaDisable) !== "204") throw new Error(`expected a valid TOTP to disable MFA, got:\n${mfaDisable}`);
   const mfaStatusDisabled = run("curl", ["-s", "-w", "HTTPSTATUS:%{http_code}", `${B}/users/me/mfa`, "-H", `Authorization: Bearer ${access}`]);
   if (status(mfaStatusDisabled) !== "200" || jsonBody(mfaStatusDisabled).enabled) throw new Error(`expected MFA to be disabled after the authenticated disable flow, got:\n${mfaStatusDisabled}`);

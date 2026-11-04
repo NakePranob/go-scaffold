@@ -152,7 +152,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 
 ### 3.2 MFA implementation details
 
-- [x] TOTP/recovery code ใช้ one-time verification และมี expiration/attempt controls ตาม generated flow
+- [x] TOTP/recovery code ใช้ one-time verification, TOTP replay ถูก reject ด้วย `last_totp_step` ต่อ enrollment และมี expiration/attempt controls ตาม generated flow
 - [x] MFA verification และ enrollment/step-up paths ใช้ durable per-user `login_throttle` key, ตรวจ lock ก่อนยอมรับ OTP, นับ TOTP failure และล้าง counter เมื่อสำเร็จ; การสร้าง challenge ใหม่ถูกปิดระหว่าง lock
 - [x] secret/token generation ใช้ CSPRNG path ที่มี test รองรับ
 - [~] ต้องยืนยันเวลาของ server ที่ใช้ตรวจ TOTP และกำหนด clock-drift policy ใน production
@@ -245,6 +245,7 @@ ASVS เป็นมาตรฐานสำหรับการตรวจส
 - [x] user email normalized มี unique constraint และ primary-email invariant
 - [x] external identities และ MFA enrollment/recovery-code tables มี foreign-key/cascade rules ตาม schema ที่สร้าง
 - [x] MFA secret ถูกเข้ารหัส ส่วน MFA challenge/recovery code/refresh/recovery token เก็บเป็น hash หรือ one-time state
+- [x] MFA enrollment เก็บ time-step ของ TOTP ที่ใช้สำเร็จล่าสุด และ reject code ที่ replay; existing generated projects ต้องเพิ่ม `last_totp_step` ตาม migration note ใน generated auth doc
 - [x] auth token tables มี expiry/absolute-expiry/session indexes และ login throttle มี retention sweep ระหว่าง failed login
 - [~] ต้อง review ว่า user-agent/IP/device metadata มี minimization, retention และ privacy policy
 - [~] generated config ตรวจ positive TTL และความสัมพันธ์ inactivity <= absolute พร้อม test; deployment ยังต้องบันทึกค่าจริงที่ audit ได้

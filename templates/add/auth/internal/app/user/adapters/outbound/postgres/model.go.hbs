@@ -96,6 +96,7 @@ type MFAEnrollment struct {
 	UserID          uuid.UUID `gorm:"type:uuid;primaryKey"`
 	EncryptedSecret string    `gorm:"type:text;not null"`
 	Enabled         bool      `gorm:"not null;default:false"`
+	LastTOTPStep    int64     `gorm:"not null;default:0"`
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

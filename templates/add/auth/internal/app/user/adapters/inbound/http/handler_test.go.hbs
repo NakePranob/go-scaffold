@@ -87,7 +87,7 @@ func newOAuthTestRouter(t *testing.T) *gin.Engine {
 func newCrossSiteTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	svc := stubService{}
-	h := NewHandlerWithOrigins(svc, "test-secret", time.Hour, true, "none", []string{"https://app.example.test"}, allowAllLimiter{}, allowAllAuthorizer{})
+	h := NewHandlerWithOrigins(svc, "test-secret", time.Hour, true, "none", []string{"https://app.example.test", "https://App.Example.test:443/"}, allowAllLimiter{}, allowAllAuthorizer{})
 	router := gin.New()
 	router.Use(middleware.Error(false))
 	h.Register(router)
@@ -370,6 +370,8 @@ func TestHandler_CrossSiteStateChangingRequestsRequireAnAllowedOrigin(t *testing
 		{name: "missing origin", wantStatus: http.StatusForbidden},
 		{name: "untrusted origin", origin: "https://evil.example.test", wantStatus: http.StatusForbidden},
 		{name: "allowed exact origin", origin: "https://app.example.test", wantStatus: http.StatusNoContent},
+		{name: "allowed canonical origin", origin: "https://APP.EXAMPLE.TEST:443", wantStatus: http.StatusNoContent},
+		{name: "malformed origin with path", origin: "https://app.example.test/path", wantStatus: http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

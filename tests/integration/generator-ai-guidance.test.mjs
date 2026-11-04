@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -27,7 +38,7 @@ test("generated AI guidance documents the current architecture and safety contra
     runCLI(scratch, "create", "sample", "--defaults", "--no-docker", "--api-prefix", "v1");
     const project = path.join(scratch, "sample");
     const agents = read(project, "AGENTS.md");
-    const skill = read(project, ".claude/skills/go-scaffold/SKILL.md");
+    const skill = read(project, ".agents/skills/go-scaffold/SKILL.md");
     const architecture = read(project, "docs/architect/architecture.md");
 
     assert.match(agents, /modular\s+monolith/);
@@ -96,6 +107,147 @@ test("generated AI guidance documents the current architecture and safety contra
     assert.doesNotMatch(skill, /finds the record by id, TODO before saving/);
 
     assert.equal(read(project, "CLAUDE.md").trim(), "@AGENTS.md");
+    const skillLink = path.join(project, ".claude/skills/go-scaffold");
+    assert.ok(lstatSync(skillLink).isSymbolicLink());
+    assert.equal(readlinkSync(skillLink), "../../.agents/skills/go-scaffold");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create places one repository-wide skill at the monorepo root", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-monorepo-guidance-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const services = path.join(scratch, "services");
+    mkdirSync(services, { recursive: true });
+    runCLI(services, "create", "api", "--defaults", "--no-docker");
+
+    const project = path.join(services, "api");
+    const skillPath = path.join(scratch, ".agents/skills/go-scaffold/SKILL.md");
+    const skillLink = path.join(scratch, ".claude/skills/go-scaffold");
+
+    assert.ok(existsSync(skillPath), "skill should live at the repository root");
+    assert.ok(lstatSync(skillLink).isSymbolicLink(), "Claude should receive a symlink");
+    assert.equal(readlinkSync(skillLink), "../../.agents/skills/go-scaffold");
+    assert.ok(existsSync(path.join(project, "AGENTS.md")));
+    assert.ok(existsSync(path.join(project, "CLAUDE.md")));
+    assert.equal(read(project, "CLAUDE.md").trim(), "@AGENTS.md");
+    assert.ok(!existsSync(path.join(project, ".claude/skills")), "skill must not be nested in the package");
+    const skill = readFileSync(skillPath, "utf8");
+    assert.match(skill, /repository-wide/);
+    assert.match(skill, /target package's `AGENTS\.md`/);
+    assert.doesNotMatch(skill, /services\/api\/AGENTS\.md/);
+    assert.doesNotMatch(skill, /go-scaffold-services-api/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("two packages share one repository-wide skill", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-shared-guidance-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const services = path.join(scratch, "services");
+    mkdirSync(services, { recursive: true });
+    runCLI(services, "create", "api", "--defaults", "--no-docker");
+    runCLI(services, "create", "web", "--defaults", "--no-docker");
+
+    assert.deepEqual(readdirSync(path.join(scratch, ".agents/skills")), ["go-scaffold"]);
+    assert.ok(existsSync(path.join(services, "api", "AGENTS.md")));
+    assert.ok(existsSync(path.join(services, "web", "AGENTS.md")));
+    assert.ok(!existsSync(path.join(scratch, ".agents/skills/go-scaffold-services-web")));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create refuses to overwrite a different repository-wide skill before writing the project", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-skill-conflict-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const skillPath = path.join(scratch, ".agents/skills/go-scaffold/SKILL.md");
+    mkdirSync(path.dirname(skillPath), { recursive: true });
+    writeFileSync(skillPath, "hand-edited skill\n");
+
+    let error = "";
+    try {
+      runCLI(scratch, "create", "api", "--defaults", "--no-docker");
+    } catch (err) {
+      error = `${err.stdout ?? ""}${err.stderr ?? ""}${err.message}`;
+    }
+    assert.match(error, /agent skill "go-scaffold" already exists/);
+    assert.match(error, /different content/);
+    assert.ok(!existsSync(path.join(scratch, "api")), "conflict must not leave a partial project");
+    assert.equal(readFileSync(skillPath, "utf8"), "hand-edited skill\n");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create reports a directory where the skill file should be", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-skill-directory-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    mkdirSync(path.join(scratch, ".agents/skills/go-scaffold/SKILL.md"), { recursive: true });
+
+    let error = "";
+    try {
+      runCLI(scratch, "create", "api", "--defaults", "--no-docker");
+    } catch (err) {
+      error = `${err.stdout ?? ""}${err.stderr ?? ""}${err.message}`;
+    }
+    assert.match(error, /but is not a file/);
+    assert.ok(!existsSync(path.join(scratch, "api")), "invalid skill path must not leave a partial project");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create leaves a foreign .claude skill link untouched", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-foreign-link-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    mkdirSync(path.join(scratch, ".claude", "skills"), { recursive: true });
+    const link = path.join(scratch, ".claude", "skills", "go-scaffold");
+    symlinkSync("../../elsewhere", link, "dir");
+
+    const output = runCLI(scratch, "create", "api", "--defaults", "--no-docker");
+    assert.match(output, /left untouched \(expected \.\.\/\.\.\/\.agents\/skills\/go-scaffold\)/);
+    assert.equal(readlinkSync(link), "../../elsewhere");
+    assert.ok(existsSync(path.join(scratch, ".agents/skills/go-scaffold/SKILL.md")));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create leaves a real file at the .claude skill path untouched", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-link-file-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    mkdirSync(path.join(scratch, ".claude", "skills"), { recursive: true });
+    const link = path.join(scratch, ".claude", "skills", "go-scaffold");
+    writeFileSync(link, "not a directory\n");
+
+    const output = runCLI(scratch, "create", "api", "--defaults", "--no-docker");
+    assert.match(output, /already exists and is not a directory; left untouched/);
+    assert.equal(readFileSync(link, "utf8"), "not a directory\n");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("create refreshes a real copy at the .claude skill path", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-link-copy-"));
+  try {
+    execFileSync("git", ["init"], { cwd: scratch, stdio: "ignore" });
+    const copy = path.join(scratch, ".claude", "skills", "go-scaffold");
+    mkdirSync(copy, { recursive: true });
+    writeFileSync(path.join(copy, "SKILL.md"), "stale\n");
+
+    const output = runCLI(scratch, "create", "api", "--defaults", "--no-docker");
+    assert.match(output, /refreshed real copy/);
+    assert.match(readFileSync(path.join(copy, "SKILL.md"), "utf8"), /^---\nname: go-scaffold/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
