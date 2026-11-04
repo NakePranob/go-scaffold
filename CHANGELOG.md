@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed: one repository-wide agent skill
+
+`create` now writes a single `.agents/skills/go-scaffold/SKILL.md` at the
+repository root for every package, instead of a package-scoped name such as
+`go-scaffold-services-api`. The skill locates the target package's
+`go-scaffold.config.json`, `AGENTS.md`, and `docs/architect/` before acting,
+so package-specific paths stay in the package docs.
+
+An existing skill whose content differs — a hand edit, or a package generated
+by another CLI version — is reported and left untouched instead of being
+silently overwritten. `create` writes no project files before that check
+fails.
+
 ## 0.14.0
 
 `go-scaffold check` is stricter. A project that passed under 0.13.0 can fail
