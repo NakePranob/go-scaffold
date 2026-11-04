@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.2
+
+### Fixed: README architecture diagram
+
+The README architecture diagram is now a static image, so it renders on npm as well as GitHub. No CLI behavior changed.
+
 ## 0.15.1
 
 ### Changed: README landing page

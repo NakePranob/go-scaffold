@@ -1,5 +1,5 @@
 <div align="center">
-  <img src=".github/assets/readme/hero.png" alt="go-scaffold: a Go backend with boundaries, from day one" width="100%">
+  <img src="https://raw.githubusercontent.com/NakePranob/go-scaffold/main/.github/assets/readme/hero.png" alt="go-scaffold: a Go backend with boundaries, from day one" width="100%">
   <h1>go-scaffold</h1>
   <p><strong>A Go backend with boundaries, from day one.</strong></p>
   <p>
@@ -71,15 +71,7 @@ to it.
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-  HTTP[adapters/inbound/http] --> APP[application]
-  APP --> DOMAIN[domain]
-  APP --> PORTS[ports]
-  PORTS --> PG[adapters/outbound/postgres]
-  APP --> SHARED[internal/shared]
-  WORKER[cmd/worker] --> APP
-```
+![go-scaffold architecture: inbound adapters, application, domain, ports, and outbound adapters](https://raw.githubusercontent.com/NakePranob/go-scaffold/main/.github/assets/readme/architecture.png)
 
 The HTTP adapter translates requests. The application layer owns the use case.
 The domain owns the rules. Ports define what the application needs. Adapters
