@@ -61,7 +61,7 @@ to it.
 
 | Area | What `go-scaffold` gives you |
 | --- | --- |
-| **Architecture** | Domain modules with `domain`, `application`, `ports`, and `adapters`; a `check` command that enforces the layer rules. |
+| **Architecture** | Domain modules with `domain`, `application`, `ports`, and `adapters`; a `check` command that enforces the layer rules. [See the proof](#proof-it-catches-a-violation). |
 | **Auth** | Email/password and provider auth, sessions, refresh rotation, MFA, recovery codes, and ASVS-oriented security defaults. |
 | **RBAC** | Roles and permissions with generated authorization middleware. |
 | **Data** | Timestamped migration pairs, GORM models, repositories, and a migration verification workflow. |
@@ -69,22 +69,67 @@ to it.
 | **Operations** | OpenAPI docs, Prometheus metrics, OpenTelemetry tracing, Docker Compose, and health endpoints. |
 | **Agent guidance** | `AGENTS.md`, `CLAUDE.md`, and one repository-wide skill under `.agents/skills/go-scaffold/`. |
 
+## CLI or manual setup?
+
+A manual setup gives you the most freedom. It is the right choice when the architecture is intentionally different, the project is a one-off, or you need to own every file from the first commit. The cost is that every convention — layer boundaries, auth wiring, framework path rules — has to be rebuilt and reviewed again.
+
+The CLI is for repetition. It gives the next project the same shape, encodes the module layout and process composition rules, and ships boundary checks and agent guidance with the scaffold. It is not automatically faster; a fair speed benchmark has not been run. It is more consistent when more than one person or agent touches the repo.
+
+Use the CLI when repeatability, reviewable boundaries, and a stable target for AI agents matter. Use a manual setup when the architecture itself is the experiment.
+
 ## How it fits together
 
-```mermaid
-flowchart LR
-  HTTP[adapters/inbound/http] --> APP[application]
-  APP --> DOMAIN[domain]
-  APP --> PORTS[ports]
-  PORTS --> PG[adapters/outbound/postgres]
-  APP --> SHARED[internal/shared]
-  WORKER[cmd/worker] --> APP
-```
+![go-scaffold architecture: inbound adapters, application, domain, ports, and outbound adapters](https://raw.githubusercontent.com/NakePranob/go-scaffold/main/.github/assets/readme/architecture.png)
 
 The HTTP adapter translates requests. The application layer owns the use case.
 The domain owns the rules. Ports define what the application needs. Adapters
 provide PostgreSQL, queues, mail, or other infrastructure. `go-scaffold check`
 keeps those directions honest.
+
+## Proof it catches a violation
+
+`application` is the use-case layer; it must not know which database or queue implementation is used. Importing an outbound adapter couples business logic to infrastructure, makes tests require the adapter, and can create circular dependencies.
+
+After `generate module orders`, this compiles but points the wrong way:
+
+```go
+// internal/app/order/application/illegal.go
+package application
+
+import _ "example.com/app/internal/app/order/adapters/outbound/postgres"
+```
+
+```bash
+go build ./...
+# exit 0 — it compiles, but the architecture is still wrong
+
+go-scaffold check
+# exit 1
+# application layer imports forbidden internal layer
+# internal/app/order/application/illegal.go
+```
+
+Remove the illegal import:
+
+```bash
+go-scaffold check
+# exit 0
+# architecture check passed: 1 split module(s), hexagonal boundary
+```
+
+**What this catches:** application → outbound adapter imports, domain → application/adapter imports, private composition imports, and transport DTO leakage. **What it does not catch:** runtime dependency injection, transaction boundaries, and behavior inside an adapter.
+
+## Same input, same output
+
+Measured pilot, not yet a CI gate: three independent runs with the same CLI version and flags. Migration filenames are timestamped, so `YYYYMMDDHHMMSS_` is normalized to `<timestamp>_` before hashing.
+
+- 55 files in each run
+- manifest `7c8a6acf…`
+- A↔B diff: 0
+- A↔C diff: 0
+- editing one generated file produced an 11-line manifest diff
+
+The manifest is every generated file's relative path plus its SHA-256, excluding `.git`.
 
 ## Generated project
 
@@ -134,6 +179,19 @@ The skill tells an agent to locate the target package's
 `go-scaffold.config.json`, `AGENTS.md`, and `docs/architect/` before acting. If
 a skill with different content already exists, `create` reports it and leaves
 it untouched.
+
+## Auth: beta
+
+`add auth` generates email/password and provider auth, sessions and refresh rotation, MFA and recovery codes, login throttling, browser-origin checks, and RBAC hooks. It is beta: these flows have unit/integration coverage, not a production security audit.
+
+**What you still own:** HTTPS and trusted proxy, secret management and rotation, provider credentials, mail delivery, recovery/helpdesk policy, and server-side authorization tests. Existing projects need the `last_totp_step` migration.
+
+## What this does not cover
+
+- Runtime behavior against your production PostgreSQL/Redis
+- Worker retry, idempotency, and mail failure handling
+- A full security audit
+- Every possible architecture rule; `check` is a static direct-import check
 
 ## Learn more
 
