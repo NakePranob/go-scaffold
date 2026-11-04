@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.1
+
+### Changed: README landing page
+
+The README now leads with a visual overview, quick start, feature map, and architecture diagram. The previous long-form command reference moved to `REFERENCE.md`, so the landing page stays scannable without losing any command details.
+
 ## 0.15.0
 
 ### Changed: one repository-wide agent skill
