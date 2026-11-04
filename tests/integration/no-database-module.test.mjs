@@ -115,6 +115,13 @@ test("generate module --surface read emits a read-only port and rejects writes",
     const project = path.join(scratch, "hub");
     const moduleDir = "internal/app/catalog";
 
+    const plan = JSON.parse(run(project, "generate", "module", "catalog", "--surface", "read", "--plan", "--defaults"));
+    assert.equal(plan.writes, false);
+    assert.equal(plan.surface, "read");
+    assert.ok(plan.files.includes("internal/app/catalog/ports/repository.go"));
+    assert.ok(plan.files.includes("internal/app/catalog/adapters/outbound/postgres/repository.go"));
+    assert.ok(!existsSync(path.join(project, moduleDir)), "plan must not write the module");
+
     const output = run(project, "generate", "module", "catalog", "--surface", "read", "--defaults");
     assert.match(output, /recorded module defaults: read \+ service/);
 

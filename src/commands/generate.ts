@@ -27,6 +27,8 @@ export interface GenerateModuleOptions {
   cqrs?: boolean;
   auth?: boolean;
   permission?: string;
+  /** Print the intended file/migration plan as JSON and write nothing. */
+  plan?: boolean;
 }
 
 const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9:_-]*$/;
@@ -102,6 +104,32 @@ export async function generateModule(
     crud: opts.cqrs ? MODULE_FILES_CQRS : MODULE_FILES,
     none: opts.cqrs ? MODULE_FILES_NONE_CQRS : MODULE_FILES_NONE,
   }[surface];
+
+  if (opts.plan) {
+    const slug = migrationSlug(naming);
+    const plannedMigrations = noDatabase
+      ? []
+      : [`migrations/<version>_create_${slug}.up.sql`, `migrations/<version>_create_${slug}.down.sql`];
+    if (opts.permission) {
+      plannedMigrations.push(
+        `migrations/<version>_add_${slug}_permission.up.sql`,
+        `migrations/<version>_add_${slug}_permission.down.sql`
+      );
+    }
+    console.log(JSON.stringify({
+      writes: false,
+      module: modulePath,
+      surface,
+      applicationStyle: opts.cqrs ? "cqrs" : "service",
+      auth: Boolean(opts.auth),
+      permission: opts.permission ?? null,
+      files: moduleFiles.map((f) => path.join("internal", "app", modulePath, f.output)),
+      migrations: plannedMigrations,
+      main: path.relative(projectDir, mainGoPath),
+    }, null, 2));
+    return;
+  }
+
   const moduleEntries = moduleFiles.map((f) => ({
     template: f.template,
     output: path.join("internal", "app", modulePath, f.output),

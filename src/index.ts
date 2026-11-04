@@ -120,6 +120,7 @@ type ModuleWizardOptions = {
   auth?: boolean;
   permission?: string;
   defaults?: boolean;
+  plan?: boolean;
 };
 
 function assertModuleWizardInputs(
@@ -213,7 +214,7 @@ async function runModuleWizard(
     cqrs ??= config.architecture.defaultApplicationStyle === "cqrs";
   }
 
-  await generateModule(name, { surface: surface ?? "minimal", cqrs: cqrs ?? false, auth, permission });
+  await generateModule(name, { surface: surface ?? "minimal", cqrs: cqrs ?? false, auth, permission, plan: opts.plan });
 }
 
 // runGenerateWizard is `generate`/`g` run bare — asks which target, then
@@ -277,6 +278,7 @@ generate
   .option("--auth", "require a valid access token for this module's routes (needs `add auth`; omitted means public)")
   .option("--permission <code>", "also require this permission via authz.Require (needs `add rbac` and --auth; e.g. users:manage)")
   .option("--defaults", "skip every wizard question; use recorded project defaults and keep the module public (for CI/scripting)")
+  .option("--plan", "print the intended files and migrations as JSON; write nothing")
   .action(async (name, opts) => {
     try {
       const profile = parseModuleProfile(opts.profile);
@@ -297,6 +299,7 @@ generate
         auth: opts.auth,
         permission: opts.permission,
         defaults: opts.defaults,
+        plan: opts.plan,
       });
     } catch (err) {
       fail(err);
