@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0
 
 ### Changed: one repository-wide agent skill
 
@@ -14,6 +14,23 @@ An existing skill whose content differs — a hand edit, or a package generated
 by another CLI version — is reported and left untouched instead of being
 silently overwritten. `create` writes no project files before that check
 fails.
+
+### Fixed: generated auth hardening
+
+- MFA TOTP codes are one-time per enrollment; replay is rejected across login,
+  reauthentication, enrollment confirmation, and disable.
+- The Redis fixed-window limiter creates its counter and TTL atomically, and
+  heals legacy keys without a TTL.
+- Browser origins are canonicalized before exact matching (scheme/host case,
+  default ports, and an optional root slash), while malformed origins are
+  rejected.
+
+Existing generated auth projects need this migration:
+
+```sql
+ALTER TABLE user_svc.mfa_enrollments
+    ADD COLUMN IF NOT EXISTS last_totp_step BIGINT NOT NULL DEFAULT 0;
+```
 
 ## 0.14.0
 
