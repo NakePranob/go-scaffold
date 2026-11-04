@@ -155,6 +155,9 @@ test("check rejects an application adapter import", () => {
       () => run(project, "check"),
       /application layer imports forbidden internal layer/
     );
+
+    rmSync(path.join(project, "internal", "app", "order", "application", "illegal.go"));
+    assert.match(run(project, "check"), /architecture check passed: 1 split module/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
