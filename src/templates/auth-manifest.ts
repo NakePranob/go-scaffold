@@ -85,6 +85,7 @@ const REDIS: Entry[] = [
   { template: "add/auth/internal/app/user/adapters/outbound/redis/tokenstore.go.hbs", output: "internal/app/user/adapters/outbound/redis/tokenstore.go" },
   { template: "add/auth/internal/app/user/adapters/outbound/redis/tokenstore_test.go.hbs", output: "internal/app/user/adapters/outbound/redis/tokenstore_test.go" },
   { template: "add/auth/internal/shared/middleware/ratelimit_redis.go.hbs", output: "internal/shared/middleware/ratelimit_redis.go" },
+  { template: "add/auth/internal/shared/middleware/ratelimit_redis_test.go.hbs", output: "internal/shared/middleware/ratelimit_redis_test.go" },
 ];
 
 export function authFiles(store: AuthStore): Entry[] {

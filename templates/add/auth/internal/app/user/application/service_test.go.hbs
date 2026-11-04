@@ -352,18 +352,30 @@ func (f *fakeMFAStore) PutPendingEnrollment(_ context.Context, userID uuid.UUID,
 	return nil
 }
 
-func (f *fakeMFAStore) ConfirmEnrollment(_ context.Context, userID uuid.UUID, secret string, hashes []string) error {
+func (f *fakeMFAStore) ConfirmEnrollment(_ context.Context, userID uuid.UUID, secret string, hashes []string, step int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(hashes) == 0 {
+	if len(hashes) == 0 || step <= 0 {
 		return errors.New("MFA recovery codes are required")
 	}
-	f.enrollments[userID] = MFAEnrollment{EncryptedSecret: secret, Enabled: true}
+	f.enrollments[userID] = MFAEnrollment{EncryptedSecret: secret, Enabled: true, LastTOTPStep: step}
 	f.recovery[userID] = map[string]struct{}{}
 	for _, hash := range hashes {
 		f.recovery[userID][hash] = struct{}{}
 	}
 	return nil
+}
+
+func (f *fakeMFAStore) AcceptTOTPStep(_ context.Context, userID uuid.UUID, step int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	enrollment, ok := f.enrollments[userID]
+	if !ok || !enrollment.Enabled || step <= enrollment.LastTOTPStep {
+		return false, nil
+	}
+	enrollment.LastTOTPStep = step
+	f.enrollments[userID] = enrollment
+	return true, nil
 }
 
 func (f *fakeMFAStore) Disable(_ context.Context, userID uuid.UUID) error {

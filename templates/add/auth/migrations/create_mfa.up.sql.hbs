@@ -5,6 +5,7 @@ CREATE TABLE user_svc.mfa_enrollments (
     user_id          UUID PRIMARY KEY REFERENCES user_svc.users(id) ON DELETE CASCADE,
     encrypted_secret TEXT NOT NULL,
     enabled          BOOLEAN NOT NULL DEFAULT false,
+    last_totp_step   BIGINT NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );

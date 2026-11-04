@@ -265,7 +265,8 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string)
 	if err != nil {
 		return nil, errMFAConfig()
 	}
-	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+	step, ok := matchTOTPStep(secret, code, s.clock(), settings.TOTPWindow)
+	if !ok {
 		return nil, s.recordMFAFailure(ctx, key)
 	}
 
@@ -273,7 +274,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID uuid.UUID, code string)
 	if err != nil {
 		return nil, fmt.Errorf("generate MFA recovery codes: %w", err)
 	}
-	if err := s.mfa.ConfirmEnrollment(ctx, userID, enrollment.EncryptedSecret, hashes); err != nil {
+	if err := s.mfa.ConfirmEnrollment(ctx, userID, enrollment.EncryptedSecret, hashes, step); err != nil {
 		return nil, fmt.Errorf("confirm MFA enrollment: %w", err)
 	}
 	if err := s.clearMFAFailures(ctx, key); err != nil {
@@ -363,7 +364,11 @@ func (s *Service) DisableMFA(ctx context.Context, userID uuid.UUID, code string)
 	if err != nil {
 		return errMFAConfig()
 	}
-	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+	accepted, err := s.consumeTOTPStep(ctx, userID, secret, code, settings)
+	if err != nil {
+		return err
+	}
+	if !accepted {
 		return s.recordMFAFailure(ctx, key)
 	}
 	if err := s.mfa.Disable(ctx, userID); err != nil {
@@ -418,7 +423,11 @@ func (s *Service) VerifyMFA(ctx context.Context, rawChallenge, code string, ipAd
 	if err != nil {
 		return nil, errMFAConfig()
 	}
-	if !validTOTPCode(secret, code, s.clock(), settings.TOTPWindow) {
+	accepted, err := s.consumeTOTPStep(ctx, challenge.UserID, secret, code, settings)
+	if err != nil {
+		return nil, err
+	}
+	if !accepted {
 		recoveryHash, ok := normalizedRecoveryCodeHash(code)
 		if !ok {
 			return nil, s.recordMFAFailure(ctx, key)
@@ -494,23 +503,39 @@ func buildOTPAuthURI(issuer, email, secret string) string {
 	return "otpauth://totp/" + label + "?" + query.Encode()
 }
 
-func validTOTPCode(secret, rawCode string, now time.Time, window int) bool {
+// consumeTOTPStep accepts a TOTP code only when the matched time-step has
+// not been used before for this enrollment. A replay is a failed MFA attempt,
+// so callers record it through the same durable throttle as a wrong code.
+func (s *Service) consumeTOTPStep(ctx context.Context, userID uuid.UUID, secret, rawCode string, settings MFASettings) (bool, error) {
+	step, ok := matchTOTPStep(secret, rawCode, s.clock(), settings.TOTPWindow)
+	if !ok {
+		return false, nil
+	}
+	accepted, err := s.mfa.AcceptTOTPStep(ctx, userID, step)
+	if err != nil {
+		return false, fmt.Errorf("record MFA TOTP step: %w", err)
+	}
+	return accepted, nil
+}
+
+func matchTOTPStep(secret, rawCode string, now time.Time, window int) (int64, bool) {
 	code := strings.TrimSpace(rawCode)
 	if len(code) != totpDigits {
-		return false
+		return 0, false
 	}
 	for i := 0; i < len(code); i++ {
 		if code[i] < '0' || code[i] > '9' {
-			return false
+			return 0, false
 		}
 	}
 	for offset := -window; offset <= window; offset++ {
-		candidate, err := totpCode(secret, now.Add(time.Duration(offset)*totpPeriod))
+		candidateTime := now.Add(time.Duration(offset) * totpPeriod)
+		candidate, err := totpCode(secret, candidateTime)
 		if err == nil && subtle.ConstantTimeCompare([]byte(candidate), []byte(code)) == 1 {
-			return true
+			return candidateTime.Unix() / int64(totpPeriod/time.Second), true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // totpCode follows RFC 6238's interoperable default: HMAC-SHA-1, six digits,

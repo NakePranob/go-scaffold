@@ -67,12 +67,21 @@ func TestPostgresMFAStore_ConsumesChallengesAndRecoveryCodesOnce(t *testing.T) {
 	}
 
 	const recoveryHash = "recovery-hash-real-pg"
-	if err := store.ConfirmEnrollment(ctx, userID, enrollment.EncryptedSecret, []string{recoveryHash}); err != nil {
+	if err := store.ConfirmEnrollment(ctx, userID, enrollment.EncryptedSecret, []string{recoveryHash}, 1); err != nil {
 		t.Fatalf("confirm enrollment: %v", err)
 	}
 	enrollment, found, err = store.GetEnrollment(ctx, userID)
 	if err != nil || !found || !enrollment.Enabled {
 		t.Fatalf("expected enabled enrollment, got found=%t enrollment=%+v err=%v", found, enrollment, err)
+	}
+	if accepted, err := store.AcceptTOTPStep(ctx, userID, 1); err != nil || accepted {
+		t.Fatalf("an already-recorded TOTP step must be rejected: accepted=%t err=%v", accepted, err)
+	}
+	if accepted, err := store.AcceptTOTPStep(ctx, userID, 2); err != nil || !accepted {
+		t.Fatalf("a newer TOTP step must be accepted: accepted=%t err=%v", accepted, err)
+	}
+	if accepted, err := store.AcceptTOTPStep(ctx, userID, 2); err != nil || accepted {
+		t.Fatalf("the same TOTP step must not be accepted twice: accepted=%t err=%v", accepted, err)
 	}
 
 	challengeHash := "challenge-hash-real-pg-" + uuid.NewString()
@@ -104,7 +113,7 @@ func TestPostgresMFAStore_RecoversEnrollmentAtomically(t *testing.T) {
 		t.Fatalf("put pending enrollment: %v", err)
 	}
 	const recoveryHash = "recovery-hash-atomic"
-	if err := store.ConfirmEnrollment(ctx, userID, "encrypted-secret-recovery", []string{recoveryHash, "recovery-hash-unused"}); err != nil {
+	if err := store.ConfirmEnrollment(ctx, userID, "encrypted-secret-recovery", []string{recoveryHash, "recovery-hash-unused"}, 1); err != nil {
 		t.Fatalf("confirm enrollment: %v", err)
 	}
 	challengeHash := "challenge-hash-recovery-" + uuid.NewString()

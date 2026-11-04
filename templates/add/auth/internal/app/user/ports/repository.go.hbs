@@ -127,6 +127,7 @@ type RecoveryTokenStore interface {
 type MFAEnrollment struct {
 	EncryptedSecret string
 	Enabled         bool
+	LastTOTPStep    int64
 }
 
 type MFAChallenge struct {
@@ -139,7 +140,8 @@ type MFAChallenge struct {
 type MFAStore interface {
 	GetEnrollment(context.Context, uuid.UUID) (MFAEnrollment, bool, error)
 	PutPendingEnrollment(context.Context, uuid.UUID, string) error
-	ConfirmEnrollment(context.Context, uuid.UUID, string, []string) error
+	ConfirmEnrollment(context.Context, uuid.UUID, string, []string, int64) error
+	AcceptTOTPStep(context.Context, uuid.UUID, int64) (bool, error)
 	Disable(context.Context, uuid.UUID) error
 	HasRecoveryCode(context.Context, uuid.UUID, string) (bool, error)
 	RecoverEnrollment(context.Context, uuid.UUID, string) (bool, error)

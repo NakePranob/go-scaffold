@@ -13,12 +13,21 @@ import (
 )
 
 const testMFAEncryptionKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+const testMFAPassword = "brandnewpassword123"
 
 func configuredMFATestService(t *testing.T) (*Service, *fakeMFAStore, uuid.UUID, time.Time) {
 	t.Helper()
 	userID := uuid.New()
 	mfa := newFakeMFAStore()
-	svc := newTestService(&fakeRepo{user: &domain.User{ID: userID, Email: "mfa@example.com"}}, newFakeTokenStore())
+	passwordHash := "hashed:" + testMFAPassword
+	svc := newTestService(&fakeRepo{
+		user: &domain.User{ID: userID, Email: "mfa@example.com"},
+		identity: &domain.Identity{
+			UserID:       userID,
+			Provider:     domain.ProviderLocal,
+			PasswordHash: &passwordHash,
+		},
+	}, newFakeTokenStore())
 	now := time.Now()
 	svc.mfa = mfa
 	svc.now = func() time.Time { return now }
@@ -135,7 +144,7 @@ func TestMFAChallengeIsRequiredAndOneUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	if err := svc.mfa.ConfirmEnrollment(ctx, userID, encrypted, []string{}); err == nil {
+	if err := svc.mfa.ConfirmEnrollment(ctx, userID, encrypted, []string{}, 1); err == nil {
 		t.Fatal("expected store to reject an enrollment without recovery codes")
 	}
 	// Use the service path so the exact recovery-code policy is exercised.
@@ -147,16 +156,125 @@ func TestMFAChallengeIsRequiredAndOneUse(t *testing.T) {
 		t.Fatalf("confirm: %v", err)
 	}
 
+	svc.now = func() time.Time { return now.Add(totpPeriod) }
+	loginCode, _ := totpCode(secret, now.Add(totpPeriod))
 	result, err := svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
 	if err != nil || result.MFAChallenge == "" || result.AuthResponse != nil {
 		t.Fatalf("expected pre-session MFA challenge: %+v, %v", result, err)
 	}
-	auth, err := svc.VerifyMFA(ctx, result.MFAChallenge, code)
+	auth, err := svc.VerifyMFA(ctx, result.MFAChallenge, loginCode)
 	if err != nil || auth == nil || auth.AccessToken == "" || auth.RefreshToken == "" {
 		t.Fatalf("verify MFA: %+v, %v", auth, err)
 	}
-	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, code); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, loginCode); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
 		t.Fatalf("expected one-use challenge rejection, got %v", err)
+	}
+}
+
+func TestTOTPCodeCannotBeReplayedAcrossChallenges(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	code, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("totp: %v", err)
+	}
+	if _, err := svc.ConfirmMFA(ctx, userID, code); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	result, err := svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
+	if err != nil || result.MFAChallenge == "" {
+		t.Fatalf("login challenge: %+v, %v", result, err)
+	}
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, code); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("expected the enrollment code to be rejected as replay, got %v", err)
+	}
+
+	svc.now = func() time.Time { return now.Add(totpPeriod) }
+	nextCode, err := totpCode(setup.Secret, now.Add(totpPeriod))
+	if err != nil {
+		t.Fatalf("next totp: %v", err)
+	}
+	result, err = svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
+	if err != nil || result.MFAChallenge == "" {
+		t.Fatalf("second login challenge: %+v, %v", result, err)
+	}
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, nextCode); err != nil {
+		t.Fatalf("the next time-step must remain usable after a replay: %v", err)
+	}
+}
+
+func TestReauthenticationCannotReplayALoginCode(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	confirmCode, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("confirm totp: %v", err)
+	}
+	if _, err := svc.ConfirmMFA(ctx, userID, confirmCode); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	svc.now = func() time.Time { return now.Add(totpPeriod) }
+	loginCode, err := totpCode(setup.Secret, now.Add(totpPeriod))
+	if err != nil {
+		t.Fatalf("login totp: %v", err)
+	}
+	result, err := svc.completeLogin(ctx, &domain.User{ID: userID, Email: "mfa@example.com"})
+	if err != nil || result.MFAChallenge == "" {
+		t.Fatalf("login challenge: %+v, %v", result, err)
+	}
+	if _, err := svc.VerifyMFA(ctx, result.MFAChallenge, loginCode); err != nil {
+		t.Fatalf("verify login: %v", err)
+	}
+
+	if _, err := svc.Reauthenticate(ctx, userID, testMFAPassword, loginCode); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("reauthentication must reject the consumed login step, got %v", err)
+	}
+}
+
+func TestDisableMFARequiresANewStepAfterReauthentication(t *testing.T) {
+	svc, _, userID, now := configuredMFATestService(t)
+	ctx := context.Background()
+	setup, err := svc.SetupMFA(ctx, userID)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	confirmCode, err := totpCode(setup.Secret, now)
+	if err != nil {
+		t.Fatalf("confirm totp: %v", err)
+	}
+	if _, err := svc.ConfirmMFA(ctx, userID, confirmCode); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	svc.now = func() time.Time { return now.Add(totpPeriod) }
+	reauthCode, err := totpCode(setup.Secret, now.Add(totpPeriod))
+	if err != nil {
+		t.Fatalf("reauth totp: %v", err)
+	}
+	if _, err := svc.Reauthenticate(ctx, userID, testMFAPassword, reauthCode); err != nil {
+		t.Fatalf("reauthenticate: %v", err)
+	}
+	if err := svc.DisableMFA(ctx, userID, reauthCode); codeOfMFAError(err) != "AUTH_MFA_INVALID" {
+		t.Fatalf("disable must reject the reauthentication step, got %v", err)
+	}
+
+	svc.now = func() time.Time { return now.Add(2 * totpPeriod) }
+	disableCode, err := totpCode(setup.Secret, now.Add(2*totpPeriod))
+	if err != nil {
+		t.Fatalf("disable totp: %v", err)
+	}
+	if err := svc.DisableMFA(ctx, userID, disableCode); err != nil {
+		t.Fatalf("disable with a fresh step: %v", err)
 	}
 }
 
@@ -298,7 +416,12 @@ func TestMFALockoutBlocksNewChallengesAndSuccessClearsCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("challenge after lock window: %v", err)
 	}
-	if _, err := svc.VerifyMFA(context.Background(), result.MFAChallenge, validCode); err != nil {
+	svc.now = func() time.Time { return now.Add(totpPeriod) }
+	verifyCode, err := totpCode(setup.Secret, now.Add(totpPeriod))
+	if err != nil {
+		t.Fatalf("next totp: %v", err)
+	}
+	if _, err := svc.VerifyMFA(context.Background(), result.MFAChallenge, verifyCode); err != nil {
 		t.Fatalf("valid MFA after lock window: %v", err)
 	}
 	if _, exists := repo.failures[mfaThrottleKey(userID)]; exists {

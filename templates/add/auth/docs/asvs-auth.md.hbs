@@ -45,6 +45,23 @@ Level 3 is intentionally not selectable by this generator until a
 phishing-resistant WebAuthn/passkey adapter and suspicious-login notification
 flow are generated and tested.
 
+## TOTP replay protection
+
+Generated MFA records the last accepted TOTP time-step per enrollment and
+rejects a code whose step has already been used. The guard covers login
+verification, reauthentication, enrollment confirmation, and factor disable.
+A rejected replay counts toward the durable per-user MFA throttle.
+Reauthentication consumes the presented step too, so a subsequent disable
+request needs a code from a later step.
+
+Projects generated before this guard was added need this migration before
+using the new templates:
+
+```sql
+ALTER TABLE user_svc.mfa_enrollments
+    ADD COLUMN IF NOT EXISTS last_totp_step BIGINT NOT NULL DEFAULT 0;
+```
+
 Run `go-scaffold check` for structural generator checks and this profile's
 runtime/deployment requirements. A passing architecture check is not an ASVS assessment. Capture
 source review, integration tests, deployment settings, and manual assessment
