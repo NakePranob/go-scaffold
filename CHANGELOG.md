@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added: stdio MCP server
+
+`go-scaffold mcp` exposes the existing interview, create plan/apply, check,
+preset list, and config show commands as typed MCP tools over stdio. The
+server is a thin subprocess wrapper: the CLI remains the source of truth and
+the enforcement point. It never prompts, writes no project files from a plan,
+and rejects a root outside its launch directory.
+
 ### Added: configurable HTTP response contracts
 
 `create` now accepts `--http-preset <name>` and `--preset-dir <dir>`. The
