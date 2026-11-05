@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added: full-stack gateway
+
+`fullstack plan` and `fullstack apply` run the Go API and an FSD client from
+one answers file. The gateway resolves the API's HTTP preset, validates both
+the `create --plan` output and the client's own `plan`, and on apply writes the
+API's `http-contract.json` next to the client config before running the
+client's `apply`. It routes to the existing CLIs rather than generating files
+itself. `api.existing` reuses a project and exports its frozen contract. The
+MCP server exposes both steps as `scaffold_fullstack_plan` and
+`scaffold_fullstack_apply`.
+
 ### Added: portable HTTP contract artifact
 
 `create` now writes `http-contract.json` at the project root, and
@@ -33,8 +44,10 @@ project. `preset list`, `validate`, `diff`, and `upgrade` manage the contract;
 `skill print` and `skill install` ship the agent bootstrap skill.
 
 `check` verifies the generated `httpx`/error middleware against the frozen
-shapes and reports the preset. Non-default presets warn when combined with the
-generated Next.js/SvelteKit clients, which still assume the default shapes.
+shapes and reports the preset. A non-default preset warns that the FSD client
+needs the project's `http-contract.json` (`add error-handling
+--http-contract`), or that both sides can be generated together with
+`go-scaffold fullstack`.
 
 ### Added: read-only module surface and JSON plan
 

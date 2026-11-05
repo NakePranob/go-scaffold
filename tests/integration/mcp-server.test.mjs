@@ -65,6 +65,8 @@ test("MCP server exposes the scaffolding tools and keeps plan read-only", { time
       "scaffold_contract_export",
       "scaffold_create_apply",
       "scaffold_create_plan",
+      "scaffold_fullstack_apply",
+      "scaffold_fullstack_plan",
       "scaffold_interview",
       "scaffold_preset_list",
     ]);

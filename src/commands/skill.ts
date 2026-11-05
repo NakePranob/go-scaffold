@@ -25,7 +25,13 @@ presets. Do not invent options or hardcode the question list.
    HTTP contract, project name, and file count. Wait for confirmation.
 5. Run \`go-scaffold create --answers answers.json --apply\`, then
    \`go-scaffold check\` in the new project.
-6. For later work, read the generated project skill at
+6. If the user also wants a Next.js or SvelteKit client, do not create the API
+   first. Write one full-stack answers file with \`api.answers\` and
+   \`client.target\`/\`client.path\`/\`client.answers\`, run
+   \`go-scaffold fullstack plan --answers fullstack.json\`, wait for
+   confirmation, then \`fullstack apply\`. The gateway exports the API's
+   \`http-contract.json\` into the client and runs the client CLI's own apply.
+7. For later work, read the generated project skill at
    \`.agents/skills/go-scaffold/SKILL.md\` and the project's
    \`docs/architect/http-contract.md\`.
 
