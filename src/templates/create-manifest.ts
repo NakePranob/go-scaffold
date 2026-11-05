@@ -97,6 +97,10 @@ export const CREATE_MANIFEST: TemplateEntry[] = [
     output: "docs/architect/architecture.md",
   },
   {
+    template: "create/base/docs/architect/http-contract.md.hbs",
+    output: "docs/architect/http-contract.md",
+  },
+  {
     template: "create/features/docs/patterns.md.hbs",
     output: "docs/architect/patterns.md",
   },

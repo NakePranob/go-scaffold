@@ -1,6 +1,9 @@
 package apperror
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+)
 
 // AppError is an error that knows both its HTTP status and its payload.
 // Lower layers (service/repo) can return one without importing net/http themselves.
@@ -46,4 +49,33 @@ func NewInternal(cause ...error) *AppError {
 
 func NewNotImplemented() *AppError {
 	return &AppError{HTTPStatus: http.StatusNotImplemented, Code: "NOT_IMPLEMENTED", Message: "not implemented"}
+}
+
+// Rule maps a domain sentinel to the HTTP status, public code, and message
+// used by an inbound adapter. Rules are ordered: the first errors.Is match
+// wins, so a more specific sentinel can be placed before its parent.
+type Rule struct {
+	Err     error
+	Status  int
+	Code    string
+	Message string
+}
+
+// Translate is the one domain-error-to-HTTP translator. It leaves an existing
+// *AppError alone, maps the first matching rule, and falls back to the
+// internal-error envelope while preserving the cause for the middleware log.
+func Translate(err error, rules ...Rule) error {
+	if err == nil {
+		return nil
+	}
+	var appErr *AppError
+	if errors.As(err, &appErr) {
+		return err
+	}
+	for _, rule := range rules {
+		if errors.Is(err, rule.Err) {
+			return New(rule.Status, rule.Code, rule.Message)
+		}
+	}
+	return NewInternal(err)
 }

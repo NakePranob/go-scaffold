@@ -2,9 +2,11 @@ package httpx
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 
 	"{{goModule}}/internal/shared/apperror"
+	"{{goModule}}/internal/shared/pagination"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -34,4 +36,26 @@ func BindErr(err error) *apperror.AppError {
 		return apperror.NewValidation("invalid input", details)
 	}
 	return apperror.NewValidation("invalid json body", nil)
+}
+
+// OK writes a successful single-resource response.
+func OK(c *gin.Context, data any) {
+	c.JSON(http.StatusOK, data)
+}
+
+// Created writes a successful create response.
+func Created(c *gin.Context, data any) {
+	c.JSON(http.StatusCreated, data)
+}
+
+// NoContent writes a successful response with no body.
+func NoContent(c *gin.Context) {
+	c.Status(http.StatusNoContent)
+	c.Writer.WriteHeaderNow()
+}
+
+// Page writes the standard list envelope with the row count the filter
+// matched.
+func Page(c *gin.Context, p pagination.Params, data any, total int64) {
+	c.JSON(http.StatusOK, p.ResponseWithTotal(data, total))
 }

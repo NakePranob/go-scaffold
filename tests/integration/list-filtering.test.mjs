@@ -75,7 +75,7 @@ test("a crud module lists through one filter struct and answers a total", (t) =>
   assert.match(handler, /ports\.ListFilter\{[\s\S]*Search: p\.Search/);
   assert.match(handler, /Sort:\s+p\.Sort/);
   assert.match(handler, /Desc:\s+p\.Desc/);
-  assert.match(handler, /p\.ResponseWithTotal\(out, total\)/);
+  assert.match(handler, /httpx\.Page\(c, p, out, total\)/);
 
   go(project, "mod", "tidy");
   go(project, "test", "./...");

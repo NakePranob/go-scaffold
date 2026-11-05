@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"{{goModule}}/internal/app/user/application"
+	"{{goModule}}/internal/shared/httpx"
 
 	"github.com/gin-gonic/gin"
 )
@@ -83,13 +84,17 @@ func setNoStoreHeaders(c *gin.Context) {
 
 func (h *Handler) writeAuthResult(c *gin.Context, status int, result *application.AuthResult) {
 	if result.MFAEnrollmentToken != "" {
-		c.JSON(http.StatusOK, mfaEnrollmentRequiredResponse{MFAEnrollmentRequired: true, EnrollmentToken: result.MFAEnrollmentToken})
+		httpx.OK(c, mfaEnrollmentRequiredResponse{MFAEnrollmentRequired: true, EnrollmentToken: result.MFAEnrollmentToken})
 		return
 	}
 	if result.MFAChallenge != "" {
-		c.JSON(http.StatusOK, mfaChallengeResponse{MFARequired: true, Challenge: result.MFAChallenge})
+		httpx.OK(c, mfaChallengeResponse{MFARequired: true, Challenge: result.MFAChallenge})
 		return
 	}
 	h.setRefreshCookie(c, result.RefreshToken)
-	c.JSON(status, toCookieResponse(result.AuthResponse))
+	if status == http.StatusCreated {
+		httpx.Created(c, toCookieResponse(result.AuthResponse))
+		return
+	}
+	httpx.OK(c, toCookieResponse(result.AuthResponse))
 }

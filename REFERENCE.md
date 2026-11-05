@@ -697,10 +697,10 @@ my-api/
 │   │   └── database/               # GORM connection and pool
 │   ├── shared/
 │   │   ├── config/                 # environment configuration
-│   │   ├── apperror/               # consistent application errors
+│   │   ├── apperror/               # error envelope, rules, Translate
 │   │   ├── dberr/                  # database error classification
 │   │   ├── dbq/                    # escaped contains-search and whitelisted sort
-│   │   ├── httpx/                  # HTTP parsing and binding helpers
+│   │   ├── httpx/                  # success writers, parsing, binding helpers
 │   │   ├── id/                     # UUID generation
 │   │   ├── middleware/             # request ID, logging, errors, CORS
 │   │   ├── pagination/             # ?limit/offset/q/sort/order parsing, responses
@@ -708,7 +708,7 @@ my-api/
 │   └── app/                        # empty until generate module is used
 ├── migrations/                     # embedded, versioned SQL migrations
 ├── docs/
-│   ├── architect/                  # architecture, patterns, tech stack
+│   ├── architect/                  # architecture, patterns, tech stack, HTTP contract
 │   └── openapi.yaml                # optional API index and referenced files
 ├── go-scaffold.config.json         # CLI defaults, features, and module choices
 ├── go.mod
@@ -717,6 +717,11 @@ my-api/
 ├── Dockerfile
 └── docker-compose.yml              # optional, when Docker was selected
 ~~~
+
+Generated inbound adapters use `internal/shared/httpx` (`OK`, `Created`,
+`NoContent`, `Page`) for success and `apperror.Translate` for errors. The
+generated `docs/architect/http-contract.md` documents the exact wire shapes;
+the existing JSON/status contract did not change.
 
 Optional commands add these areas:
 

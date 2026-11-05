@@ -325,7 +325,7 @@ The generated `FindAll` calls `dbq.Search` with no columns and carries an empty
 you name the columns this list is searched and ordered by. Those two TODOs are
 the lines standing between the scaffold and a working list.
 
-**4. Respond with the shared envelope.** `p.ResponseWithTotal(out, total)` —
+**4. Respond with the shared envelope.** `httpx.Page(c, p, out, total)` —
 `{ data, limit, offset, total }`, the same shape for every resource. Anything
 extra is a named key added to that map and documented in the endpoint's
 OpenAPI file. Reuse `common/parameters.yaml#/Search`, `#/Limit`, `#/Offset`,

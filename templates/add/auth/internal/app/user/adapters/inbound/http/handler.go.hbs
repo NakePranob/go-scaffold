@@ -229,14 +229,14 @@ func (h *Handler) adminListUsers(c *gin.Context) {
 	}
 	items, total, err := h.svc.List(c.Request.Context(), filter)
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	out := make([]meResponse, len(items))
 	for i := range items {
 		out[i] = toMeResponse(&items[i])
 	}
-	c.JSON(http.StatusOK, p.ResponseWithTotal(out, total))
+	httpx.Page(c, p, out, total)
 }
 func (h *Handler) adminGetUser(c *gin.Context) {
 	id, ok := httpx.ParseID(c)
@@ -245,10 +245,10 @@ func (h *Handler) adminGetUser(c *gin.Context) {
 	}
 	u, err := h.svc.Get(c.Request.Context(), id)
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, toMeResponse(u))
+	httpx.OK(c, toMeResponse(u))
 }
 func (h *Handler) setRole(c *gin.Context) {
 	id, ok := httpx.ParseID(c)
@@ -262,10 +262,10 @@ func (h *Handler) setRole(c *gin.Context) {
 	}
 	u, err := h.svc.SetRole(c.Request.Context(), id, in.Role)
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, toMeResponse(u))
+	httpx.OK(c, toMeResponse(u))
 }
 
 func (h *Handler) setAccountStatus(c *gin.Context) {
@@ -279,60 +279,57 @@ func (h *Handler) setAccountStatus(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SetAccountDisabled(c.Request.Context(), id, in.Disabled); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	u, err := h.svc.Get(c.Request.Context(), id)
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, toMeResponse(u))
+	httpx.OK(c, toMeResponse(u))
 }
 
-func toHTTPError(err error) error {
+var httpStatusForCode = map[string]int{
+	"USER_NOT_FOUND":             http.StatusNotFound,
+	"USER_EMAIL_TAKEN":           http.StatusConflict,
+	"AUTH_ALREADY_VERIFIED":      http.StatusConflict,
+	"AUTH_MFA_ALREADY_ENABLED":   http.StatusConflict,
+	"AUTH_MFA_NOT_ENROLLED":      http.StatusConflict,
+	"AUTH_MFA_SETUP_REQUIRED":    http.StatusConflict,
+	"AUTH_IDENTITY_ALREADY_LINKED": http.StatusConflict,
+	"AUTH_IDENTITY_CONFLICT":     http.StatusConflict,
+	"AUTH_LAST_IDENTITY":         http.StatusConflict,
+	"AUTH_IDENTITY_NOT_FOUND":    http.StatusNotFound,
+	"AUTH_INVALID_CREDENTIALS":   http.StatusUnauthorized,
+	"AUTH_INVALID_TOKEN":         http.StatusUnauthorized,
+	"AUTH_MFA_INVALID":           http.StatusUnauthorized,
+	"AUTH_INVALID_PASSWORD":      http.StatusBadRequest,
+	"AUTH_REAUTH_REQUIRED":       http.StatusForbidden,
+	"AUTH_LOCAL_IDENTITY_REQUIRED": http.StatusForbidden,
+	"AUTH_MFA_UNAVAILABLE":       http.StatusServiceUnavailable,
+	"AUTH_TOO_MANY_ATTEMPTS":     http.StatusTooManyRequests,
+	"USER_UNKNOWN_ROLE":          http.StatusUnprocessableEntity,
+}
+
+var httpErrors = []apperror.Rule{
+	{Err: domain.ErrNotImplemented, Status: http.StatusNotImplemented, Code: "NOT_IMPLEMENTED", Message: "not implemented"},
+	{Err: domain.ErrNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Message: "user not found"},
+}
+
+func appError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var appErr *apperror.AppError
-	if errors.As(err, &appErr) {
-		return err
-	}
 	var ruleErr *domain.RuleError
 	if errors.As(err, &ruleErr) {
-		status := http.StatusInternalServerError
-		switch ruleErr.Code {
-		case "USER_NOT_FOUND":
-			status = http.StatusNotFound
-		case "USER_EMAIL_TAKEN", "AUTH_ALREADY_VERIFIED", "AUTH_MFA_ALREADY_ENABLED", "AUTH_MFA_NOT_ENROLLED", "AUTH_MFA_SETUP_REQUIRED", "AUTH_IDENTITY_ALREADY_LINKED", "AUTH_IDENTITY_CONFLICT", "AUTH_LAST_IDENTITY":
-			status = http.StatusConflict
-		case "AUTH_IDENTITY_NOT_FOUND":
-			status = http.StatusNotFound
-		case "AUTH_INVALID_CREDENTIALS", "AUTH_INVALID_TOKEN", "AUTH_MFA_INVALID":
-			status = http.StatusUnauthorized
-		case "AUTH_INVALID_PASSWORD":
-			status = http.StatusBadRequest
-		case "AUTH_REAUTH_REQUIRED", "AUTH_LOCAL_IDENTITY_REQUIRED":
-			status = http.StatusForbidden
-		case "AUTH_MFA_UNAVAILABLE":
-			status = http.StatusServiceUnavailable
-		case "AUTH_TOO_MANY_ATTEMPTS":
-			status = http.StatusTooManyRequests
-		case "USER_UNKNOWN_ROLE":
-			status = http.StatusUnprocessableEntity
+		status, ok := httpStatusForCode[ruleErr.Code]
+		if !ok {
+			status = http.StatusInternalServerError
 		}
 		return apperror.New(status, ruleErr.Code, ruleErr.Message)
 	}
-	// Before the catch-all: a stub `generate method` wrote has no body yet and
-	// 501 says so, where NewInternal would report a server fault for a route
-	// nobody has written.
-	if errors.Is(err, domain.ErrNotImplemented) {
-		return apperror.New(http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
-	}
-	if errors.Is(err, domain.ErrNotFound) {
-		return apperror.NewNotFound("user not found")
-	}
-	return apperror.NewInternal(err)
+	return apperror.Translate(err, httpErrors...)
 }
 
 // go-scaffold:handler-funcs
