@@ -176,7 +176,7 @@ function handlerMethod(
   if (opts.type === "get" && opts.getMode === "all") {
     return {
       route: `${routeReceiver}.GET("/${method.pathSegment}", h.${method.handlerName})`,
-      imports: ["net/http", "pagination", "ports"],
+      imports: ["httpx", "pagination", "ports"],
       body: [
         `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
         `\tp := pagination.Parse(c)`,
@@ -196,7 +196,7 @@ function handlerMethod(
         `\tfor i := range items {`,
         `\t\tout[i] = ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(&items[i]))`,
         `\t}`,
-        `\tc.JSON(http.StatusOK, p.ResponseWithTotal(out, total))`,
+        `\thttpx.Page(c, p, out, total)`,
         `}`,
         "",
       ].join("\n"),
@@ -207,7 +207,7 @@ function handlerMethod(
     const column = toDbName(opts.field ?? "field");
     return {
       route: `${routeReceiver}.GET("/${column}/:${field}", h.${method.handlerName})`,
-      imports: ["net/http"],
+      imports: ["httpx"],
       body: [
         `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
         `\t${field} := c.Param("${field}")`,
@@ -216,7 +216,7 @@ function handlerMethod(
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-        `\tc.JSON(http.StatusOK, ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(m)))`,
+        `\thttpx.OK(c, ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(m)))`,
         `}`,
         "",
       ].join("\n"),
@@ -225,7 +225,7 @@ function handlerMethod(
   if (opts.type === "post") {
     return {
       route: `${routeReceiver}.POST("/${method.pathSegment}", h.${method.handlerName})`,
-      imports: ["net/http", "httpx"],
+      imports: ["httpx"],
       body: [
         `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
         `\tvar in ${method.pascalName}Input`,
@@ -238,7 +238,7 @@ function handlerMethod(
         `\t\tc.Error(${errorMapper}(err))`,
         `\t\treturn`,
         `\t}`,
-      `\tc.JSON(http.StatusCreated, ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(m)))`,
+        `\thttpx.Created(c, ${names.responseMapper}(${appPkg}.${names.applicationResponseMapper}(m)))`,
         `}`,
         "",
       ].join("\n"),
@@ -246,7 +246,7 @@ function handlerMethod(
   }
   return {
     route: `${routeReceiver}.${opts.type.toUpperCase()}("/:id/${method.pathSegment}", h.${method.handlerName})`,
-    imports: ["net/http", "httpx"],
+    imports: ["httpx"],
     body: [
       `func (h *Handler) ${method.handlerName}(c *gin.Context) {`,
       `\tid, ok := httpx.ParseID(c)`,
@@ -257,7 +257,7 @@ function handlerMethod(
       `\t\tc.Error(${errorMapper}(err))`,
       `\t\treturn`,
       `\t}`,
-      `\tc.Status(http.StatusNoContent)`,
+      `\thttpx.NoContent(c)`,
       `}`,
       "",
     ].join("\n"),
@@ -294,12 +294,12 @@ function handlerRouteReceiver(content: string, naming: ModuleNaming): string {
 }
 
 /**
- * The function that turns an application error into an HTTP one, by its
- * signature rather than by a name the caller passes in. Modules disagree:
- * generated ones use `appError`/`applicationError`, auth and rbac both use
- * `toHTTPError`.
+ * New generated modules, auth, and RBAC all expose `appError`. Older projects
+ * may still have `applicationError` or `toHTTPError`; keep their existing
+ * mapper so `generate method` does not break them before they migrate.
  */
 function handlerErrorMapperName(content: string, fallback: string): string {
+  if (/func\s+appError\(err error\) error \{/.test(content)) return "appError";
   const found = /func\s+(\w+)\(err error\) error \{/.exec(content);
   return found ? found[1] : fallback;
 }
@@ -393,7 +393,7 @@ export function patchHexagonalMethod(
     opts,
     cqrs,
     handlerRouteReceiver(handler, naming),
-    handlerErrorMapperName(handler, paths.handlerErrorMapper ?? "appError"),
+    handlerErrorMapperName(handler, "appError"),
     applicationAlias(handler, goModule, naming),
     {
       responseType: paths.handlerResponseType ?? "response",

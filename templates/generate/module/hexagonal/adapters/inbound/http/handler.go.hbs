@@ -2,7 +2,6 @@
 package httpadapter
 
 import (
-	"errors"
 	"net/http"
 
 	"{{goModule}}/internal/app/{{modulePath}}/application"
@@ -77,26 +76,16 @@ func (h *Handler) Register(rg gin.IRouter) {
 	// go-scaffold:handler-routes
 }
 
-func appError(err error) error {
-	switch {
-	case errors.Is(err, domain.ErrNotFound):
-		return applicationError(http.StatusNotFound, "{{errorPrefix}}_NOT_FOUND", "{{pkg}} not found")
-	case errors.Is(err, domain.ErrConflict):
-		return applicationError(http.StatusConflict, "{{errorPrefix}}_CONFLICT", "{{pkg}} already exists")
-	case errors.Is(err, domain.ErrStaleVersion):
-		return applicationError(http.StatusConflict, "{{errorPrefix}}_STALE", "{{pkg}} was modified by someone else — reload and try again")
-	case errors.Is(err, domain.ErrHasReferences):
-		return applicationError(http.StatusConflict, "{{errorPrefix}}_HAS_REFERENCES", "{{pkg}} still has related records")
-	case errors.Is(err, domain.ErrNotImplemented):
-		return applicationError(http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
-	default:
-		return apperror.NewInternal(err)
-	}
+var httpErrors = []apperror.Rule{
+	{Err: domain.ErrNotFound, Status: http.StatusNotFound, Code: "{{errorPrefix}}_NOT_FOUND", Message: "{{pkg}} not found"},
+	{Err: domain.ErrConflict, Status: http.StatusConflict, Code: "{{errorPrefix}}_CONFLICT", Message: "{{pkg}} already exists"},
+	{Err: domain.ErrStaleVersion, Status: http.StatusConflict, Code: "{{errorPrefix}}_STALE", Message: "{{pkg}} was modified by someone else — reload and try again"},
+	{Err: domain.ErrHasReferences, Status: http.StatusConflict, Code: "{{errorPrefix}}_HAS_REFERENCES", Message: "{{pkg}} still has related records"},
+	{Err: domain.ErrNotImplemented, Status: http.StatusNotImplemented, Code: "NOT_IMPLEMENTED", Message: "not implemented"},
 }
 
-func applicationError(status int, code, message string) *apperror.AppError {
-	// The HTTP adapter is the only layer allowed to create an HTTP error.
-	return apperror.New(status, code, message)
+func appError(err error) error {
+	return apperror.Translate(err, httpErrors...)
 }
 
 func (h *Handler) create(c *gin.Context) {
@@ -114,7 +103,7 @@ func (h *Handler) create(c *gin.Context) {
 		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusCreated, toResponse(application.ToResponse(m)))
+	httpx.Created(c, toResponse(application.ToResponse(m)))
 }
 
 func (h *Handler) list(c *gin.Context) {
@@ -142,7 +131,7 @@ func (h *Handler) list(c *gin.Context) {
 	for i := range items {
 		out[i] = toResponse(application.ToResponse(&items[i]))
 	}
-	c.JSON(http.StatusOK, p.ResponseWithTotal(out, total))
+	httpx.Page(c, p, out, total)
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -159,7 +148,7 @@ func (h *Handler) get(c *gin.Context) {
 		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, toResponse(application.ToResponse(m)))
+	httpx.OK(c, toResponse(application.ToResponse(m)))
 }
 
 func (h *Handler) update(c *gin.Context) {
@@ -181,7 +170,7 @@ func (h *Handler) update(c *gin.Context) {
 		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, toResponse(application.ToResponse(m)))
+	httpx.OK(c, toResponse(application.ToResponse(m)))
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -198,7 +187,7 @@ func (h *Handler) delete(c *gin.Context) {
 		c.Error(appError(err))
 		return
 	}
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 // go-scaffold:handler-funcs

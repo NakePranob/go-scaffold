@@ -279,7 +279,11 @@ schema history is separate from this project's application migrations, and the
 `river-migrate` targets use the pinned River version from `go.mod`.
 {{/if}}
 
-## Error payload
+## HTTP contract
+
+Success responses use `internal/shared/httpx`; errors use the shared
+`{"error": ...}` envelope. The full shape, helper names, and error-translation
+rules live in `docs/architect/http-contract.md`.
 
 ```json
 {"error":{"code":"VALIDATION_ERROR","message":"invalid input","details":{"email":"email"},"request_id":"a1b2..."}}

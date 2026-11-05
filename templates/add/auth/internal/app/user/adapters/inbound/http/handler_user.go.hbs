@@ -1,8 +1,6 @@
 package httpadapter
 
 import (
-	"net/http"
-
 	"{{goModule}}/internal/shared/apperror"
 	"{{goModule}}/internal/shared/httpx"
 	"{{goModule}}/internal/shared/middleware"
@@ -14,10 +12,10 @@ import (
 func (h *Handler) resendVerification(c *gin.Context) {
 	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
 	if err := h.svc.ResendVerificationEmail(c.Request.Context(), userID); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 // logoutAll ends every session for the caller, including the cookie used by
@@ -29,11 +27,11 @@ func (h *Handler) logoutAll(c *gin.Context) {
 	}
 	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
 	if err := h.svc.LogoutAll(c.Request.Context(), userID); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	h.clearRefreshCookie(c)
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 // disableMe is an explicit soft-disable, not a hard delete. The application
@@ -45,25 +43,25 @@ func (h *Handler) disableMe(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DisableAccount(c.Request.Context(), currentUserID(c)); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	h.clearRefreshCookie(c)
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 func (h *Handler) sessions(c *gin.Context) {
 	setNoStoreHeaders(c)
 	items, err := h.svc.ListSessions(c.Request.Context(), currentUserID(c), currentSessionID(c))
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	out := make([]sessionResponse, len(items))
 	for i := range items {
 		out[i] = toSessionResponse(items[i])
 	}
-	c.JSON(http.StatusOK, sessionsResponse{Sessions: out})
+	httpx.OK(c, sessionsResponse{Sessions: out})
 }
 
 func (h *Handler) revokeSession(c *gin.Context) {
@@ -76,13 +74,13 @@ func (h *Handler) revokeSession(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RevokeSession(c.Request.Context(), currentUserID(c), sessionID); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	if sessionID == currentSessionID(c) {
 		h.clearRefreshCookie(c)
 	}
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 func (h *Handler) reauthenticate(c *gin.Context) {
@@ -97,10 +95,10 @@ func (h *Handler) reauthenticate(c *gin.Context) {
 	}
 	token, err := h.svc.Reauthenticate(c.Request.Context(), currentUserID(c), in.Password, in.Code)
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, reauthResponse{Token: token, ExpiresIn: 300})
+	httpx.OK(c, reauthResponse{Token: token, ExpiresIn: 300})
 }
 
 func (h *Handler) changePassword(c *gin.Context) {
@@ -114,21 +112,21 @@ func (h *Handler) changePassword(c *gin.Context) {
 		return
 	}
 	if err := h.svc.ChangePassword(c.Request.Context(), currentUserID(c), in.NewPassword); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	h.clearRefreshCookie(c)
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 func (h *Handler) me(c *gin.Context) {
 	userID := c.MustGet(middleware.UserIDKey).(uuid.UUID)
 	u, err := h.svc.Get(c.Request.Context(), userID)
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.JSON(http.StatusOK, toMeResponse(u))
+	httpx.OK(c, toMeResponse(u))
 }
 
 func (h *Handler) adminRevokeSession(c *gin.Context) {
@@ -146,8 +144,8 @@ func (h *Handler) adminRevokeSession(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RevokeSessionForUser(c.Request.Context(), userID, sessionID); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }

@@ -2,7 +2,6 @@
 package httpadapter
 
 import (
-    "errors"
     "net/http"
 
     "{{goModule}}/internal/app/{{modulePath}}/application"
@@ -74,21 +73,16 @@ func (h *Handler) Register(rg gin.IRouter) {
 	// go-scaffold:handler-routes
 }
 
+var httpErrors = []apperror.Rule{
+	{Err: domain.ErrNotFound, Status: http.StatusNotFound, Code: "{{errorPrefix}}_NOT_FOUND", Message: "{{pkg}} not found"},
+	{Err: domain.ErrConflict, Status: http.StatusConflict, Code: "{{errorPrefix}}_CONFLICT", Message: "{{pkg}} already exists"},
+	{Err: domain.ErrStaleVersion, Status: http.StatusConflict, Code: "{{errorPrefix}}_STALE", Message: "{{pkg}} was modified by someone else — reload and try again"},
+	{Err: domain.ErrHasReferences, Status: http.StatusConflict, Code: "{{errorPrefix}}_HAS_REFERENCES", Message: "{{pkg}} still has related records"},
+	{Err: domain.ErrNotImplemented, Status: http.StatusNotImplemented, Code: "NOT_IMPLEMENTED", Message: "not implemented"},
+}
+
 func appError(err error) error {
-	switch {
-	case errors.Is(err, domain.ErrNotFound):
-		return apperror.New(http.StatusNotFound, "{{errorPrefix}}_NOT_FOUND", "{{pkg}} not found")
-	case errors.Is(err, domain.ErrConflict):
-		return apperror.New(http.StatusConflict, "{{errorPrefix}}_CONFLICT", "{{pkg}} already exists")
-	case errors.Is(err, domain.ErrStaleVersion):
-		return apperror.New(http.StatusConflict, "{{errorPrefix}}_STALE", "{{pkg}} was modified by someone else — reload and try again")
-	case errors.Is(err, domain.ErrHasReferences):
-		return apperror.New(http.StatusConflict, "{{errorPrefix}}_HAS_REFERENCES", "{{pkg}} still has related records")
-	case errors.Is(err, domain.ErrNotImplemented):
-		return apperror.New(http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
-	default:
-		return apperror.NewInternal(err)
-	}
+	return apperror.Translate(err, httpErrors...)
 }
 
 // go-scaffold:handler-funcs

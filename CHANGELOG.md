@@ -14,6 +14,22 @@ read-only boundary.
 writes nothing. It is the dry-run counterpart to a real generation and works
 with every surface.
 
+### Changed: one generic HTTP response and error pattern
+
+Generated inbound adapters now write success through
+`internal/shared/httpx`: `OK`, `Created`, `NoContent`, and `Page`. Errors go
+through `apperror.Translate`, which maps an ordered list of
+`apperror.Rule` values and falls back to the shared internal-error envelope.
+
+The generated module, auth, and RBAC handlers no longer carry separate
+`applicationError`/`toHTTPError` switches or write JSON at each call site, and
+`generate method` emits the same helpers. The wire format did not change:
+single resources are bare objects, lists keep `{data, limit, offset, total}`,
+deletes stay `204`, and errors keep the `{"error": ...}` envelope.
+
+New projects also receive `docs/architect/http-contract.md`, the single
+reference for the success, collection, error, and request-ID rules.
+
 ### Changed: one repository-wide agent skill
 
 `create` now writes a single `.agents/skills/go-scaffold/SKILL.md` at the

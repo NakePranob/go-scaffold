@@ -1,0 +1,75 @@
+# HTTP contract
+
+Every generated inbound adapter uses this contract. The wire format is stable;
+the helpers below are the only place that writes it.
+
+## Success responses
+
+| Case | Status | Body |
+| --- | --- | --- |
+| Single resource (get, update) | `200` | the resource object |
+| Create | `201` | the resource object |
+| List | `200` | `{"data": [...], "limit": n, "offset": n, "total": n}` |
+| Delete or other empty success | `204` | empty |
+
+Use `internal/shared/httpx`:
+
+```go
+httpx.OK(c, toResponse(...))
+httpx.Created(c, toResponse(...))
+httpx.NoContent(c)
+httpx.Page(c, p, out, total)
+```
+
+Do not call `c.JSON` or `c.Status` from a generated inbound adapter. The
+helpers are the single place that owns status codes and the list envelope.
+
+## Error responses
+
+```json
+{
+  "error": {
+    "code": "ORDER_NOT_FOUND",
+    "message": "order not found",
+    "details": {"field": "reason"},
+    "request_id": "..."
+  }
+}
+```
+
+- `code` is machine-readable.
+- `details` is present only when the environment is not production.
+- `request_id` comes from the request-ID middleware and correlates with logs.
+
+Handlers return errors with `c.Error(appError(err))`. `appError` is a one-line
+wrapper around `apperror.Translate` with the module's ordered rules:
+
+```go
+var httpErrors = []apperror.Rule{
+    {Err: domain.ErrNotFound, Status: 404, Code: "ORDER_NOT_FOUND", Message: "order not found"},
+}
+
+func appError(err error) error {
+    return apperror.Translate(err, httpErrors...)
+}
+```
+
+`apperror.Translate` behavior:
+
+1. `nil` returns `nil`.
+2. An existing `*apperror.AppError` passes through unchanged.
+3. The first rule whose `Err` matches with `errors.Is` becomes an `AppError`.
+4. Anything else becomes `500 INTERNAL`; the original cause stays available to
+   the middleware log and never reaches the client.
+
+Keep `net/http`, Gin, and status codes out of `domain`, `application`, and
+`ports`. The inbound adapter owns the HTTP mapping.
+
+## Adding an endpoint
+
+1. Prefer `go-scaffold generate method`; it emits the helpers and the module's
+   `appError` wrapper.
+2. If you write a handler by hand, use `httpx.*` for success and
+   `c.Error(appError(err))` for failure.
+3. Add a regression test for the response body when the endpoint is not a
+   generated CRUD shape.

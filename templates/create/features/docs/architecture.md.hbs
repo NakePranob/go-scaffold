@@ -119,15 +119,20 @@ and query ports. It does not generate an `application/service.go` facade.
 
 ## 5. Response and Error Model
 
-**Decision:** Central `apperror.AppError` (HTTP status + machine-readable
-`code` + message), rendered once by `middleware.Error()`.
-**Rationale:** Handlers only ever do `c.Error(err); return` — no `c.JSON` per
-call site, no error-shape drift between domains.
+**Decision:** Central `shared/httpx` success writers and
+`apperror.Translate` error translation, rendered once by `middleware.Error()`.
+**Rationale:** Handlers call `httpx.OK`, `httpx.Created`, `httpx.NoContent`,
+or `httpx.Page`; failures do `c.Error(appError(err)); return`. There is no
+`c.JSON` per call site and no error-shape drift between domains.
 
 - Domain-specific errors live in each module's `domain/errors.go` (e.g.
   `USER_NOT_FOUND`, not a bare `NOT_FOUND`)
+- `apperror.Rule` maps each domain sentinel to a status, public code, and
+  message; the first `errors.Is` match wins, and an unknown error becomes
+  `500 INTERNAL` with its cause kept for the log
 - DB errors are classified once in `shared/dberr` (`IsDuplicate`,
   `IsForeignKey`) and mapped to the right HTTP status per domain
+- The full wire contract lives in `docs/architect/http-contract.md`
 
 ## 6. Pagination and Filtering
 

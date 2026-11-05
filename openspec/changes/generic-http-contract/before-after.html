@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Generic HTTP Contract — Before / Expected After</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --surface-2: #f8fafc;
+      --ink: #15202b;
+      --muted: #5d6b7a;
+      --line: #dfe5ec;
+      --line-strong: #c9d3df;
+      --blue: #2563eb;
+      --blue-soft: #e8efff;
+      --green: #0f8a5f;
+      --green-soft: #e6f6ef;
+      --red: #c7352b;
+      --red-soft: #fdecea;
+      --amber: #a15c06;
+      --amber-soft: #fff3dc;
+      --code-bg: #0e1726;
+      --code-ink: #dbe6f3;
+      --code-muted: #7f91a8;
+      --code-line: #1d2c42;
+      --radius: 16px;
+      --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 12px 32px rgba(15, 23, 42, .06);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans Thai", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { width: min(1280px, calc(100% - 40px)); margin: 0 auto; }
+
+    .hero {
+      padding: 56px 0 30px;
+      background:
+        radial-gradient(900px 360px at 12% -10%, rgba(37, 99, 235, .12), transparent 60%),
+        radial-gradient(700px 300px at 92% 0%, rgba(15, 138, 95, .10), transparent 60%);
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 14px;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 22px;
+      height: 2px;
+      background: var(--blue);
+      border-radius: 2px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(34px, 5vw, 54px);
+      line-height: 1.08;
+      letter-spacing: -.035em;
+    }
+    .lede {
+      margin: 0;
+      max-width: 820px;
+      font-size: 18px;
+      color: var(--muted);
+    }
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 22px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      font-weight: 650;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .badge::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: .85;
+    }
+    .badge-amber { background: var(--amber-soft); color: var(--amber); border-color: #f1d6a5; }
+    .badge-blue { background: var(--blue-soft); color: var(--blue); border-color: #c9d9ff; }
+    .badge-green { background: var(--green-soft); color: var(--green); border-color: #bfe8d6; }
+    .badge-red { background: var(--red-soft); color: var(--red); border-color: #f4c5c1; }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(244, 246, 248, .86);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line);
+    }
+    nav .wrap {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding-top: 9px;
+      padding-bottom: 9px;
+    }
+    nav .wrap::-webkit-scrollbar { display: none; }
+    nav a {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 10px;
+      border-radius: 9px;
+      white-space: nowrap;
+    }
+    nav a:hover { background: var(--surface); color: var(--ink); text-decoration: none; }
+
+    main { padding: 30px 0 70px; }
+    section { margin-top: 28px; scroll-margin-top: 64px; }
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    h2 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: -.02em;
+    }
+    h2 .num {
+      color: var(--line-strong);
+      font-family: var(--mono);
+      font-size: 15px;
+      margin-right: 8px;
+      font-weight: 500;
+    }
+    .section-note {
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 760px;
+      margin: 6px 0 0;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .stat .value {
+      font-size: 30px;
+      font-weight: 750;
+      letter-spacing: -.04em;
+      line-height: 1.1;
+    }
+    .stat .value .from { color: var(--muted); font-weight: 500; }
+    .stat .value .arrow { color: var(--line-strong); font-weight: 400; margin: 0 6px; }
+    .stat .label { color: var(--muted); font-size: 13px; margin-top: 7px; }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-2);
+    }
+    .panel-title { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 14px; }
+    .panel-title .dot { width: 9px; height: 9px; border-radius: 50%; }
+    .dot-red { background: var(--red); }
+    .dot-green { background: var(--green); }
+    .panel-tag {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+    .tag-before { background: var(--red-soft); color: var(--red); }
+    .tag-after { background: var(--green-soft); color: var(--green); }
+    .panel-body { padding: 14px 16px 16px; }
+    .panel-body > p { margin: 0 0 10px; color: var(--muted); font-size: 13.5px; }
+
+    .code {
+      background: var(--code-bg);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1b2a40;
+    }
+    .code-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--code-line);
+      color: var(--code-muted);
+      font-family: var(--mono);
+      font-size: 11.5px;
+    }
+    .code-head .lights { display: inline-flex; gap: 5px; }
+    .code-head .lights i { width: 8px; height: 8px; border-radius: 50%; display: block; }
+    .lights .l1 { background: #ff5f57; }
+    .lights .l2 { background: #febc2e; }
+    .lights .l3 { background: #28c840; }
+    .code pre {
+      margin: 0;
+      padding: 13px 0;
+      overflow-x: hidden;
+      color: var(--code-ink);
+      font-family: var(--mono);
+      font-size: 12.4px;
+      line-height: 1.62;
+      tab-size: 2;
+    }
+    .code code { display: block; min-width: 0; }
+    .line {
+      display: block;
+      padding: 1px 14px 1px 12px;
+      border-left: 3px solid transparent;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .line.bad {
+      background: rgba(199, 53, 43, .17);
+      border-left-color: #ef6b61;
+    }
+    .line.good {
+      background: rgba(15, 138, 95, .20);
+      border-left-color: #3ddc97;
+    }
+    .line.dim { color: #70839a; }
+    .line .cm { color: #7f9ab8; }
+    .line .kw { color: #ff9e64; }
+    .line .str { color: #9ece6a; }
+    .line .fn { color: #7aa2f7; }
+    .line .num { color: #e0af68; }
+    .line .typ { color: #7dcfff; }
+
+    .note {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      margin-top: 12px;
+      padding: 11px 13px;
+      border-radius: 11px;
+      font-size: 13.5px;
+      border: 1px solid;
+    }
+    .note strong { font-weight: 700; }
+    .note-blue { background: var(--blue-soft); border-color: #cfdcff; color: #1e3a8a; }
+    .note-green { background: var(--green-soft); border-color: #c8ebdb; color: #14533c; }
+    .note-amber { background: var(--amber-soft); border-color: #f0d7a8; color: #6b3d05; }
+    .note .ic { font-weight: 800; line-height: 1.5; }
+
+    .wire {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .wire-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .wire-item {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--surface-2);
+    }
+    .wire-label {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 12.5px;
+      font-weight: 700;
+    }
+    .wire-label span:last-child { color: var(--muted); font-weight: 500; font-family: var(--mono); font-size: 11px; }
+    .wire pre {
+      margin: 0;
+      padding: 12px;
+      overflow-x: auto;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    table.qa {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      font-size: 14px;
+    }
+    .qa-wrap {
+      overflow-x: auto;
+      border-radius: var(--radius);
+    }
+    table.qa th, table.qa td {
+      text-align: left;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    table.qa th {
+      background: var(--surface-2);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+    }
+    table.qa tr:last-child td { border-bottom: 0; }
+    table.qa td:first-child { font-weight: 600; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .pill-pass { background: var(--green-soft); color: var(--green); }
+    .pill-fail { background: var(--red-soft); color: var(--red); }
+    .pill-warn { background: var(--amber-soft); color: var(--amber); }
+
+    .scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .scope {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .scope h3 { margin: 0 0 8px; font-size: 15px; }
+    .scope ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+    .scope li { margin: 5px 0; }
+    .scope li strong { color: var(--ink); }
+
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 24px 0 40px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    footer code { font-family: var(--mono); font-size: 12px; background: var(--surface); border: 1px solid var(--line); padding: 2px 5px; border-radius: 5px; }
+
+    @media (max-width: 900px) {
+      .stats { grid-template-columns: 1fr 1fr; }
+      .compare, .wire-grid, .scope-grid { grid-template-columns: 1fr; }
+      .hero { padding-top: 38px; }
+    }
+    @media (max-width: 560px) {
+      .wrap { width: min(100% - 24px, 1280px); }
+      .stats { grid-template-columns: 1fr; }
+      .section-head { display: block; }
+      h2 { font-size: 21px; }
+    }
+    @media print {
+      nav { display: none; }
+      body { background: #fff; }
+      .panel, .stat, .scope, .wire, table.qa { box-shadow: none; break-inside: avoid; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">go-scaffold · OpenSpec change</div>
+    <h1>Generic HTTP Contract</h1>
+    <p class="lede">
+      เทียบโค้ดที่ generator สร้างอยู่ตอนนี้ กับรูปแบบที่คาดหวังหลังแก้ —
+      เปลี่ยนกลไกให้เป็น generic แต่ <strong>ไม่เปลี่ยน wire format</strong> ที่ client ใช้งานอยู่
+    </p>
+    <div class="badges">
+      <span class="badge badge-amber">สถานะ: ยังไม่ implement</span>
+      <span class="badge badge-blue">Wire format: unchanged</span>
+      <span class="badge badge-green">QA regression: passed</span>
+      <span class="badge badge-red">QA target: red → green</span>
+    </div>
+  </div>
+</header>
+
+<nav>
+  <div class="wrap">
+    <a href="#summary">สรุป</a>
+    <a href="#module">Module handler</a>
+    <a href="#auth">Auth / RBAC</a>
+    <a href="#shared">Shared helpers</a>
+    <a href="#method">generate method</a>
+    <a href="#wire">Wire format</a>
+    <a href="#qa">QA gate</a>
+    <a href="#scope">Scope</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+  <section id="summary">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">01</span> สรุปการเปลี่ยนแปลง</h2>
+        <p class="section-note">
+          ปัญหาไม่ใช่ตัว JSON แต่คือ “กลไก” ที่กระจายอยู่หลายที่: error mapping 3 แบบ,
+          success response เขียนตรงทุก handler, และ generator ต้องเดาชื่อฟังก์ชัน
+        </p>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat">
+        <div class="value"><span class="from">3</span><span class="arrow">→</span>1</div>
+        <div class="label">error mapper dialect (module / auth / rbac)</div>
+      </div>
+      <div class="stat">
+        <div class="value"><span class="from">44</span><span class="arrow">→</span>0</div>
+        <div class="label">raw <code>c.JSON</code> / <code>c.Status</code> ใน generated inbound (30 + 14)</div>
+      </div>
+      <div class="stat">
+        <div class="value">1</div>
+        <div class="label">contract document ที่ทุกคนอ้างถึง</div>
+      </div>
+      <div class="stat">
+        <div class="value">0</div>
+        <div class="label">การเปลี่ยน route, status code, หรือ JSON field</div>
+      </div>
+    </div>
+    <div class="note note-blue">
+      <span class="ic">i</span>
+      <div><strong>อ่านหน้านี้อย่างไร:</strong> คอลัมน์ซ้ายคือโค้ดที่ generate วันนี้ คอลัมน์ขวาคือรูปแบบที่คาดหวังหลัง refactor — ยังไม่ใช่โค้ดที่ implement แล้ว</div>
+    </div>
+  </section>
+
+  <section id="module">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">02</span> Module handler</h2>
+        <p class="section-note">
+          จาก switch ต่อ module + <code>applicationError</code> wrapper → rule table หนึ่งชุด + <code>apperror.Translate</code>
+          และ success ทุกจุดผ่าน <code>httpx.*</code>
+        </p>
+      </div>
+    </div>
+    <div class="compare">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-red"></span> ก่อนแก้ · handler.go</div>
+          <span class="panel-tag tag-before">ปัจจุบัน</span>
+        </div>
+        <div class="panel-body">
+          <p>ทุก module มี switch ของตัวเอง + wrapper ที่ซ้ำกับ <code>apperror.New</code></p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/app/order/adapters/inbound/http/handler.go</span></div>
+            <pre><code><span class="line"><span class="kw">func</span> <span class="fn">appError</span>(err error) error {</span>
+<span class="line bad">    <span class="kw">switch</span> {</span>
+<span class="line bad">    <span class="kw">case</span> errors.Is(err, domain.ErrNotFound):</span>
+<span class="line bad">        <span class="kw">return</span> <span class="fn">applicationError</span>(http.StatusNotFound, <span class="str">"ORDER_NOT_FOUND"</span>, <span class="str">"order not found"</span>)</span>
+<span class="line bad">    <span class="kw">case</span> errors.Is(err, domain.ErrConflict):</span>
+<span class="line bad">        <span class="kw">return</span> <span class="fn">applicationError</span>(http.StatusConflict, <span class="str">"ORDER_CONFLICT"</span>, <span class="str">"order already exists"</span>)</span>
+<span class="line dim">    <span class="cm">// ...อีก 3 cases ที่ต้องดูแลแยกทุก module</span></span>
+<span class="line">    <span class="kw">default</span>:</span>
+<span class="line">        <span class="kw">return</span> apperror.NewInternal(err)</span>
+<span class="line">    }</span>
+<span class="line">}</span>
+<span class="line"></span>
+<span class="line bad"><span class="kw">func</span> <span class="fn">applicationError</span>(status <span class="typ">int</span>, code, message <span class="typ">string</span>) *apperror.AppError {</span>
+<span class="line bad">    <span class="kw">return</span> apperror.New(status, code, message)</span>
+<span class="line bad">}</span>
+<span class="line"></span>
+<span class="line"><span class="kw">func</span> (h *Handler) <span class="fn">create</span>(c *gin.Context) {</span>
+<span class="line dim">    <span class="cm">// ...bind, call service...</span></span>
+<span class="line bad">    c.JSON(http.StatusCreated, toResponse(application.ToResponse(m)))</span>
+<span class="line">}</span>
+<span class="line"></span>
+<span class="line"><span class="kw">func</span> (h *Handler) <span class="fn">delete</span>(c *gin.Context) {</span>
+<span class="line dim">    <span class="cm">// ...call service...</span></span>
+<span class="line bad">    c.Status(http.StatusNoContent)</span>
+<span class="line">}</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-green"></span> หลังแก้ (คาดหวัง) · handler.go</div>
+          <span class="panel-tag tag-after">Expected</span>
+        </div>
+        <div class="panel-body">
+          <p>policy ยังอยู่ที่ inbound adapter แต่กลายเป็น data; ตัวเขียน response มีที่เดียว</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/app/order/adapters/inbound/http/handler.go</span></div>
+            <pre><code><span class="line good"><span class="kw">var</span> httpErrors = []apperror.Rule{</span>
+<span class="line good">    {Err: domain.ErrNotFound, Status: <span class="num">404</span>, Code: <span class="str">"ORDER_NOT_FOUND"</span>, Message: <span class="str">"order not found"</span>},</span>
+<span class="line good">    {Err: domain.ErrConflict, Status: <span class="num">409</span>, Code: <span class="str">"ORDER_CONFLICT"</span>, Message: <span class="str">"order already exists"</span>},</span>
+<span class="line good">    <span class="cm">// ...policy ยังอยู่ที่เดิม แต่ไม่ต้องเขียน switch</span></span>
+<span class="line good">}</span>
+<span class="line"></span>
+<span class="line good"><span class="kw">func</span> <span class="fn">appError</span>(err error) error {</span>
+<span class="line good">    <span class="kw">return</span> apperror.Translate(err, httpErrors...)</span>
+<span class="line good">}</span>
+<span class="line"></span>
+<span class="line"><span class="kw">func</span> (h *Handler) <span class="fn">create</span>(c *gin.Context) {</span>
+<span class="line dim">    <span class="cm">// ...bind, call service...</span></span>
+<span class="line good">    httpx.Created(c, toResponse(application.ToResponse(m)))</span>
+<span class="line">}</span>
+<span class="line"></span>
+<span class="line"><span class="kw">func</span> (h *Handler) <span class="fn">delete</span>(c *gin.Context) {</span>
+<span class="line dim">    <span class="cm">// ...call service...</span></span>
+<span class="line good">    httpx.NoContent(c)</span>
+<span class="line">}</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note note-green">
+      <span class="ic">✓</span>
+      <div><strong>ผลลัพธ์:</strong> โครงเหมือนกันทุก module, <code>generate method</code> รู้ว่าจะเรียก <code>appError</code> ตัวไหน โดยไม่ต้อง regex หาชื่อฟังก์ชัน</div>
+    </div>
+  </section>
+
+  <section id="auth">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">03</span> Auth / RBAC</h2>
+        <p class="section-note">
+          สองโมดูลนี้เคยมี <code>toHTTPError</code> switch คนละชุด — หลังแก้ใช้ <code>appError</code> +
+          ตาราง code→status + <code>apperror.Translate</code> เหมือน module อื่น
+        </p>
+      </div>
+    </div>
+    <div class="compare">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-red"></span> ก่อนแก้ · auth handler.go</div>
+          <span class="panel-tag tag-before">ปัจจุบัน</span>
+        </div>
+        <div class="panel-body">
+          <p>หนึ่งในสอง switch ที่ทำให้ patcher ต้องเดาชื่อ mapper</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/app/user/adapters/inbound/http/handler.go</span></div>
+            <pre><code><span class="line bad"><span class="kw">func</span> <span class="fn">toHTTPError</span>(err error) error {</span>
+<span class="line bad">    <span class="kw">if</span> err == <span class="kw">nil</span> { <span class="kw">return</span> <span class="kw">nil</span> }</span>
+<span class="line bad">    <span class="kw">var</span> appErr *apperror.AppError</span>
+<span class="line bad">    <span class="kw">if</span> errors.As(err, &amp;appErr) { <span class="kw">return</span> err }</span>
+<span class="line"></span>
+<span class="line bad">    <span class="kw">var</span> ruleErr *domain.RuleError</span>
+<span class="line bad">    <span class="kw">if</span> errors.As(err, &amp;ruleErr) {</span>
+<span class="line bad">        status := http.StatusInternalServerError</span>
+<span class="line bad">        <span class="kw">switch</span> ruleErr.Code {</span>
+<span class="line bad">        <span class="kw">case</span> <span class="str">"USER_NOT_FOUND"</span>:</span>
+<span class="line bad">            status = http.StatusNotFound</span>
+<span class="line bad">        <span class="kw">case</span> <span class="str">"USER_EMAIL_TAKEN"</span>, <span class="str">"AUTH_ALREADY_VERIFIED"</span>, <span class="str">"AUTH_MFA_ALREADY_ENABLED"</span>:</span>
+<span class="line bad">            status = http.StatusConflict</span>
+<span class="line dim">        <span class="cm">// ...อีกหลาย code ใน switch เดียวกัน</span></span>
+<span class="line bad">        }</span>
+<span class="line bad">        <span class="kw">return</span> apperror.New(status, ruleErr.Code, ruleErr.Message)</span>
+<span class="line bad">    }</span>
+<span class="line bad">    <span class="kw">switch</span> {</span>
+<span class="line bad">    <span class="kw">case</span> errors.Is(err, domain.ErrNotFound):</span>
+<span class="line bad">        <span class="kw">return</span> apperror.New(http.StatusNotFound, <span class="str">"USER_NOT_FOUND"</span>, <span class="str">"user not found"</span>)</span>
+<span class="line dim">    <span class="cm">// ...sentinel cases อีกชุด</span></span>
+<span class="line bad">    }</span>
+<span class="line bad">}</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-green"></span> หลังแก้ (คาดหวัง) · auth handler.go</div>
+          <span class="panel-tag tag-after">Expected</span>
+        </div>
+        <div class="panel-body">
+          <p>ชื่อฟังก์ชันเหมือน module อื่น; code→status เป็นตาราง, sentinel ใช้ translator กลาง</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/app/user/adapters/inbound/http/handler.go</span></div>
+            <pre><code><span class="line good"><span class="kw">var</span> httpErrorStatus = <span class="kw">map</span>[<span class="typ">string</span>]<span class="typ">int</span>{</span>
+<span class="line good">    <span class="str">"USER_NOT_FOUND"</span>:          http.StatusNotFound,</span>
+<span class="line good">    <span class="str">"USER_EMAIL_TAKEN"</span>:        http.StatusConflict,</span>
+<span class="line good">    <span class="str">"AUTH_MFA_ALREADY_ENABLED"</span>: http.StatusConflict,</span>
+<span class="line good">    <span class="cm">// ...policy table</span></span>
+<span class="line good">}</span>
+<span class="line"></span>
+<span class="line good"><span class="kw">func</span> <span class="fn">appError</span>(err error) error {</span>
+<span class="line good">    <span class="kw">if</span> err == <span class="kw">nil</span> { <span class="kw">return</span> <span class="kw">nil</span> }</span>
+<span class="line good">    <span class="kw">var</span> ruleErr *domain.RuleError</span>
+<span class="line good">    <span class="kw">if</span> errors.As(err, &amp;ruleErr) {</span>
+<span class="line good">        status := httpErrorStatus[ruleErr.Code]</span>
+<span class="line good">        <span class="kw">if</span> status == <span class="num">0</span> { status = http.StatusInternalServerError }</span>
+<span class="line good">        <span class="kw">return</span> apperror.New(status, ruleErr.Code, ruleErr.Message)</span>
+<span class="line good">    }</span>
+<span class="line good">    <span class="kw">return</span> apperror.Translate(err, httpErrors...)</span>
+<span class="line good">}</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note note-amber">
+      <span class="ic">!</span>
+      <div><strong>ข้อจำกัดที่ตั้งใจ:</strong> auth/RBAC ยังมี code→status table เพราะ <code>RuleError</code> เป็น code-based ไม่ใช่ sentinel — แต่เหลือ “หนึ่งชื่อ + หนึ่งกลไก” ไม่ใช่ switch ซ้ำอีกชุด</div>
+    </div>
+  </section>
+
+  <section id="shared">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">04</span> Shared helpers</h2>
+        <p class="section-note">
+          เพิ่มความสามารถให้ package ที่มีอยู่แล้ว ไม่สร้าง abstraction คู่ขนาน:
+          <code>apperror</code> ได้ translator, <code>httpx</code> ได้ response writer
+        </p>
+      </div>
+    </div>
+    <div class="compare">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-red"></span> ก่อนแก้</div>
+          <span class="panel-tag tag-before">ปัจจุบัน</span>
+        </div>
+        <div class="panel-body">
+          <p><code>apperror</code> มีแค่ constructor; <code>httpx</code> มีแค่ parse/bind</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/shared/apperror/apperror.go</span></div>
+            <pre><code><span class="line"><span class="kw">type</span> AppError <span class="kw">struct</span> {</span>
+<span class="line">    HTTPStatus <span class="typ">int</span>    <span class="str">`json:"-"`</span></span>
+<span class="line">    Code       <span class="typ">string</span> <span class="str">`json:"code"`</span></span>
+<span class="line">    Message    <span class="typ">string</span> <span class="str">`json:"message"`</span></span>
+<span class="line">    Details    <span class="typ">any</span>    <span class="str">`json:"details,omitempty"`</span></span>
+<span class="line">    RequestID  <span class="typ">string</span> <span class="str">`json:"request_id,omitempty"`</span></span>
+<span class="line">}</span>
+<span class="line"></span>
+<span class="line"><span class="kw">func</span> <span class="fn">New</span>(status <span class="typ">int</span>, code, msg <span class="typ">string</span>) *AppError { ... }</span>
+<span class="line"><span class="kw">func</span> <span class="fn">NewNotFound</span>(msg <span class="typ">string</span>) *AppError { ... }</span>
+<span class="line"><span class="kw">func</span> <span class="fn">NewInternal</span>(cause ...error) *AppError { ... }</span></code></pre>
+          </div>
+          <div class="code" style="margin-top:10px">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/shared/httpx/httpx.go</span></div>
+            <pre><code><span class="line"><span class="kw">func</span> <span class="fn">ParseID</span>(c *gin.Context) (uuid.UUID, <span class="typ">bool</span>) { ... }</span>
+<span class="line"><span class="kw">func</span> <span class="fn">BindErr</span>(err error) *apperror.AppError { ... }</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-green"></span> หลังแก้ (คาดหวัง)</div>
+          <span class="panel-tag tag-after">Expected</span>
+        </div>
+        <div class="panel-body">
+          <p>เพิ่มเฉพาะสิ่งที่ทุก handler ต้องใช้; ไม่มี package ใหม่</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/shared/apperror/apperror.go</span></div>
+            <pre><code><span class="line good"><span class="kw">type</span> Rule <span class="kw">struct</span> {</span>
+<span class="line good">    Err     error</span>
+<span class="line good">    Status  <span class="typ">int</span></span>
+<span class="line good">    Code    <span class="typ">string</span></span>
+<span class="line good">    Message <span class="typ">string</span></span>
+<span class="line good">}</span>
+<span class="line"></span>
+<span class="line good"><span class="kw">func</span> <span class="fn">Translate</span>(err error, rules ...Rule) error {</span>
+<span class="line good">    <span class="kw">if</span> err == <span class="kw">nil</span> { <span class="kw">return</span> <span class="kw">nil</span> }</span>
+<span class="line good">    <span class="kw">var</span> appErr *AppError</span>
+<span class="line good">    <span class="kw">if</span> errors.As(err, &amp;appErr) { <span class="kw">return</span> err }</span>
+<span class="line good">    <span class="kw">for</span> _, rule := <span class="kw">range</span> rules {</span>
+<span class="line good">        <span class="kw">if</span> errors.Is(err, rule.Err) {</span>
+<span class="line good">            <span class="kw">return</span> New(rule.Status, rule.Code, rule.Message)</span>
+<span class="line good">        }</span>
+<span class="line good">    }</span>
+<span class="line good">    <span class="kw">return</span> NewInternal(err)</span>
+<span class="line good">}</span></code></pre>
+          </div>
+          <div class="code" style="margin-top:10px">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>internal/shared/httpx/httpx.go</span></div>
+            <pre><code><span class="line good"><span class="kw">func</span> <span class="fn">OK</span>(c *gin.Context, data <span class="typ">any</span>)      { c.JSON(http.StatusOK, data) }</span>
+<span class="line good"><span class="kw">func</span> <span class="fn">Created</span>(c *gin.Context, data <span class="typ">any</span>) { c.JSON(http.StatusCreated, data) }</span>
+<span class="line good"><span class="kw">func</span> <span class="fn">NoContent</span>(c *gin.Context)         { c.Status(http.StatusNoContent) }</span>
+<span class="line good"><span class="kw">func</span> <span class="fn">Page</span>(c *gin.Context, p pagination.Params, data <span class="typ">any</span>, total <span class="typ">int64</span>) {</span>
+<span class="line good">    c.JSON(http.StatusOK, p.ResponseWithTotal(data, total))</span>
+<span class="line good">}</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="method">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">05</span> generate method</h2>
+        <p class="section-note">
+          หลังแก้ method ที่ generate ใช้ helper เดียวกัน และ patcher ไม่ต้องค้นชื่อ error mapper จาก signature อีก
+        </p>
+      </div>
+    </div>
+    <div class="compare">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-red"></span> ก่อนแก้</div>
+          <span class="panel-tag tag-before">ปัจจุบัน</span>
+        </div>
+        <div class="panel-body">
+          <p>patcher ต้องเดา mapper และ method ยังเขียน status เอง</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>src/utils/hexagonal-method-patcher.ts</span></div>
+            <pre><code><span class="line bad"><span class="kw">function</span> <span class="fn">handlerErrorMapperName</span>(content: <span class="typ">string</span>, fallback: <span class="typ">string</span>): <span class="typ">string</span> {</span>
+<span class="line bad">  <span class="kw">const</span> found = <span class="str">/func\s+(\w+)\(err error\) error \{/</span>.exec(content);</span>
+<span class="line bad">  <span class="kw">return</span> found ? found[<span class="num">1</span>] : fallback;</span>
+<span class="line bad">}</span></code></pre>
+          </div>
+          <div class="code" style="margin-top:10px">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>generated method_approve.go</span></div>
+            <pre><code><span class="line">    <span class="kw">if</span> err := h.svc.Approve(c.Request.Context(), id); err != <span class="kw">nil</span> {</span>
+<span class="line">        c.Error(appError(err))</span>
+<span class="line">        <span class="kw">return</span></span>
+<span class="line">    }</span>
+<span class="line bad">    c.Status(http.StatusNoContent)</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot dot-green"></span> หลังแก้ (คาดหวัง)</div>
+          <span class="panel-tag tag-after">Expected</span>
+        </div>
+        <div class="panel-body">
+          <p>ทุก module ใช้ชื่อ <code>appError</code> เดียวกัน; patcher อ้าง contract ตรง ๆ</p>
+          <div class="code">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>src/utils/hexagonal-method-patcher.ts</span></div>
+            <pre><code><span class="line good"><span class="cm">// generated modules, auth, and rbac all expose appError;</span></span>
+<span class="line good"><span class="cm">// no signature sniffing, no per-module fallback</span></span>
+<span class="line good"><span class="kw">const</span> handlerErrorMapper = <span class="str">"appError"</span>;</span></code></pre>
+          </div>
+          <div class="code" style="margin-top:10px">
+            <div class="code-head"><span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span><span>generated method_approve.go</span></div>
+            <pre><code><span class="line">    <span class="kw">if</span> err := h.svc.Approve(c.Request.Context(), id); err != <span class="kw">nil</span> {</span>
+<span class="line">        c.Error(appError(err))</span>
+<span class="line">        <span class="kw">return</span></span>
+<span class="line">    }</span>
+<span class="line good">    httpx.NoContent(c)</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="wire">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">06</span> Wire format: ไม่เปลี่ยน</h2>
+        <p class="section-note">
+          นี่คือส่วนที่ QA regression tier ตรึงไว้ — ถ้า refactor ทำ status หรือ key เปลี่ยน test จะแดงทันที
+        </p>
+      </div>
+    </div>
+    <div class="wire">
+      <div class="wire-grid">
+        <div class="wire-item">
+          <div class="wire-label"><span>List success</span><span>200</span></div>
+          <pre>{
+  "data": [],
+  "limit": 20,
+  "offset": 0,
+  "total": 0
+}</pre>
+        </div>
+        <div class="wire-item">
+          <div class="wire-label"><span>Single resource</span><span>200 / 201</span></div>
+          <pre>{
+  "id": "0b0e...",
+  "created_at": "2026-11-05T03:00:00Z",
+  "version": 1
+}</pre>
+        </div>
+        <div class="wire-item">
+          <div class="wire-label"><span>Error envelope</span><span>4xx / 5xx</span></div>
+          <pre>{
+  "error": {
+    "code": "ORDER_NOT_FOUND",
+    "message": "order not found",
+    "request_id": "qa-request-id"
+  }
+}</pre>
+        </div>
+        <div class="wire-item">
+          <div class="wire-label"><span>Empty success</span><span>204</span></div>
+          <pre>(empty body)</pre>
+        </div>
+      </div>
+      <div class="note note-blue" style="margin-top:14px">
+        <span class="ic">=</span>
+        <div><strong>ก่อนและหลังเหมือนกันทุกไบต์:</strong> การเปลี่ยนนี้ย้าย “ที่เขียน” ไม่ใช่ “สิ่งที่เขียน” — client เดิมไม่ต้องแก้</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="qa">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">07</span> QA gate: หลักฐานก่อน / หลัง</h2>
+        <p class="section-note">
+          รันด้วย <code>pnpm run test:qa</code>; regression tier ต้องเขียวทั้งก่อนและหลัง,
+          target tier ต้องแดงก่อนแก้และเขียวหลังแก้
+        </p>
+      </div>
+    </div>
+    <div class="qa-wrap">
+    <table class="qa">
+      <thead>
+        <tr>
+          <th>Check</th>
+          <th>ก่อนแก้ (baseline จริง)</th>
+          <th>คาดหวังหลังแก้</th>
+          <th>หลักฐาน</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Regression tier: list / item / create / delete / 404 / 400 / network</td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td>จริงผ่าน Gin router + <code>httptest.NewServer</code></td>
+        </tr>
+        <tr>
+          <td><code>apperror.Translate</code> + <code>httpx.OK/Created/NoContent/Page</code></td>
+          <td><span class="pill pill-fail">failed: undefined</span></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td>Go oracle tests ใน generated project</td>
+        </tr>
+        <tr>
+          <td>Generated module / auth / RBAC source pattern</td>
+          <td><span class="pill pill-fail">failed: raw c.JSON</span></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td>ตรวจทุก surface: minimal, read, crud, none, CQRS</td>
+        </tr>
+        <tr>
+          <td><code>go test ./...</code> ใน generated fixture</td>
+          <td><span class="pill pill-fail">failed: 2 packages</span></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td>เฉพาะ <code>shared/apperror</code> และ <code>shared/httpx</code> ที่รอ helper</td>
+        </tr>
+        <tr>
+          <td><code>go vet ./...</code></td>
+          <td><span class="pill pill-fail">failed</span></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td>รันใน generated fixture</td>
+        </tr>
+        <tr>
+          <td><code>go-scaffold check</code></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td><span class="pill pill-pass">passed</span></td>
+          <td>architecture check ต้องไม่พัง</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="note note-amber" style="margin-top:14px">
+      <span class="ic">!</span>
+      <div><strong>ยังไม่ implement:</strong> target tier แดงอยู่จริงตอนนี้ — นี่คือ red baseline ที่ต้องกลายเป็นเขียวก่อนปิด change ไม่ใช่ failure ของ product</div>
+    </div>
+  </section>
+
+  <section id="scope">
+    <div class="section-head">
+      <div>
+        <h2><span class="num">08</span> Scope</h2>
+        <p class="section-note">สิ่งที่ทำในรอบนี้ และสิ่งที่ตั้งใจไม่ทำ</p>
+      </div>
+    </div>
+    <div class="scope-grid">
+      <div class="scope">
+        <h3>อยู่ใน scope</h3>
+        <ul>
+          <li><strong>Module handlers:</strong> ใช้ <code>httpErrors</code> table + <code>apperror.Translate</code> + <code>httpx.*</code></li>
+          <li><strong>Auth / RBAC:</strong> เลิก <code>toHTTPError</code> switch, ใช้ชื่อ <code>appError</code> เดียวกัน</li>
+          <li><strong>generate method:</strong> ใช้ helper เดียวกัน, เลิก regex หาชื่อ mapper</li>
+          <li><strong>Docs:</strong> <code>docs/architect/http-contract.md</code> ฉบับเดียว</li>
+          <li><strong>QA:</strong> regression + target tiers, external oracle</li>
+        </ul>
+      </div>
+      <div class="scope">
+        <h3>นอก scope (แยก change)</h3>
+        <ul>
+          <li><strong>Uniform <code>{data, meta}</code> envelope:</strong> breaking กับ auth/MFA และ FSD clients</li>
+          <li><strong>CLI <code>--json</code>:</strong> เป็นคนละ layer กับ HTTP API</li>
+          <li><strong>เปลี่ยน auth response fields:</strong> access token, MFA challenge, refresh cookie</li>
+          <li><strong>Auto-migrate โปรเจกต์เก่า:</strong> template มีผลกับ generation ใหม่เท่านั้น</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>ที่มา: <code>openspec/changes/generic-http-contract/</code> · QA plan: <code>qa.md</code> · Baseline: 2026-11-05</div>
+    <div style="margin-top:6px">หน้านี้เป็น comparison artifact — โค้ดฝั่ง “Expected” ยังไม่ถูก implement จนกว่า target tier จะเขียว</div>
+  </div>
+</footer>
+
+</body>
+</html>

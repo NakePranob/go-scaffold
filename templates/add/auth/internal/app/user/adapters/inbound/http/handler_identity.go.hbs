@@ -2,7 +2,6 @@ package httpadapter
 
 import (
 	"errors"
-	"net/http"
 
 	userapp "{{goModule}}/internal/app/user/application"
 	"{{goModule}}/internal/shared/httpx"
@@ -31,24 +30,24 @@ func (h *Handler) linkLocalIdentity(c *gin.Context) {
 		return
 	}
 	if err := h.svc.LinkLocalIdentity(c.Request.Context(), currentUserID(c), in.Password); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }
 
 func (h *Handler) listIdentities(c *gin.Context) {
 	setNoStoreHeaders(c)
 	items, err := h.svc.ListIdentities(c.Request.Context(), currentUserID(c))
 	if err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
 	out := make([]identityResponse, len(items))
 	for i := range items {
 		out[i] = toIdentityResponse(items[i])
 	}
-	c.JSON(http.StatusOK, identitiesResponse{Identities: out})
+	httpx.OK(c, identitiesResponse{Identities: out})
 }
 
 func (h *Handler) beginIdentityLink(c *gin.Context) {
@@ -74,7 +73,7 @@ func (h *Handler) beginIdentityLink(c *gin.Context) {
 		return
 	}
 	h.setOAuthStateCookie(c, state)
-	c.JSON(http.StatusOK, identityLinkStartResponse{AuthorizationURL: authorization.URL})
+	httpx.OK(c, identityLinkStartResponse{AuthorizationURL: authorization.URL})
 }
 
 func (h *Handler) exchangeIdentityLink(c *gin.Context) {
@@ -96,7 +95,7 @@ func (h *Handler) exchangeIdentityLink(c *gin.Context) {
 		c.Error(h.identityLinkError(c.Param("provider"), err))
 		return
 	}
-	c.JSON(http.StatusOK, toIdentityResponse(*identity))
+	httpx.OK(c, toIdentityResponse(*identity))
 }
 
 func (h *Handler) identityLinkError(provider string, err error) error {
@@ -104,7 +103,7 @@ func (h *Handler) identityLinkError(provider string, err error) error {
 	if errors.As(err, &oauthErr) {
 		return h.oauthAppError(provider, err)
 	}
-	return toHTTPError(err)
+	return appError(err)
 }
 
 func (h *Handler) unlinkIdentity(c *gin.Context) {
@@ -112,8 +111,8 @@ func (h *Handler) unlinkIdentity(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UnlinkIdentity(c.Request.Context(), currentUserID(c), c.Param("provider")); err != nil {
-		c.Error(toHTTPError(err))
+		c.Error(appError(err))
 		return
 	}
-	c.Status(http.StatusNoContent)
+	httpx.NoContent(c)
 }

@@ -216,6 +216,15 @@ repository operation, tests, and OpenAPI response together before changing
 that behavior. Replace all generated TODOs before treating an endpoint as
 production-ready.
 
+## HTTP contract
+
+Generated inbound adapters use `internal/shared/httpx`: `httpx.OK`,
+`httpx.Created`, `httpx.NoContent`, and `httpx.Page`. Errors go through
+`c.Error(appError(err))`, where `appError` wraps `apperror.Translate` with the
+module's ordered rules. Do not call `c.JSON` or `c.Status` from a generated
+adapter, and do not reintroduce `applicationError` or `toHTTPError`. The full
+wire contract is in `docs/architect/http-contract.md`.
+
 ## Architecture guidance for generated code
 
 This project is modular plus Hexagonal/DDD-friendly, with CQRS available via
