@@ -132,6 +132,110 @@ function expectedFiles(moduleDir: string, module: ModuleConfig): string[] {
   return required.map((file) => path.join(moduleDir, file));
 }
 
+// A read-only module may name its lookups whatever the domain needs
+// (FindByStatus, ListOverdue, ...), so the check is a small write-verb
+// blacklist rather than an allowlist of two method names. It inspects method
+// declarations only: comments that mention "Create" do not count.
+const writeMethodNames = [
+  "Create",
+  "Update",
+  "Delete",
+  "Save",
+  "Upsert",
+  "Patch",
+  "Remove",
+  "Insert",
+  "Put",
+  "Store",
+  "Persist",
+  "Write",
+] as const;
+
+const writeMethodAlternation = writeMethodNames.join("|");
+
+function writeMethodsInInterface(content: string): string[] {
+  const found = new Set<string>();
+  const pattern = new RegExp(`^\\s*(${writeMethodAlternation})\\w*\\s*\\(`, "gm");
+  for (const match of content.matchAll(pattern)) found.add(match[1]);
+  return [...found];
+}
+
+function writeMethodsInGo(content: string): string[] {
+  const found = new Set<string>();
+  const pattern = new RegExp(
+    `^func\\s+(?:\\([^)]*\\)\\s*)?(${writeMethodAlternation})\\w*\\s*(?:\\[[^\\]]*\\])?\\s*\\(`,
+    "gm"
+  );
+  for (const match of content.matchAll(pattern)) found.add(match[1]);
+  return [...found];
+}
+
+function writeRoutesInHandler(content: string): string[] {
+  const found = new Set<string>();
+  for (const match of content.matchAll(/\.(POST|PUT|PATCH|DELETE)\s*\(/g)) found.add(match[1]);
+  for (const match of content.matchAll(/\.(?:Handle|HandleFunc)\s*\(\s*"(POST|PUT|PATCH|DELETE)"/g)) {
+    found.add(match[1]);
+  }
+  return [...found];
+}
+
+function checkReadSurface(projectDir: string, moduleDir: string): string[] {
+  const errors: string[] = [];
+  const shown = (file: string): string => path.relative(projectDir, file);
+  const portPath = path.join(moduleDir, "ports", "repository.go");
+  const adapterPath = path.join(moduleDir, "adapters", "outbound", "postgres", "repository.go");
+  const handlerPath = path.join(moduleDir, "adapters", "inbound", "http", "handler.go");
+  const servicePath = path.join(moduleDir, "application", "service.go");
+
+  if (fs.existsSync(portPath)) {
+    const content = fs.readFileSync(portPath, "utf8");
+    for (const method of writeMethodsInInterface(content)) {
+      errors.push(`${shown(portPath)}: read-only surface must not declare write method ${method}`);
+    }
+    if (/\btype\s+CommandRepository\b/.test(content) || /\bCommandRepository\s+interface\b/.test(content)) {
+      errors.push(`${shown(portPath)}: read-only surface must not declare a CommandRepository`);
+    }
+  }
+  if (fs.existsSync(adapterPath)) {
+    for (const method of writeMethodsInGo(fs.readFileSync(adapterPath, "utf8"))) {
+      errors.push(`${shown(adapterPath)}: read-only surface must not implement write method ${method}`);
+    }
+  }
+  if (fs.existsSync(servicePath)) {
+    for (const method of writeMethodsInGo(fs.readFileSync(servicePath, "utf8"))) {
+      errors.push(`${shown(servicePath)}: read-only surface must not declare write method ${method}`);
+    }
+  }
+  if (fs.existsSync(handlerPath)) {
+    for (const method of writeRoutesInHandler(fs.readFileSync(handlerPath, "utf8"))) {
+      errors.push(`${shown(handlerPath)}: read-only surface must not register a ${method} route`);
+    }
+  }
+  for (const relative of ["application/commands.go", "application/queries.go", "application/cqrs_test.go"]) {
+    const file = path.join(moduleDir, relative);
+    if (fs.existsSync(file)) {
+      errors.push(`${shown(file)}: read-only surface uses the service style; add methods with generate method instead`);
+    }
+  }
+  return errors;
+}
+
+function checkNoneSurface(projectDir: string, moduleDir: string): string[] {
+  const errors: string[] = [];
+  // A none module owns no table, but it may still declare a non-repository
+  // port for an external dependency and wire its adapter in composition.go.
+  // Only the generated persistence seam is forbidden.
+  const repositoryPort = path.join(moduleDir, "ports", "repository.go");
+  if (fs.existsSync(repositoryPort)) {
+    errors.push(`${path.relative(projectDir, repositoryPort)}: none surface must not contain a repository port; it owns no table`);
+  }
+  const postgresAdapter = path.join(moduleDir, "adapters", "outbound", "postgres");
+  if (fs.existsSync(postgresAdapter)) {
+    errors.push(`${path.relative(projectDir, postgresAdapter)}: none surface must not contain the generated Postgres adapter`);
+  }
+  return errors;
+}
+
 function checkModule(projectDir: string, name: string, module: ModuleConfig | undefined, warnings: string[]): string[] {
   const errors: string[] = [];
   const moduleDir = path.join(projectDir, "internal", "app", name);
@@ -151,6 +255,8 @@ function checkModule(projectDir: string, name: string, module: ModuleConfig | un
   for (const file of expectedFiles(moduleDir, module)) {
     if (!fs.existsSync(file)) errors.push(`${path.relative(projectDir, file)}: required by the split module contract`);
   }
+  if (module.surface === "read") errors.push(...checkReadSurface(projectDir, moduleDir));
+  if (module.surface === "none") errors.push(...checkNoneSurface(projectDir, moduleDir));
   const applicationDir = path.join(moduleDir, "application");
   if (module.applicationStyle === "cqrs" && fs.existsSync(path.join(applicationDir, "service.go"))) {
     errors.push(`internal/app/${name}: CQRS module must not contain application/service.go; use commands.go and queries.go`);

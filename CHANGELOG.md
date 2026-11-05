@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added: read-only module surface and JSON plan
+
+`generate module --surface read` creates a module that owns a table but
+exposes a read-only repository port and adapter with list/get, no write
+methods, and no write routes. `generate method` accepts only
+`--type get --get-mode all` for this surface; `go-scaffold check` enforces the
+read-only boundary.
+
+`generate module --plan` prints the intended files and migrations as JSON and
+writes nothing. It is the dry-run counterpart to a real generation and works
+with every surface.
+
 ### Changed: one repository-wide agent skill
 
 `create` now writes a single `.agents/skills/go-scaffold/SKILL.md` at the

@@ -263,6 +263,12 @@ owns no table: see [Modules without a database](#modules-without-a-database). CQ
 command and query application paths inside the same modular monolith; it does
 not add a second database, broker, or event-sourcing system.
 
+The `--surface` flag can also choose `read`: the module owns a table and a
+read-only repository port with list/get, but no write methods or write routes.
+It uses the service application style; `--surface read --cqrs` is rejected.
+`generate method` accepts only `--type get --get-mode all` for a read surface.
+Use `--surface none` for a module that owns no table at all.
+
 The generated code is DDD-shaped: each domain has a package boundary,
 repository port, application boundary, delivery adapter, and shared error
 conventions. The CLI does not invent your aggregates, fields, value objects,
@@ -277,6 +283,8 @@ go-scaffold generate module orders --profile crud
 go-scaffold generate module orders --profile cqrs
 go-scaffold generate module orders --defaults        # use project defaults
 go-scaffold generate module relay --surface none     # no database (wizard asks the style)
+go-scaffold generate module reports --surface read    # list/get only, no writes
+go-scaffold generate module reports --surface read --plan  # print the plan, write nothing
 go-scaffold g m orders --profile crud
 ~~~
 
@@ -291,7 +299,8 @@ tables use plural names such as orders and order_items.
 | --profile <lean\|crud\|cqrs> | Select a named profile without opening the profile question |
 | --full | Legacy alias for the CRUD surface |
 | --cqrs | Legacy axis flag for command/query handlers; combine with --full or --surface for CRUD + CQRS or none + CQRS |
-| --surface <minimal\|crud\|none> | Choose the surface directly; none generates a module with no database |
+| --surface <minimal\|read\|crud\|none> | Choose the surface directly; read generates a read-only port with list/get and no write routes; none generates a module with no database |
+| --plan | Print the intended files and migrations as JSON; write nothing |
 | --auth | Require a valid access token for this module's routes; needs add auth |
 | --permission <code> | Also require an RBAC permission such as orders:manage; needs add rbac and --auth |
 | --defaults | Use the project's recorded module defaults, skip prompts, and keep the module public |
@@ -369,6 +378,33 @@ BY` takes no bound parameter, so only a key of its `Columns` map is ever
 interpolated — and it adds the tiebreaker and `NULLS LAST` that every stable
 paged list needs.
 
+### Read-only modules
+
+A module that owns a table but must never write uses the read surface
+(`--surface read`):
+
+~~~text
+internal/app/report/
+├── domain/              # entity.go, errors.go
+├── ports/
+│   └── repository.go    # FindAll + FindByID only; no write methods
+├── application/         # dto.go, service.go, service_test.go
+├── adapters/
+│   ├── inbound/http/
+│   │   ├── handler.go       # GET routes only; add list endpoints with generate method
+│   │   └── handler_test.go
+│   └── outbound/postgres/
+│       ├── model.go
+│       └── repository.go    # read-only queries
+└── composition.go
+~~~
+
+There is no create, update, or delete method in the port or adapter, and no
+POST, PUT, PATCH, or DELETE route in the handler. `generate method` accepts
+only `--type get --get-mode all`; change the module surface deliberately if the
+domain must write. `go-scaffold check` enforces the read-only port, adapter,
+service, and route set.
+
 CQRS modules additionally contain:
 
 ~~~text
@@ -419,6 +455,9 @@ application service, and its OpenAPI entry.
 | --type <get\|post\|put\|patch\|delete> | HTTP verb |
 | --get-mode <all\|one> | For GET only: list endpoint or single-record lookup |
 | --field <name> | For get --get-mode one: lookup column such as email, status, or slug; id is reserved |
+
+A read-surface module accepts only `--type get --get-mode all`; write methods
+are rejected. Change the module surface deliberately if the domain must write.
 
 The generated route and code depend on the method type:
 

@@ -50,6 +50,24 @@ The generated project starts with shared infrastructure and no business
 domains. `generate module` adds the domain; `generate method` adds an endpoint
 to it.
 
+### Module surfaces
+
+`generate module` keeps the same hexagonal boundary and changes how much code
+lives inside it:
+
+- `minimal` (default) — no starter endpoints; add them with `generate method`.
+- `read` — a read-only repository port with list/get and no write routes; add
+  list endpoints with `generate method`.
+- `crud` — list/get/create/update/delete starter routes; writes return 501
+  until you implement them.
+- `none` — no table, repository, DTOs, or migration.
+
+Use `--plan` to inspect the files and migrations without writing anything:
+
+```bash
+go-scaffold generate module reports --surface read --plan
+```
+
 ### Requirements
 
 - **Node.js >=22.13** for the CLI.

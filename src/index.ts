@@ -270,7 +270,7 @@ generate
   )
   .option(
     "--surface <surface>",
-    "module surface: minimal, read (list/get only), crud, or none (no database: no repository, Postgres adapter, DTOs, or migration); combine with --cqrs"
+    "module surface: minimal, read (read-only port with list/get; no writes), crud, or none (no database: no repository, Postgres adapter, DTOs, or migration); combine with --cqrs"
   )
   // kept working for muscle memory, hidden from help: minimal is already the
   // default, so advertising a flag that asks for it is pure noise.
