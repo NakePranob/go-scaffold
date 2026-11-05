@@ -50,6 +50,18 @@ func Error(exposeDetail bool) gin.HandlerFunc {
 		}
 
 		appErr.RequestID = c.GetString(RequestIDKey)
+{{#if (eq errorShape "errors-array")}}
+		c.JSON(appErr.HTTPStatus, gin.H{"errors": []gin.H{ {"code": appErr.Code, "message": appErr.Message} }})
+{{else if (eq errorShape "problem-json")}}
+		c.JSON(appErr.HTTPStatus, gin.H{
+			"type":     "about:blank",
+			"title":    appErr.Code,
+			"status":   appErr.HTTPStatus,
+			"detail":   appErr.Message,
+			"instance": appErr.RequestID,
+		})
+{{else}}
 		c.JSON(appErr.HTTPStatus, gin.H{"error": appErr})
+{{/if}}
 	}
 }

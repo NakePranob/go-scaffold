@@ -103,6 +103,22 @@ The CLI is for repetition. It gives the next project the same shape, encodes fra
 
 Use the CLI when repeatability, reviewable boundaries, and a stable target for AI agents matter. Use a manual setup when the architecture itself is the experiment.
 
+## HTTP contract presets
+
+Each project picks one response contract at create time. The built-in presets
+are `default` (current wire format), `envelope` (`data`/`meta`), `items`
+(`items`/`total` plus an errors array), and `problem` (RFC 7807 errors).
+Company presets are JSON files under `presets/`:
+
+```bash
+go-scaffold create acme-api --http-preset acme-v1 --preset-dir ./presets
+```
+
+The resolved shapes are frozen in `go-scaffold.config.json`, so a later preset
+change does not silently alter an existing project. Non-default presets are
+Go-side only for now: the generated Next.js/SvelteKit clients still assume the
+default shapes, and `create --plan` warns about that combination.
+
 ## How it fits together
 
 ![go-scaffold architecture: inbound adapters, application, domain, ports, and outbound adapters](https://raw.githubusercontent.com/NakePranob/go-scaffold/main/.github/assets/readme/architecture.png)

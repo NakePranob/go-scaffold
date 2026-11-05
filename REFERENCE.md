@@ -186,6 +186,7 @@ Important behavior:
 | Command | Purpose | Alias |
 |---|---|---|
 | create [name] | Create a new Go backend project | c |
+| interview | Print the machine-readable project questions as JSON; writes nothing | — |
 | check | Validate hexagonal layout, layer dependencies, and service/CQRS contract | — |
 | generate | Open the module/method/migration wizard | g |
 | generate module [name] | Add a domain module | g m |
@@ -194,6 +195,12 @@ Important behavior:
 | config | Set defaults for future modules | — |
 | config show | Print the resolved project configuration | — |
 | config validate | Validate configuration without changing files | — |
+| preset list | List built-in and company HTTP presets | — |
+| preset validate <file> | Validate a preset file | — |
+| preset diff | Compare the frozen project contract with the current preset | — |
+| preset upgrade | Update the config to the current preset (does not rewrite handlers) | — |
+| skill print | Print the agent bootstrap skill | — |
+| skill install | Install the bootstrap skill into .agents/skills | — |
 | add | Open the infrastructure-feature wizard | — |
 | add worker | Add background jobs, mail, and cmd/worker | — |
 | add auth | Add email/password and provider authentication | — |
@@ -211,6 +218,9 @@ go-scaffold create my-api                         # interactive wizard
 go-scaffold create my-api --defaults              # use documented defaults
 go-scaffold create my-api --defaults --no-docker
 go-scaffold create my-api --api-prefix v1
+go-scaffold create my-api --http-preset envelope
+go-scaffold create --answers answers.json --plan
+go-scaffold create --answers answers.json --apply
 go-scaffold c my-api
 ~~~
 
@@ -231,9 +241,71 @@ the path's final segment.
 | --module-profile <lean\|crud\|cqrs> | Set the default profile for future generate module commands |
 | --module-surface <minimal\|crud\|none> | Set the future module surface; none means no database. Prefer --module-profile for the common shapes |
 | --application-style <service\|cqrs> | Legacy way to set the future application boundary; prefer --module-profile |
+| --http-preset <name> | Response contract preset: default, envelope, items, problem, or a company preset |
+| --preset-dir <dir> | Directory containing company preset JSON files |
+| --answers <file> | Read the interview answers from JSON |
+| --plan | With --answers: print the resolved contract and file list; write nothing |
+| --apply | With --answers: create the project |
 
 The route prefix is a project-wide choice. For example, --api-prefix v1 puts a
 module route under /v1/orders.
+
+### Machine-readable creation
+
+`go-scaffold interview --json` returns the questions, options, defaults,
+recommendations, and preset sources. An agent asks the user, writes
+`answers.json`, runs `create --answers <file> --plan`, shows the resolved
+contract and file count, and only then runs `--apply`.
+
+The answer file uses the question IDs:
+
+~~~json
+{
+  "project.name": "shop",
+  "project.goModule": "github.com/acme/shop",
+  "features.docker": true,
+  "features.openapiDocs": true,
+  "features.observability": false,
+  "apiPrefix": "v1",
+  "http.preset": "envelope",
+  "architecture.moduleProfile": "crud"
+}
+~~~
+
+Unknown IDs and unknown option values fail before any write.
+
+### HTTP presets
+
+Presets select fixed response shapes; they are data, not templates. The
+built-in presets are `default`, `envelope`, `items`, and `problem`. Company
+presets live in `./presets`, `~/.config/go-scaffold/presets`, or a directory
+passed with `--preset-dir`:
+
+~~~json
+{
+  "schemaVersion": 1,
+  "name": "acme-v1",
+  "description": "ACME response standard",
+  "http": {"single": "data", "list": "data-meta", "error": "error-object"}
+}
+~~~
+
+`create` resolves the preset and freezes `http.resolved` plus its hash in
+`go-scaffold.config.json`. Later `generate module` and `generate method` read
+the frozen shapes. `preset diff` shows drift; `preset upgrade --yes` updates
+the config for future generation but does not rewrite existing handlers.
+
+`create --plan` warns when a non-default preset is combined with a generated
+Next.js or SvelteKit client, because those clients currently assume the default
+shapes.
+
+### Agent bootstrap skill
+
+`go-scaffold skill print --json` returns the bootstrap skill for an agent that
+cannot write skill files. `go-scaffold skill install` writes it to
+`.agents/skills/go-scaffold-bootstrap/SKILL.md` and links it from
+`.claude/skills/go-scaffold-bootstrap`. The skill reads `interview --json`; it
+does not carry a second question list.
 
 ### What create generates
 

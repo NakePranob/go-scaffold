@@ -3,13 +3,15 @@
 Every generated inbound adapter uses this contract. The wire format is stable;
 the helpers below are the only place that writes it.
 
+Preset: `{{httpPreset}}`
+
 ## Success responses
 
 | Case | Status | Body |
 | --- | --- | --- |
-| Single resource (get, update) | `200` | the resource object |
-| Create | `201` | the resource object |
-| List | `200` | `{"data": [...], "limit": n, "offset": n, "total": n}` |
+| Single resource (get, update) | `200` | {{#if (eq singleShape "data")}}`{"data": <resource>}`{{else}}the resource object{{/if}} |
+| Create | `201` | {{#if (eq singleShape "data")}}`{"data": <resource>}`{{else}}the resource object{{/if}} |
+| List | `200` | {{#if (eq listShape "data-meta")}}`{"data": [...], "meta": {"limit": n, "offset": n, "total": n}}`{{else if (eq listShape "items-total")}}`{"items": [...], "total": n}`{{else}}`{"data": [...], "limit": n, "offset": n, "total": n}`{{/if}} |
 | Delete or other empty success | `204` | empty |
 
 Use `internal/shared/httpx`:
@@ -26,6 +28,15 @@ helpers are the single place that owns status codes and the list envelope.
 
 ## Error responses
 
+{{#if (eq errorShape "errors-array")}}
+```json
+{"errors": [{"code": "...", "message": "..."}]}
+```
+{{else if (eq errorShape "problem-json")}}
+```json
+{"type": "about:blank", "title": "ORDER_NOT_FOUND", "status": 404, "detail": "order not found", "instance": "..."}
+```
+{{else}}
 ```json
 {
   "error": {
@@ -36,10 +47,13 @@ helpers are the single place that owns status codes and the list envelope.
   }
 }
 ```
+{{/if}}
 
 - `code` is machine-readable.
-- `details` is present only when the environment is not production.
+- `details` is present only when the selected shape supports it and the
+  environment is not production.
 - `request_id` comes from the request-ID middleware and correlates with logs.
+  The problem+json shape carries it as `instance`.
 
 Handlers return errors with `c.Error(appError(err))`. `appError` is a one-line
 wrapper around `apperror.Translate` with the module's ordered rules:

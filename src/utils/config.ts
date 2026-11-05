@@ -13,9 +13,10 @@ import {
   ProjectConfig,
   ProjectFeatures,
 } from "../types";
+import { defaultHttpConfig, validateHttpConfig } from "./http-contract";
 
 const CONFIG_FILE = "go-scaffold.config.json";
-export const CONFIG_SCHEMA_VERSION = 2;
+export const CONFIG_SCHEMA_VERSION = 3;
 const MODULE_SURFACES: readonly ModuleSurface[] = ["minimal", "read", "crud", "none"];
 
 export function configPath(projectDir: string): string {
@@ -94,7 +95,7 @@ function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string)
   if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
     throw new Error(`${CONFIG_FILE} has invalid schemaVersion "${String(schemaVersion)}" — expected a positive integer`);
   }
-  if (schemaVersion < CONFIG_SCHEMA_VERSION) {
+  if (schemaVersion < 2) {
     throw new Error(
       `${CONFIG_FILE} uses legacy schemaVersion ${schemaVersion}; go-scaffold ${CONFIG_SCHEMA_VERSION} requires the hexagonal split layout. ` +
         `Keep using go-scaffold 0.4.x for that project, or migrate its modules to internal/app/<module>/{domain,application,ports,adapters} before upgrading.`
@@ -115,15 +116,17 @@ function normalizeProjectConfig(raw: Partial<ProjectConfig>, projectDir: string)
 
   const architecture = normalizeArchitecture(raw.architecture);
   const modules = normalizeModules(raw.modules);
+  const http = raw.http === undefined ? defaultHttpConfig() : validateHttpConfig(raw.http);
 
   return {
-    schemaVersion,
+    schemaVersion: CONFIG_SCHEMA_VERSION,
     projectName,
     goModule,
     apiPrefix,
     features: features as ProjectFeatures,
     ...(raw.asvs !== undefined ? { asvs: normalizeAsvsProfile(raw.asvs, features.auth) } : {}),
     architecture,
+    http,
     modules,
     ...(raw.scaffoldVersion ? { scaffoldVersion: raw.scaffoldVersion } : {}),
   };
@@ -310,6 +313,7 @@ function detectConfig(projectDir: string): ProjectConfig {
     apiPrefix,
     features: detectFeatures(projectDir),
     architecture: { ...DEFAULT_ARCHITECTURE_CONFIG },
+    http: defaultHttpConfig(),
     modules: {},
   };
 }

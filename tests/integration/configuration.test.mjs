@@ -47,7 +47,7 @@ test("create records module defaults and --defaults resolves them for new module
     const project = path.join(scratch, "sample");
     const initial = readConfig(project);
 
-    assert.equal(initial.schemaVersion, 2);
+    assert.equal(initial.schemaVersion, 3);
     assert.deepEqual(initial.architecture, {
       style: "modular-monolith",
       boundary: "hexagonal",
@@ -92,7 +92,7 @@ test("legacy config without architecture metadata resolves safe defaults", () =>
     delete config.modules;
     writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    assert.match(runCLI(project, "config", "validate"), /valid go-scaffold\.config\.json \(schema 2\)/);
+    assert.match(runCLI(project, "config", "validate"), /valid go-scaffold\.config\.json \(schema 3\)/);
     const resolved = JSON.parse(runCLI(project, "config", "show"));
     assert.deepEqual(resolved.architecture, {
       style: "modular-monolith",

@@ -2,7 +2,7 @@
 import { Command, Option } from "commander";
 import { NO_TTY_MESSAGE, confirm, input, select } from "./prompts/interactive";
 import pc from "picocolors";
-import { createProject } from "./commands/create";
+import { createProject, createFromAnswers } from "./commands/create";
 import { generateModule } from "./commands/generate";
 import { generateMethod } from "./commands/method";
 import { generateMigration } from "./commands/migration";
@@ -37,6 +37,14 @@ import {
 } from "./prompts/generate-wizard";
 import { configureProject, showProjectConfig, validateProjectConfig } from "./commands/config";
 import { checkProject } from "./commands/check";
+import { interview } from "./commands/interview";
+import {
+  diffPresetCommand,
+  listPresetCommand,
+  upgradePresetCommand,
+  validatePresetCommand,
+} from "./commands/preset";
+import { installBootstrapSkill, printBootstrapSkill } from "./commands/skill";
 import { isProjectDir, parseModuleProfile, parseModuleSurface, readConfig } from "./utils/config";
 import { architectureForModuleProfile, moduleProfileFor } from "./utils/module-profile";
 
@@ -77,6 +85,102 @@ program
   });
 
 program
+  .command("interview")
+  .description("print the machine-readable project interview questions as JSON; writes nothing")
+  .option("--preset-dir <dir>", "directory containing company preset JSON files")
+  .option("--json", "output JSON (the only supported format; kept for agent compatibility)")
+  .action((opts) => {
+    try {
+      interview({ presetDir: opts.presetDir });
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+const preset = program
+  .command("preset")
+  .description("inspect, validate, diff, and upgrade HTTP response presets");
+
+preset
+  .command("list")
+  .description("list built-in and company presets")
+  .option("--preset-dir <dir>", "directory containing company preset JSON files")
+  .option("--json", "output JSON")
+  .action((opts) => {
+    try {
+      listPresetCommand({ presetDir: opts.presetDir, json: opts.json });
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+preset
+  .command("validate <file>")
+  .description("validate a preset file")
+  .option("--json", "output JSON")
+  .action((file, opts) => {
+    try {
+      validatePresetCommand(file, opts.json);
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+preset
+  .command("diff")
+  .description("compare the frozen project contract with the current preset file")
+  .option("--preset-dir <dir>", "directory containing company preset JSON files")
+  .option("--json", "output JSON")
+  .action((opts) => {
+    try {
+      diffPresetCommand({ presetDir: opts.presetDir, json: opts.json });
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+preset
+  .command("upgrade")
+  .description("update the project config to the current preset (does not rewrite handlers)")
+  .option("--preset-dir <dir>", "directory containing company preset JSON files")
+  .option("--json", "output JSON")
+  .option("--yes", "confirm the config update")
+  .action((opts) => {
+    try {
+      upgradePresetCommand({ presetDir: opts.presetDir, json: opts.json, yes: opts.yes });
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+const skill = program
+  .command("skill")
+  .description("install or print the agent bootstrap skill");
+
+skill
+  .command("print")
+  .description("print the bootstrap skill")
+  .option("--json", "output JSON with the skill content")
+  .action((opts) => {
+    try {
+      printBootstrapSkill(opts.json);
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+skill
+  .command("install")
+  .description("install the bootstrap skill into .agents/skills and link it from .claude/skills")
+  .action(() => {
+    try {
+      installBootstrapSkill();
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+program
   .command("create [name]")
   .alias("c")
   .description("scaffold a new project (bare skeleton — add domains with `generate module`)")
@@ -88,8 +192,24 @@ program
   .option("--module-profile <profile>", "default profile for future modules: lean, crud, or cqrs; replaces the two profile questions")
   .option("--module-surface <surface>", "legacy axis flag for future modules: minimal, read, crud, or none (no database); wizard asks when omitted")
   .option("--application-style <style>", "legacy axis flag for future modules: service or cqrs; wizard asks when omitted")
+  .option("--http-preset <name>", "HTTP response contract preset: default, envelope, items, problem, or a company preset")
+  .option("--preset-dir <dir>", "directory containing company preset JSON files (also searches ./presets and ~/.config/go-scaffold/presets)")
+  .option("--answers <file>", "read the interview answers from JSON")
+  .option("--plan", "with --answers: print the file list and resolved contract; write nothing")
+  .option("--apply", "with --answers: create the project")
   .action(async (name, opts) => {
     try {
+      if (opts.answers) {
+        await createFromAnswers(opts.answers, {
+          plan: opts.plan,
+          apply: opts.apply,
+          presetDir: opts.presetDir,
+        });
+        return;
+      }
+      if (opts.plan || opts.apply) {
+        throw new Error("--plan and --apply require --answers <file>");
+      }
       await createProject(name, {
         defaults: opts.defaults,
         docker: opts.docker,
@@ -99,6 +219,8 @@ program
         moduleProfile: opts.moduleProfile,
         moduleSurface: opts.moduleSurface,
         applicationStyle: opts.applicationStyle,
+        httpPreset: opts.httpPreset,
+        presetDir: opts.presetDir,
       });
     } catch (err) {
       fail(err);
