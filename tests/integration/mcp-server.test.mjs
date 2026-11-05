@@ -62,6 +62,7 @@ test("MCP server exposes the scaffolding tools and keeps plan read-only", { time
     assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
       "scaffold_check",
       "scaffold_config_show",
+      "scaffold_contract_export",
       "scaffold_create_apply",
       "scaffold_create_plan",
       "scaffold_interview",
@@ -114,6 +115,13 @@ test("MCP server exposes the scaffolding tools and keeps plan read-only", { time
 
     const checkServer = startServer(path.join(scratch, "mcp-shop"));
     try {
+      const contract = textOf(await checkServer.request("tools/call", {
+        name: "scaffold_contract_export",
+        arguments: {},
+      }));
+      assert.equal(contract.preset, "envelope");
+      assert.equal(contract.resolved.list, "data-meta");
+
       const checked = textOf(await checkServer.request("tools/call", {
         name: "scaffold_check",
         arguments: {},

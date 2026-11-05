@@ -39,6 +39,7 @@ import { configureProject, showProjectConfig, validateProjectConfig } from "./co
 import { checkProject } from "./commands/check";
 import { interview } from "./commands/interview";
 import { startMcpServer } from "./mcp/server";
+import { exportContract } from "./commands/contract";
 import {
   diffPresetCommand,
   listPresetCommand,
@@ -105,6 +106,23 @@ program
   .action((opts) => {
     try {
       startMcpServer({ root: opts.root });
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+const contract = program
+  .command("contract")
+  .description("export the HTTP contract artifact consumed by generated FSD clients");
+
+contract
+  .command("export")
+  .description("print http-contract.json for the current project")
+  .option("--out <file>", "also write the artifact to this path")
+  .option("--json", "output JSON (the only supported format; kept for compatibility)")
+  .action((opts) => {
+    try {
+      exportContract({ out: opts.out, json: opts.json });
     } catch (err) {
       fail(err);
     }

@@ -188,6 +188,7 @@ Important behavior:
 | create [name] | Create a new Go backend project | c |
 | interview | Print the machine-readable project questions as JSON; writes nothing | — |
 | mcp | Run the stdio MCP server for agent-native scaffolding | — |
+| contract export | Print http-contract.json for generated FSD clients | — |
 | check | Validate hexagonal layout, layer dependencies, and service/CQRS contract | — |
 | generate | Open the module/method/migration wizard | g |
 | generate module [name] | Add a domain module | g m |
@@ -321,6 +322,7 @@ JSON-RPC. The root defaults to the current directory and cannot escape it.
 | `scaffold_check` | Run `check` in the root |
 | `scaffold_preset_list` | Run `preset list --json` |
 | `scaffold_config_show` | Run `config show` |
+| `scaffold_contract_export` | Return `http-contract.json` |
 
 Example client configuration:
 
@@ -337,6 +339,28 @@ Example client configuration:
 
 The server never prompts and never reimplements command logic. Tool failures
 return `isError: true` with the CLI output.
+
+### Contract export
+
+`go-scaffold contract export --json` prints the portable HTTP contract
+artifact consumed by the generated Next.js and SvelteKit clients. `create`
+also writes it to `http-contract.json` at the project root.
+
+~~~json
+{
+  "schemaVersion": 1,
+  "projectName": "shop",
+  "goModule": "github.com/acme/shop",
+  "apiPrefix": "v1",
+  "preset": "envelope",
+  "resolved": {"single": "data", "list": "data-meta", "error": "error-object"},
+  "presetHash": "sha256:..."
+}
+~~~
+
+`--out <file>` writes the artifact to another location for a separate web
+repository. The FSD generator is expected to validate `presetHash` and the
+shape IDs before generating its API layer.
 
 ### What create generates
 

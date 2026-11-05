@@ -285,6 +285,8 @@ Success responses use `internal/shared/httpx`; errors use the shared
 `{"error": ...}` envelope. The full shape, helper names, and error-translation
 rules live in `docs/architect/http-contract.md`. This project uses the
 `{{httpPreset}}` preset; the frozen shapes are in `go-scaffold.config.json`.
+`http-contract.json` at the project root is the portable artifact for the
+generated Next.js/SvelteKit clients.
 
 ```json
 {"error":{"code":"VALIDATION_ERROR","message":"invalid input","details":{"email":"email"},"request_id":"a1b2..."}}
