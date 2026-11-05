@@ -88,6 +88,30 @@ const TOOLS: ToolDefinition[] = [
     description: "Return the http-contract.json artifact for the server root.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "scaffold_fullstack_plan",
+    description: "Validate a Go API and an FSD client plan together with a shared HTTP contract. Writes nothing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        answers: { type: "object", description: "The full-stack answers object for fullstack plan --answers." },
+      },
+      required: ["answers"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "scaffold_fullstack_apply",
+    description: "Create the Go API, export its contract, and apply the FSD client plan.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        answers: { type: "object", description: "The full-stack answers object for fullstack apply --answers." },
+      },
+      required: ["answers"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function resolveRoot(input: string | undefined): string {
@@ -202,6 +226,25 @@ async function callTool(name: string, args: Record<string, unknown>, root: strin
     const result = await runCli(root, ["contract", "export", "--json"]);
     if (result.code !== 0) throw new McpToolError("CLI_FAILED", result.stderr || result.stdout);
     return parseJson(result.stdout, "contract export");
+  }
+
+  if (name === "scaffold_fullstack_plan") {
+    return withAnswersFile(args.answers, async (file) => {
+      const result = await runCli(root, ["fullstack", "plan", "--answers", file]);
+      if (result.code !== 0) throw new McpToolError("CLI_FAILED", result.stderr || result.stdout);
+      return parseJson(result.stdout, "fullstack plan");
+    });
+  }
+
+  if (name === "scaffold_fullstack_apply") {
+    return withAnswersFile(args.answers, async (file) => {
+      const result = await runCli(root, ["fullstack", "apply", "--answers", file]);
+      const payload = parseJson(result.stdout, "fullstack apply") as { ok?: boolean };
+      if (result.code !== 0 || payload.ok !== true) {
+        throw new McpToolError("APPLY_FAILED", result.stderr || "fullstack apply failed");
+      }
+      return payload;
+    });
   }
 
   throw new McpToolError("UNKNOWN_TOOL", `unknown tool: ${name}`);

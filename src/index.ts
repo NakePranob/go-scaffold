@@ -40,6 +40,7 @@ import { checkProject } from "./commands/check";
 import { interview } from "./commands/interview";
 import { startMcpServer } from "./mcp/server";
 import { exportContract } from "./commands/contract";
+import { fullstackApply, fullstackPlan } from "./commands/fullstack";
 import {
   diffPresetCommand,
   listPresetCommand,
@@ -125,6 +126,42 @@ contract
       exportContract({ out: opts.out, json: opts.json });
     } catch (err) {
       fail(err);
+    }
+  });
+
+const fullstack = program
+  .command("fullstack")
+  .description("create a Go API and wire its HTTP contract into a Next.js or SvelteKit FSD client");
+
+fullstack
+  .command("plan")
+  .description("validate the API and client plans together; writes nothing")
+  .requiredOption("--answers <file>", 'full-stack answers JSON, or "-" for stdin')
+  .action(async (opts) => {
+    try {
+      console.log(JSON.stringify(await fullstackPlan(opts.answers, process.cwd()), null, 2));
+    } catch (err) {
+      console.error(
+        JSON.stringify({ schemaVersion: 1, ok: false, command: "fullstack plan", error: (err as Error).message }, null, 2)
+      );
+      process.exitCode = 1;
+    }
+  });
+
+fullstack
+  .command("apply")
+  .description("create the API, export its contract, and apply the FSD client plan")
+  .requiredOption("--answers <file>", 'full-stack answers JSON, or "-" for stdin')
+  .action(async (opts) => {
+    try {
+      const result = await fullstackApply(opts.answers, process.cwd());
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.ok) process.exitCode = 1;
+    } catch (err) {
+      console.error(
+        JSON.stringify({ schemaVersion: 1, ok: false, command: "fullstack apply", error: (err as Error).message }, null, 2)
+      );
+      process.exitCode = 1;
     }
   });
 

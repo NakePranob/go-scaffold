@@ -102,7 +102,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
   const warnings = http.preset === "default"
     ? []
     : [
-        `non-default HTTP preset "${http.preset}" is selected; generated Next.js/SvelteKit clients currently assume the default shapes`,
+        `non-default HTTP preset "${http.preset}" is selected; pass http-contract.json to the FSD client with \`add error-handling --http-contract\`, or generate both sides with \`go-scaffold fullstack\``,
       ];
 
   const context = {

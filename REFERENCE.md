@@ -189,6 +189,8 @@ Important behavior:
 | interview | Print the machine-readable project questions as JSON; writes nothing | — |
 | mcp | Run the stdio MCP server for agent-native scaffolding | — |
 | contract export | Print http-contract.json for generated FSD clients | — |
+| fullstack plan | Validate the API and FSD client plans together; writes nothing | — |
+| fullstack apply | Create the API and apply the FSD client plan with the same contract | — |
 | check | Validate hexagonal layout, layer dependencies, and service/CQRS contract | — |
 | generate | Open the module/method/migration wizard | g |
 | generate module [name] | Add a domain module | g m |
@@ -297,9 +299,10 @@ passed with `--preset-dir`:
 the frozen shapes. `preset diff` shows drift; `preset upgrade --yes` updates
 the config for future generation but does not rewrite existing handlers.
 
-`create --plan` warns when a non-default preset is combined with a generated
-Next.js or SvelteKit client, because those clients currently assume the default
-shapes.
+`create --plan` warns when a non-default preset is selected, because an FSD
+client needs the project's `http-contract.json` to generate matching parsers.
+Pass it to `add error-handling --http-contract`, or let `fullstack apply` hand
+it over.
 
 ### Agent bootstrap skill
 
@@ -308,6 +311,49 @@ cannot write skill files. `go-scaffold skill install` writes it to
 `.agents/skills/go-scaffold-bootstrap/SKILL.md` and links it from
 `.claude/skills/go-scaffold-bootstrap`. The skill reads `interview --json`; it
 does not carry a second question list.
+
+### Full-stack gateway
+
+`fullstack plan --answers <file>` and `fullstack apply --answers <file>` run the
+Go API step and the FSD client step from one answers file, with the HTTP
+contract carried between them:
+
+```json
+{
+  "api": {
+    "answers": {
+      "project.name": "my-api",
+      "http.preset": "envelope"
+    }
+  },
+  "client": {
+    "target": "nextjs",
+    "path": "web",
+    "answers": {
+      "init": true,
+      "add": ["error-handling"],
+      "generate": [{ "kind": "page", "name": "dashboard" }]
+    }
+  }
+}
+```
+
+`target` is `nextjs` or `sveltekit`; `client.path` must be an existing app inside
+the directory the gateway runs from. The client's FSD CLI is resolved from its
+`node_modules/@nakedev/<target>-fsd`, or from `client.cli` when it lives
+elsewhere.
+
+`plan` runs `create --plan` and the client's own `plan`, validates that the
+contract artifact parses, and writes nothing. `apply` runs `create --apply`,
+writes the API's `http-contract.json` next to the client's config, points the
+client answers at that file, and runs the client's `apply`. The client keeps the
+artifact so later installs and `check` see the same preset.
+
+Set `api.existing: true` and `api.path` to reuse a project that already exists;
+the gateway exports its frozen contract instead of creating anything. A
+non-empty `api.path` without `api.existing` is refused before any write.
+If a client apply fails after the API was created, switch to `api.existing` and
+re-run apply; the API is not recreated.
 
 ### MCP server
 
@@ -323,6 +369,8 @@ JSON-RPC. The root defaults to the current directory and cannot escape it.
 | `scaffold_preset_list` | Run `preset list --json` |
 | `scaffold_config_show` | Run `config show` |
 | `scaffold_contract_export` | Return `http-contract.json` |
+| `scaffold_fullstack_plan` | Run `fullstack plan`; writes nothing |
+| `scaffold_fullstack_apply` | Run `fullstack apply` |
 
 Example client configuration:
 

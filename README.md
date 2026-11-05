@@ -195,6 +195,7 @@ my-api/
 | --- | --- |
 | `create [name]` | Create a new Go backend project. |
 | `check` | Validate the hexagonal layout and layer dependencies. |
+| `fullstack plan\|apply` | Create the API and wire its contract into a Next.js or SvelteKit FSD client in one step. |
 | `generate module [name]` | Add a domain module. Alias: `g m`. |
 | `generate method [module] [name]` | Add one endpoint to an existing module. Alias: `g me`. |
 | `generate migration [name]` | Reserve a timestamped SQL migration pair. Alias: `g mig`. |
