@@ -38,6 +38,7 @@ import {
 import { configureProject, showProjectConfig, validateProjectConfig } from "./commands/config";
 import { checkProject } from "./commands/check";
 import { interview } from "./commands/interview";
+import { startMcpServer } from "./mcp/server";
 import {
   diffPresetCommand,
   listPresetCommand,
@@ -92,6 +93,18 @@ program
   .action((opts) => {
     try {
       interview({ presetDir: opts.presetDir });
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+program
+  .command("mcp")
+  .description("run the stdio MCP server for agent-native scaffolding")
+  .option("--root <dir>", "workspace root; defaults to the current directory and cannot escape it")
+  .action((opts) => {
+    try {
+      startMcpServer({ root: opts.root });
     } catch (err) {
       fail(err);
     }

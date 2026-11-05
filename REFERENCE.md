@@ -187,6 +187,7 @@ Important behavior:
 |---|---|---|
 | create [name] | Create a new Go backend project | c |
 | interview | Print the machine-readable project questions as JSON; writes nothing | — |
+| mcp | Run the stdio MCP server for agent-native scaffolding | — |
 | check | Validate hexagonal layout, layer dependencies, and service/CQRS contract | — |
 | generate | Open the module/method/migration wizard | g |
 | generate module [name] | Add a domain module | g m |
@@ -306,6 +307,36 @@ cannot write skill files. `go-scaffold skill install` writes it to
 `.agents/skills/go-scaffold-bootstrap/SKILL.md` and links it from
 `.claude/skills/go-scaffold-bootstrap`. The skill reads `interview --json`; it
 does not carry a second question list.
+
+### MCP server
+
+`go-scaffold mcp --root <dir>` runs a stdio MCP server over newline-delimited
+JSON-RPC. The root defaults to the current directory and cannot escape it.
+
+| Tool | Purpose |
+|---|---|
+| `scaffold_interview` | Return `interview --json` |
+| `scaffold_create_plan` | Run `create --answers ... --plan`; writes nothing |
+| `scaffold_create_apply` | Run `create --answers ... --apply` |
+| `scaffold_check` | Run `check` in the root |
+| `scaffold_preset_list` | Run `preset list --json` |
+| `scaffold_config_show` | Run `config show` |
+
+Example client configuration:
+
+~~~json
+{
+  "mcpServers": {
+    "go-scaffold": {
+      "command": "npx",
+      "args": ["@nakedev/go-scaffold", "mcp", "--root", "."]
+    }
+  }
+}
+~~~
+
+The server never prompts and never reimplements command logic. Tool failures
+return `isError: true` with the CLI output.
 
 ### What create generates
 
