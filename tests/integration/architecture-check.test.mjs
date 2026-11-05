@@ -106,6 +106,91 @@ test("check rejects a service module that grows a duplicate CQRS surface", () =>
   }
 });
 
+test("check enforces the read-only surface on ports, adapters, services, and routes", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-read-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "generate", "module", "reports", "--surface", "read", "--defaults");
+    const moduleDir = path.join(project, "internal", "app", "report");
+    const portPath = path.join(moduleDir, "ports", "repository.go");
+    const adapterPath = path.join(moduleDir, "adapters", "outbound", "postgres", "repository.go");
+    const handlerPath = path.join(moduleDir, "adapters", "inbound", "http", "handler.go");
+    const servicePath = path.join(moduleDir, "application", "service.go");
+
+    assert.match(run(project, "check"), /architecture check passed: 1 split module/);
+
+    const originalPort = readFileSync(portPath, "utf8");
+    writeFileSync(
+      portPath,
+      originalPort.replace(
+        "\t// go-scaffold:repository-interface",
+        "\tCreate(context.Context, *domain.Report) error\n\t// go-scaffold:repository-interface"
+      )
+    );
+    assert.throws(() => run(project, "check"), /read-only surface must not declare write method Create/);
+    writeFileSync(portPath, originalPort);
+
+    const originalAdapter = readFileSync(adapterPath, "utf8");
+    appendFileSync(adapterPath, "\nfunc (r *Repository) Delete(ctx context.Context, id uuid.UUID) error { return nil }\n");
+    assert.throws(() => run(project, "check"), /read-only surface must not implement write method Delete/);
+    writeFileSync(adapterPath, originalAdapter);
+
+    const originalService = readFileSync(servicePath, "utf8");
+    appendFileSync(servicePath, "\nfunc (s *Service) Update(ctx context.Context) error { return nil }\n");
+    assert.throws(() => run(project, "check"), /read-only surface must not declare write method Update/);
+    writeFileSync(servicePath, originalService);
+
+    appendFileSync(servicePath, "\nfunc CreateReport(ctx context.Context) error { return nil }\n");
+    assert.throws(() => run(project, "check"), /read-only surface must not declare write method Create/);
+    writeFileSync(servicePath, originalService);
+
+    const originalHandler = readFileSync(handlerPath, "utf8");
+    writeFileSync(handlerPath, originalHandler.replace("\t// go-scaffold:handler-routes", '\tg.DELETE("/:id", nil)\n\t// go-scaffold:handler-routes'));
+    assert.throws(() => run(project, "check"), /read-only surface must not register a DELETE route/);
+    writeFileSync(handlerPath, originalHandler.replace("\t// go-scaffold:handler-routes", '\tg.Handle("POST", "/:id", nil)\n\t// go-scaffold:handler-routes'));
+    assert.throws(() => run(project, "check"), /read-only surface must not register a POST route/);
+    writeFileSync(handlerPath, originalHandler);
+
+    writeFileSync(path.join(moduleDir, "application", "commands.go"), "package application\n");
+    assert.throws(() => run(project, "check"), /read-only surface uses the service style/);
+    rmSync(path.join(moduleDir, "application", "commands.go"));
+
+    assert.match(run(project, "check"), /architecture check passed: 1 split module/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("check rejects database files in a none-surface module", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-none-"));
+  try {
+    run(scratch, "create", "sample", "--defaults", "--no-docker");
+    const project = path.join(scratch, "sample");
+    run(project, "generate", "module", "relay", "--surface", "none", "--defaults");
+    const moduleDir = path.join(project, "internal", "app", "relay");
+
+    assert.match(run(project, "check"), /architecture check passed: 1 split module/);
+
+    mkdirSync(path.join(moduleDir, "ports"));
+    writeFileSync(path.join(moduleDir, "ports", "repository.go"), "package ports\n");
+    assert.throws(() => run(project, "check"), /none surface must not contain a repository port/);
+    rmSync(path.join(moduleDir, "ports"), { recursive: true });
+
+    mkdirSync(path.join(moduleDir, "adapters", "outbound", "postgres"), { recursive: true });
+    assert.throws(() => run(project, "check"), /none surface must not contain the generated Postgres adapter/);
+    rmSync(path.join(moduleDir, "adapters", "outbound", "postgres"), { recursive: true });
+
+    mkdirSync(path.join(moduleDir, "ports"), { recursive: true });
+    writeFileSync(path.join(moduleDir, "ports", "clock.go"), "package ports\n");
+    mkdirSync(path.join(moduleDir, "adapters", "outbound", "memory"), { recursive: true });
+    writeFileSync(path.join(moduleDir, "adapters", "outbound", "memory", "clock.go"), "package memory\n");
+    assert.match(run(project, "check"), /architecture check passed: 1 split module/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("check rejects a feature-level model package in a split module", () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-architecture-model-"));
   try {
@@ -365,10 +450,11 @@ test("check passes every freshly generated profile with no warnings", () => {
     run(project, "generate", "module", "relays", "--surface", "none", "--defaults");
     run(project, "generate", "module", "streams", "--surface", "none", "--cqrs", "--defaults");
     run(project, "generate", "module", "guards", "--surface", "none", "--auth", "--permission", "guards:use", "--defaults");
+    run(project, "generate", "module", "reads", "--surface", "read", "--defaults");
 
     const result = spawnSync("node", [CLI, "check"], { cwd: project, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /architecture check passed: 9 split module\(s\)/);
+    assert.match(result.stdout, /architecture check passed: 10 split module\(s\)/);
     assert.equal(result.stderr, "");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
