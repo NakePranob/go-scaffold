@@ -12,6 +12,7 @@ import { CONFIG_SCHEMA_VERSION } from "../utils/config";
 import { addObservability } from "./observability";
 import { architectureForModuleProfile } from "../utils/module-profile";
 import { httpConfigFromPreset, presetDirs, resolvePreset } from "../utils/http-contract";
+import { writeContractArtifact } from "./contract";
 import {
   AGENT_SKILL_NAME,
   assertAgentSkillAvailable,
@@ -126,7 +127,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
       writes: false,
       project: { name: projectName, goModule, apiPrefix, directory: projectDir },
       http: { preset: http.preset, resolved: http.resolved, presetHash: http.presetHash },
-      files: [...new Set([...files, "go-scaffold.config.json", ".agents/skills/go-scaffold/SKILL.md"])],
+      files: [...new Set([...files, "go-scaffold.config.json", "http-contract.json", ".agents/skills/go-scaffold/SKILL.md"])],
       warnings,
     }, null, 2));
     return;
@@ -156,6 +157,7 @@ export async function createProject(rawName: string | undefined, opts: CreateOpt
     modules: {},
     scaffoldVersion: cliVersion(),
   });
+  writeContractArtifact(projectDir);
 
   // Composed the same way a user would do it by hand — `create` always
   // renders the plain base, then this layers the same patches `add

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added: portable HTTP contract artifact
+
+`create` now writes `http-contract.json` at the project root, and
+`go-scaffold contract export --json` prints or writes it with `--out`. The
+artifact carries the preset name, resolved single/list/error shapes, and the
+preset hash so the Next.js/SvelteKit generators can consume one contract
+instead of duplicating the preset configuration.
+
 ### Added: stdio MCP server
 
 `go-scaffold mcp` exposes the existing interview, create plan/apply, check,

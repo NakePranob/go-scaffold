@@ -83,6 +83,11 @@ const TOOLS: ToolDefinition[] = [
     description: "Print the resolved go-scaffold.config.json for the server root.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "scaffold_contract_export",
+    description: "Return the http-contract.json artifact for the server root.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
 function resolveRoot(input: string | undefined): string {
@@ -191,6 +196,12 @@ async function callTool(name: string, args: Record<string, unknown>, root: strin
     const result = await runCli(root, ["config", "show"]);
     if (result.code !== 0) throw new McpToolError("CLI_FAILED", result.stderr || result.stdout);
     return parseJson(result.stdout, "config show");
+  }
+
+  if (name === "scaffold_contract_export") {
+    const result = await runCli(root, ["contract", "export", "--json"]);
+    if (result.code !== 0) throw new McpToolError("CLI_FAILED", result.stderr || result.stdout);
+    return parseJson(result.stdout, "contract export");
   }
 
   throw new McpToolError("UNKNOWN_TOOL", `unknown tool: ${name}`);
