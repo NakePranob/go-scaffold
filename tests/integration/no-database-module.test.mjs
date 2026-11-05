@@ -101,8 +101,49 @@ test("--surface none combines with CQRS and can be a project default", () => {
     assert.ok(!existsSync(path.join(project, "internal/app/gateway/ports")));
 
     assert.match(run(project, "check"), /architecture check passed: 2 split module/);
-    assert.match(fails(project, "generate", "module", "x", "--surface", "bogus", "--defaults"), /--surface must be one of: minimal, crud, none/);
+    assert.match(fails(project, "generate", "module", "x", "--surface", "bogus", "--defaults"), /--surface must be one of: minimal, read, crud, none/);
     assert.match(fails(project, "generate", "module", "x", "--surface", "none", "--full", "--defaults"), /--surface cannot be combined with --full/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("generate module --surface read emits a read-only port and rejects writes", () => {
+  const scratch = mkdtempSync(path.join(tmpdir(), "go-scaffold-read-surface-"));
+  try {
+    run(scratch, "create", "hub", "--defaults", "--no-docker");
+    const project = path.join(scratch, "hub");
+    const moduleDir = "internal/app/catalog";
+
+    const plan = JSON.parse(run(project, "generate", "module", "catalog", "--surface", "read", "--plan", "--defaults"));
+    assert.equal(plan.writes, false);
+    assert.equal(plan.surface, "read");
+    assert.ok(plan.files.includes("internal/app/catalog/ports/repository.go"));
+    assert.ok(plan.files.includes("internal/app/catalog/adapters/outbound/postgres/repository.go"));
+    assert.ok(!existsSync(path.join(project, moduleDir)), "plan must not write the module");
+
+    const output = run(project, "generate", "module", "catalog", "--surface", "read", "--defaults");
+    assert.match(output, /recorded module defaults: read \+ service/);
+
+    const ports = read(project, `${moduleDir}/ports/repository.go`);
+    assert.match(ports, /FindAll\(context\.Context, ListFilter\)/);
+    assert.match(ports, /FindByID\(context\.Context, uuid\.UUID\)/);
+    assert.doesNotMatch(ports, /\bCreate\(|\bUpdate\(|\bDelete\(|CommandRepository|QueryRepository/);
+
+    const adapter = read(project, `${moduleDir}/adapters/outbound/postgres/repository.go`);
+    assert.match(adapter, /func \(r \*Repository\) FindAll/);
+    assert.match(adapter, /func \(r \*Repository\) FindByID/);
+    assert.doesNotMatch(adapter, /func \(r \*Repository\) (Create|Update|Delete)/);
+
+    assert.equal(JSON.parse(read(project, "go-scaffold.config.json")).modules.catalog.surface, "read");
+
+    run(project, "generate", "method", "catalog", "list", "--type", "get", "--get-mode", "all");
+    assert.match(read(project, `${moduleDir}/application/method_list.go`), /func \(s \*Service\) List/);
+    assert.match(fails(project, "generate", "method", "catalog", "create", "--type", "post"), /module catalog is read-only/);
+
+    const check = spawnSync("node", [CLI, "check"], { cwd: project, encoding: "utf8" });
+    assert.equal(check.status, 0, check.stderr);
+    assert.match(check.stdout, /architecture check passed: 1 split module/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

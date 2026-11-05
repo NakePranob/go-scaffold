@@ -8,6 +8,7 @@ import { applyTemplateEntries, gofmtTree } from "../utils/template-renderer";
 import {
   MODULE_FILES,
   MODULE_FILES_CQRS,
+  MODULE_FILES_READ,
   MODULE_FILES_MINIMAL,
   MODULE_FILES_MINIMAL_CQRS,
   MODULE_FILES_NONE,
@@ -26,6 +27,8 @@ export interface GenerateModuleOptions {
   cqrs?: boolean;
   auth?: boolean;
   permission?: string;
+  /** Print the intended file/migration plan as JSON and write nothing. */
+  plan?: boolean;
 }
 
 const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9:_-]*$/;
@@ -38,6 +41,7 @@ export async function generateModule(
   const config = readConfig(projectDir);
   const surface = opts.surface ?? "minimal";
   const full = surface === "crud";
+  const readOnly = surface === "read";
   const noDatabase = surface === "none";
 
   // --permission implies --auth (authz.Require must run after RequireAuth) —
@@ -56,6 +60,9 @@ export async function generateModule(
     if (!PERMISSION_CODE_PATTERN.test(opts.permission)) {
       throw new Error(`invalid permission code "${opts.permission}" — must start with a lowercase letter and contain only lowercase letters, digits, ':', '_', or '-'`);
     }
+  }
+  if (readOnly && opts.cqrs) {
+    throw new Error("--surface read currently supports the service application style only; use --surface minimal with --cqrs for a read-heavy CQRS module");
   }
 
   const naming = resolveProjectModuleNaming(projectDir, rawName ?? (await promptModuleName()));
@@ -84,6 +91,7 @@ export async function generateModule(
     auth: opts.auth,
     permission: opts.permission,
     full,
+    readOnly,
     noDatabase,
     cqrs: opts.cqrs,
     moduleSurface: surface,
@@ -92,9 +100,36 @@ export async function generateModule(
 
   const moduleFiles = {
     minimal: opts.cqrs ? MODULE_FILES_MINIMAL_CQRS : MODULE_FILES_MINIMAL,
+    read: MODULE_FILES_READ,
     crud: opts.cqrs ? MODULE_FILES_CQRS : MODULE_FILES,
     none: opts.cqrs ? MODULE_FILES_NONE_CQRS : MODULE_FILES_NONE,
   }[surface];
+
+  if (opts.plan) {
+    const slug = migrationSlug(naming);
+    const plannedMigrations = noDatabase
+      ? []
+      : [`migrations/<version>_create_${slug}.up.sql`, `migrations/<version>_create_${slug}.down.sql`];
+    if (opts.permission) {
+      plannedMigrations.push(
+        `migrations/<version>_add_${slug}_permission.up.sql`,
+        `migrations/<version>_add_${slug}_permission.down.sql`
+      );
+    }
+    console.log(JSON.stringify({
+      writes: false,
+      module: modulePath,
+      surface,
+      applicationStyle: opts.cqrs ? "cqrs" : "service",
+      auth: Boolean(opts.auth),
+      permission: opts.permission ?? null,
+      files: moduleFiles.map((f) => path.join("internal", "app", modulePath, f.output)),
+      migrations: plannedMigrations,
+      main: path.relative(projectDir, mainGoPath),
+    }, null, 2));
+    return;
+  }
+
   const moduleEntries = moduleFiles.map((f) => ({
     template: f.template,
     output: path.join("internal", "app", modulePath, f.output),

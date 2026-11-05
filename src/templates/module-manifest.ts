@@ -31,6 +31,21 @@ const PERSISTENCE: { template: string; output: string }[] = [
   },
 ];
 
+
+// A read-only module owns a table and a repository, but the port exposes only
+// list/get. It deliberately has no CommandRepository and no write methods.
+const PERSISTENCE_READ: { template: string; output: string }[] = [
+  { template: "generate/module/hexagonal/ports/repository.read.go.hbs", output: "ports/repository.go" },
+  {
+    template: "generate/module/hexagonal/adapters/outbound/postgres/model.go.hbs",
+    output: "adapters/outbound/postgres/model.go",
+  },
+  {
+    template: "generate/module/hexagonal/adapters/outbound/postgres/repository.read.go.hbs",
+    output: "adapters/outbound/postgres/repository.go",
+  },
+];
+
 const SERVICE_MINIMAL: { template: string; output: string }[] = [
   { template: "generate/module/hexagonal/application/dto.minimal.go.hbs", output: "application/dto.go" },
   {
@@ -110,6 +125,7 @@ const CQRS_NONE: { template: string; output: string }[] = [
   },
 ];
 
+export const MODULE_FILES_READ = [...CORE, ...PERSISTENCE_READ, ...SERVICE_MINIMAL];
 export const MODULE_FILES = [...CORE, ...PERSISTENCE, ...SERVICE_CRUD];
 export const MODULE_FILES_MINIMAL = [...CORE, ...PERSISTENCE, ...SERVICE_MINIMAL];
 export const MODULE_FILES_CQRS = [...CORE, ...PERSISTENCE, ...CQRS_CRUD];
