@@ -368,20 +368,82 @@ function checkProcessComposition(projectDir: string): string[] {
   return errors;
 }
 
+function checkHttpContract(projectDir: string, config: ProjectConfig, warnings: string[]): string[] {
+  const errors: string[] = [];
+  const relative = (file: string): string => path.relative(projectDir, file);
+  const httpxPath = path.join(projectDir, "internal", "shared", "httpx", "httpx.go");
+  const middlewarePath = path.join(projectDir, "internal", "shared", "middleware", "error.go");
+  const contractPath = path.join(projectDir, "docs", "architect", "http-contract.md");
+
+  if (!fs.existsSync(contractPath)) {
+    warnings.push(`${relative(contractPath)}: generated HTTP contract document is missing; skipping HTTP contract checks for this legacy project`);
+    return errors;
+  }
+  if (!fs.existsSync(httpxPath)) {
+    errors.push(`${relative(httpxPath)}: shared HTTP writers are missing`);
+  } else {
+    const helper = fs.readFileSync(httpxPath, "utf8");
+    if (config.http.resolved.single === "data" && !/gin\.H\{"data": data\}/.test(helper)) {
+      errors.push(`${relative(httpxPath)}: preset ${config.http.preset} expects a data-wrapped single response`);
+    }
+    if (config.http.resolved.list === "data-meta" && !/"meta": gin\.H/.test(helper)) {
+      errors.push(`${relative(httpxPath)}: preset ${config.http.preset} expects the data/meta list envelope`);
+    }
+    if (config.http.resolved.list === "items-total" && !/"items": data/.test(helper)) {
+      errors.push(`${relative(httpxPath)}: preset ${config.http.preset} expects the items/total list envelope`);
+    }
+    if (config.http.resolved.list === "data-limit-offset-total" && !/p\.ResponseWithTotal/.test(helper)) {
+      errors.push(`${relative(httpxPath)}: default list envelope is missing from the shared writers`);
+    }
+  }
+  if (fs.existsSync(middlewarePath)) {
+    const middleware = fs.readFileSync(middlewarePath, "utf8");
+    if (config.http.resolved.error === "errors-array" && !/"errors"/.test(middleware)) {
+      errors.push(`${relative(middlewarePath)}: preset ${config.http.preset} expects an errors array`);
+    }
+    if (config.http.resolved.error === "problem-json" && !/"type":\s+"about:blank"/.test(middleware)) {
+      errors.push(`${relative(middlewarePath)}: preset ${config.http.preset} expects problem+json`);
+    }
+    if (config.http.resolved.error === "error-object" && !/"error": appErr/.test(middleware)) {
+      errors.push(`${relative(middlewarePath)}: preset ${config.http.preset} expects the error object envelope`);
+    }
+  }
+  for (const name of moduleNames(projectDir, config)) {
+    const handlerDir = path.join(projectDir, "internal", "app", name, "adapters", "inbound", "http");
+    const handler = path.join(handlerDir, "handler.go");
+    if (!fs.existsSync(handler)) continue;
+    const content = fs.readFileSync(handler, "utf8");
+    if (!/func appError\s*\(/.test(content) || !/apperror\.Translate\s*\(/.test(content)) {
+      errors.push(`${relative(handler)}: generated handler does not use appError/apperror.Translate`);
+    }
+    for (const file of goFiles(handlerDir)) {
+      const base = path.basename(file);
+      if (base !== "handler.go" && !base.startsWith("method_")) continue;
+      const body = fs.readFileSync(file, "utf8");
+      if (/c\.(?:JSON|Status)\s*\(/.test(body)) {
+        errors.push(`${relative(file)}: generated adapter must use httpx.*, not c.JSON/c.Status`);
+      }
+    }
+  }
+  return errors;
+}
+
 export function checkProject(projectDir: string = process.cwd()): void {
   const config = readConfig(projectDir);
   const errors: string[] = [];
+  const warnings: string[] = [];
   if (config.architecture.style !== "modular-monolith") errors.push("architecture.style must be modular-monolith");
   if (config.architecture.boundary !== "hexagonal") errors.push("architecture.boundary must be hexagonal");
   if (config.architecture.packageLayout !== "split") errors.push("architecture.packageLayout must be split");
+  errors.push(...checkHttpContract(projectDir, config, warnings));
   errors.push(...checkProcessComposition(projectDir));
-  const warnings: string[] = [];
   for (const name of moduleNames(projectDir, config)) errors.push(...checkModule(projectDir, name, config.modules[name], warnings));
   for (const warning of warnings) console.warn(pc.yellow(`warning: ${warning}`));
   if (errors.length) {
     throw new Error(`${pc.red("architecture check failed")}:\n${errors.map((error) => `  - ${error}`).join("\n")}`);
   }
   console.log(pc.green(`architecture check passed: ${moduleNames(projectDir, config).length} split module(s), hexagonal boundary`));
+  console.log(`http contract: ${config.http.preset} (${config.http.resolved.single}/${config.http.resolved.list}/${config.http.resolved.error})`);
   if (config.asvs) {
     const required = [
       "docs/security/asvs-auth.md",

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added: configurable HTTP response contracts
+
+`create` now accepts `--http-preset <name>` and `--preset-dir <dir>`. The
+built-in presets are `default`, `envelope`, `items`, and `problem`; company
+presets are JSON files that select fixed response shapes. The resolved shapes
+and a hash are frozen in `go-scaffold.config.json` (schema version 3), so a
+later preset change does not silently alter an existing project.
+
+`interview --json` returns the project questions, options, defaults, and
+recommended preset for an agent. `create --answers <file> --plan` prints the
+resolved contract and file list without writing; `--apply` creates the
+project. `preset list`, `validate`, `diff`, and `upgrade` manage the contract;
+`skill print` and `skill install` ship the agent bootstrap skill.
+
+`check` verifies the generated `httpx`/error middleware against the frozen
+shapes and reports the preset. Non-default presets warn when combined with the
+generated Next.js/SvelteKit clients, which still assume the default shapes.
+
 ### Added: read-only module surface and JSON plan
 
 `generate module --surface read` creates a module that owns a table but

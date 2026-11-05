@@ -110,7 +110,9 @@ Generated inbound adapters write success through `internal/shared/httpx`:
 errors through `c.Error(appError(err))`, where `appError` wraps
 `apperror.Translate` with the module's ordered rules. Do not call `c.JSON` or
 `c.Status` from a generated inbound adapter. The full wire contract lives in
-`docs/architect/http-contract.md`.
+`docs/architect/http-contract.md`. This project uses the `{{httpPreset}}`
+preset; the frozen shapes are in `go-scaffold.config.json` under
+`http.resolved`.
 
 ## Hard rule: use the CLI for generated surface
 

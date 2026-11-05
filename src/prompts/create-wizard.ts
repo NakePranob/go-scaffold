@@ -1,6 +1,7 @@
-import { assertInteractive, confirm, input } from "./interactive";
+import { assertInteractive, confirm, input, select } from "./interactive";
 import { normalizeApiPrefix, validateApiPrefix, validateGoModulePath } from "../utils/naming";
 import { moduleProfileFor } from "../utils/module-profile";
+import { presetChoices, presetDirs } from "../utils/http-contract";
 import {
   ApplicationStyle,
   ArchitectureConfig,
@@ -33,6 +34,7 @@ export interface CreateWizardResult {
   features: ProjectFeatures;
   apiPrefix: string;
   architecture: ArchitectureConfig;
+  httpPreset: string;
 }
 
 // A flag the caller already passed is an answer, so the wizard takes it instead
@@ -47,6 +49,8 @@ export interface CreateWizardPreset {
   moduleProfile?: ModuleProfile;
   moduleSurface?: ModuleSurface;
   applicationStyle?: ApplicationStyle;
+  httpPreset?: string;
+  presetDir?: string;
 }
 
 export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<CreateWizardResult> {
@@ -88,6 +92,18 @@ export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<
   if (prefixCheck !== true) throw new Error(prefixCheck);
   const apiPrefix = normalizeApiPrefix(apiPrefixRaw);
 
+  const httpPreset =
+    preset.httpPreset ??
+    (await select({
+      message: "HTTP response contract:",
+      choices: presetChoices(presetDirs(preset.presetDir)).map((choice) => ({
+        name: choice.label,
+        value: choice.value,
+        description: `${choice.description} (${choice.source})`,
+      })),
+      default: "default",
+    }));
+
   let moduleSurface: ModuleSurface;
   let applicationStyle: ApplicationStyle;
   if (preset.moduleProfile) {
@@ -124,6 +140,7 @@ export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<
   console.log(`  OpenAPI docs: ${openapiDocs ? "yes" : "no"}${fromFlag(preset.openapiDocs)}`);
   console.log(`  Metrics + tracing: ${observability ? "yes" : "no"}${fromFlag(preset.observability)}`);
   console.log(`  Route prefix: ${apiPrefix ? `/${apiPrefix}` : "(none)"}${fromFlag(preset.apiPrefix)}`);
+  console.log(`  HTTP contract: ${httpPreset}${fromFlag(preset.httpPreset)}`);
   const profile = moduleProfileDescription(moduleSurface, applicationStyle);
   const profileSource = preset.moduleProfile !== undefined ? " (from --module-profile)" : "";
   console.log(`  Default module profile: ${profile}${profileSource}`);
@@ -138,6 +155,7 @@ export async function runCreateWizard(preset: CreateWizardPreset = {}): Promise<
   return {
     features: { docker, openapiDocs, observability },
     apiPrefix,
+    httpPreset,
     architecture: {
       ...DEFAULT_ARCHITECTURE_CONFIG,
       defaultModuleSurface: moduleSurface,

@@ -31,6 +31,11 @@ export function refreshProjectDocs(
     dbName: toDbName(config.projectName),
     apiPrefix: config.apiPrefix,
     ...config.architecture,
+    httpPreset: config.http.preset,
+    httpResolved: config.http.resolved,
+    singleShape: config.http.resolved.single,
+    listShape: config.http.resolved.list,
+    errorShape: config.http.resolved.error,
     ...beforeFeatures,
   };
   const afterContext = {
@@ -38,6 +43,11 @@ export function refreshProjectDocs(
     dbName: toDbName(config.projectName),
     apiPrefix: config.apiPrefix,
     ...config.architecture,
+    httpPreset: config.http.preset,
+    httpResolved: config.http.resolved,
+    singleShape: config.http.resolved.single,
+    listShape: config.http.resolved.list,
+    errorShape: config.http.resolved.error,
     ...afterFeatures,
   };
   const root = getTemplatesRoot();

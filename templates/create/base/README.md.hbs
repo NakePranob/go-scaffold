@@ -283,7 +283,8 @@ schema history is separate from this project's application migrations, and the
 
 Success responses use `internal/shared/httpx`; errors use the shared
 `{"error": ...}` envelope. The full shape, helper names, and error-translation
-rules live in `docs/architect/http-contract.md`.
+rules live in `docs/architect/http-contract.md`. This project uses the
+`{{httpPreset}}` preset; the frozen shapes are in `go-scaffold.config.json`.
 
 ```json
 {"error":{"code":"VALIDATION_ERROR","message":"invalid input","details":{"email":"email"},"request_id":"a1b2..."}}

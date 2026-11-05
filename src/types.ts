@@ -80,6 +80,29 @@ export interface ModuleConfig {
   packageLayout: PackageLayout;
 }
 
+export type SingleShape = "bare" | "data";
+export type ListShape = "data-limit-offset-total" | "data-meta" | "items-total";
+export type ErrorShape = "error-object" | "errors-array" | "problem-json";
+
+export interface ResolvedHttpContract {
+  single: SingleShape;
+  list: ListShape;
+  error: ErrorShape;
+}
+
+export interface HttpContractConfig {
+  preset: string;
+  resolved: ResolvedHttpContract;
+  presetHash: string;
+}
+
+export interface HttpPresetFile {
+  schemaVersion: 1;
+  name: string;
+  description?: string;
+  http: ResolvedHttpContract;
+}
+
 export const DEFAULT_ARCHITECTURE_CONFIG: ArchitectureConfig = {
   style: "modular-monolith",
   boundary: "hexagonal",
@@ -120,6 +143,8 @@ export interface ProjectConfig {
   /** Optional generated auth security profile selected when auth was installed. */
   asvs?: AsvsTarget;
   architecture: ArchitectureConfig;
+  /** Response contract selected at creation and frozen for later generation. */
+  http: HttpContractConfig;
   /** Resolved choices recorded for each generated module, keyed by Go package name. */
   modules: Record<string, ModuleConfig>;
   /**
